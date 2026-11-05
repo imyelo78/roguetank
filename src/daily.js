@@ -70,6 +70,19 @@ export function mergeEntry(list, entry) {
   return rest.slice(0, 50);
 }
 
+/**
+ * 合并远端与本地榜单：同名取最高分。
+ * 避免"云端为空/未绑定"时把本机成绩抹掉（断网、KV 未绑定期间打的局会丢记录）。
+ */
+export function mergeLists(remote = [], local = []) {
+  let out = Array.isArray(remote) ? [...remote] : [];
+  for (const e of Array.isArray(local) ? local : []) {
+    if (!e || !e.name || typeof e.score !== 'number') continue;
+    out = mergeEntry(out, e);
+  }
+  return out.sort(sortDesc).slice(0, 50);
+}
+
 function localSubmit({ date, name, wave, kills, score }) {
   const data = readLocal();
   const entry = { name, wave, kills, score, t: Date.now() };
@@ -94,6 +107,7 @@ const localDays = (local) => Object.keys(local.days).sort().reverse();
  */
 export async function submitScore({ date, name, wave, kills, score }) {
   const local = localSubmit({ date, name, wave, kills, score });
+  const localList = local.days[date] || [];
 
   try {
     const r = await fetch('/api/scores', {
@@ -105,9 +119,10 @@ export async function submitScore({ date, name, wave, kills, score }) {
       const data = await r.json();
       if (data.ok && Array.isArray(data.list)) {
         return {
-          list: data.list,
-          all: data.all || local.all,
-          days: data.days || localDays(local),
+          // 远端可能只含云端的成绩，与本机记录合并，确保自己的这局一定在榜上
+          list: mergeLists(data.list, localList),
+          all: mergeLists(data.all || [], local.all),
+          days: mergeDays(data.days || [], localDays(local)),
           remote: true,
         };
       }
@@ -115,42 +130,53 @@ export async function submitScore({ date, name, wave, kills, score }) {
   } catch { /* 无后端 / 离线，用本地 */ }
 
   return {
-    list: local.days[date] || [],
+    list: localList,
     all: local.all,
     days: localDays(local),
     remote: false,
   };
 }
 
-/** 拉取某天战绩 */
+/** 日期索引取并集，倒序，最多 120 天 */
+export function mergeDays(a = [], b = []) {
+  return [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])]
+    .sort()
+    .reverse()
+    .slice(0, 120);
+}
+
+/** 拉取某天战绩（远端 + 本地合并，远端缺失时也不丢本机记录） */
 export async function fetchDay(date) {
+  const local = readLocal();
+  const localList = local.days[date] || [];
   try {
     const r = await fetch(`/api/scores?date=${encodeURIComponent(date)}`);
     if (r.ok) {
       const data = await r.json();
-      if (data.ok && Array.isArray(data.list)) return { list: data.list, remote: true };
+      if (data.ok && Array.isArray(data.list)) {
+        return { list: mergeLists(data.list, localList), remote: true };
+      }
     }
   } catch { /* 回退 */ }
-  const local = readLocal();
-  return { list: local.days[date] || [], remote: false };
+  return { list: localList, remote: false };
 }
 
-/** 拉取总榜 + 已有战绩的日期列表 */
+/** 拉取总榜 + 已有战绩的日期列表（同样与本地合并） */
 export async function fetchSummary() {
+  const local = readLocal();
   try {
     const r = await fetch('/api/scores?view=all');
     if (r.ok) {
       const data = await r.json();
       if (data.ok) {
         return {
-          all: Array.isArray(data.all) ? data.all : [],
-          days: Array.isArray(data.days) ? data.days : [],
+          all: mergeLists(Array.isArray(data.all) ? data.all : [], local.all),
+          days: mergeDays(Array.isArray(data.days) ? data.days : [], localDays(local)),
           remote: true,
         };
       }
     }
   } catch { /* 回退 */ }
-  const local = readLocal();
   return { all: local.all, days: localDays(local), remote: false };
 }
 

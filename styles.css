@@ -617,6 +617,29 @@ html, body {
   letter-spacing: .04em;
 }
 .lb-source { color: var(--amber-soft); }
+
+/* 排行榜说明 / 结算页成绩去向提示 */
+.lb-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: -6px 0 14px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgba(255, 166, 61, .07);
+  border-left: 2px solid rgba(255, 166, 61, .45);
+}
+.go-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--amber-soft);
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgba(255, 166, 61, .08);
+  border: 1px solid rgba(255, 166, 61, .22);
+}
+.go-note.hidden { display: none; }
 .lb-tabs {
   display: flex;
   gap: 6px;

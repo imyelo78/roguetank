@@ -47,6 +47,7 @@ export class HUD {
     this.modifierEl = $('modifier');
 
     this.gameover = $('gameover');
+    this.goNote = $('go-note');
     this.finalWave = $('final-wave');
     this.finalKills = $('final-kills');
     this.finalScore = $('final-score');
@@ -139,7 +140,7 @@ export class HUD {
 
     const [summary] = await Promise.all([fetchSummary()]);
     this._lbDays = summary.days || [];
-    this.lbSource.textContent = summary.remote ? '全服' : '本机（未绑定 KV）';
+    this.lbSource.textContent = summary.remote ? '全服' : '本机（云端不可用）';
     this.renderDayBoard();
   }
 
@@ -151,7 +152,7 @@ export class HUD {
     if (!this._lbDate) return;
     this.lbSub.textContent = this._lbDate;
     const { list, remote } = await fetchDay(this._lbDate);
-    this.lbSource.textContent = remote ? '全服' : '本机（未绑定 KV）';
+    this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
     this.renderBoardList(list || [], `${this._lbDate} 战绩`);
   }
 
@@ -252,13 +253,13 @@ export class HUD {
           const s = await fetchSummary();
           this._lbAll = s.all || [];
           this._lbDays = s.days || [];
-          this.lbSource.textContent = s.remote ? '全服' : '本机（未绑定 KV）';
+          this.lbSource.textContent = s.remote ? '全服' : '本机（云端不可用）';
           this.renderSummaryBoard();
         } else {
           const s = await fetchSummary();
           this._lbAll = s.all || [];
           this._lbDays = s.days || this._lbDays;
-          this.lbSource.textContent = s.remote ? '全服' : '本机（未绑定 KV）';
+          this.lbSource.textContent = s.remote ? '全服' : '本机（云端不可用）';
           this.renderHistoryBoard();
         }
       });
@@ -349,13 +350,25 @@ export class HUD {
     this.app.classList.add('playing');
   }
 
-  showGameOver({ wave, kills, score, time, best, isNew, daily, myName, leaderboard, overall }) {
+  showGameOver({ wave, kills, score, time, best, isNew, daily, synced, myName, leaderboard, overall }) {
     this.finalWave.textContent = String(wave);
     this.finalKills.textContent = String(kills);
     this.finalScore.textContent = String(score);
     this.finalTime.textContent = time;
     this.newRecord.classList.toggle('hidden', !isNew);
     this.bestLine.textContent = `第 ${best.wave} 波 · ${best.score} 分`;
+
+    // 说清楚成绩去哪了：普通战斗不上榜 / 每日挑战未同步
+    if (this.goNote) {
+      let note = '';
+      if (!daily) {
+        note = '本局为普通战斗 · 排行榜只统计「每日挑战」，本局仅计入本机最佳';
+      } else if (synced === false) {
+        note = '成绩已存到本机，但未能同步云端（KV 未绑定或网络异常）';
+      }
+      this.goNote.textContent = note;
+      this.goNote.classList.toggle('hidden', !note);
+    }
 
     // 每日挑战：今日 Top5 + 历史总榜
     if (this.lb && this.lbList && this.lbTitle) {

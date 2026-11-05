@@ -306,7 +306,7 @@ export class Game {
 
     this.hud.bind({
       onStart: (id, opts) => this.start(id, opts || {}),
-      onDaily: (id, opts) => this.start(id, opts || { daily: true }),
+      onDaily: (id, opts) => this.start(id, { daily: true, ...(opts || {}) }),
       onRestart: () => this.restart(),
       onPick: (id) => this.pickUpgrade(id),
       onWeapon: (id) => this.pickWeapon(id),
@@ -1334,6 +1334,7 @@ export class Game {
       this.hud.showGameOver({
         ...base,
         daily: true,
+        synced: res.remote,
         myName: name,
         leaderboard: (res.list || []).slice(0, 5),
         overall: (res.all || []).slice(0, 5),
