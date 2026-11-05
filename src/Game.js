@@ -189,6 +189,8 @@ export class Game {
     const c = CHASSIS[this.chassisId] || CHASSIS.balanced;
     this.player = new Tank(this.scene, {
       team: 'player',
+      chassis: this.chassisId,
+      detail: 'high',
       body: c.colors.body,
       accent: c.colors.accent,
       metal: c.colors.metal,
