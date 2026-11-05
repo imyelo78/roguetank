@@ -69,7 +69,9 @@ export class HUD {
     this.lbSub = $('lb-sub');
     this.lbSource = $('lb-source');
     this.lbTabButtons = Array.from(document.querySelectorAll('.lb-tab[data-view]'));
+    this.lbModeButtons = Array.from(document.querySelectorAll('.lb-mode[data-mode]'));
     this._lbView = 'day';
+    this._lbMode = 'daily';   // daily | normal
     this._lbDate = '';
     this._lbAll = [];
     this._lbDays = [];
@@ -135,10 +137,10 @@ export class HUD {
     this._lbView = 'day';
     this._lbDate = todayKey();
     this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
-    this.lbSub.textContent = this._lbDate;
+    this.lbSub.textContent = `${this._lbDate} · ${this._lbMode === 'normal' ? '训练' : '每日挑战'}`;
     this.lbBody.innerHTML = '<li class="lb-empty">读取中…</li>';
 
-    const [summary] = await Promise.all([fetchSummary()]);
+    const [summary] = await Promise.all([fetchSummary(this._lbMode)]);
     this._lbDays = summary.days || [];
     this.lbSource.textContent = summary.remote ? '全服' : '本机（云端不可用）';
     this.renderDayBoard();
@@ -150,8 +152,8 @@ export class HUD {
 
   async renderDayBoard() {
     if (!this._lbDate) return;
-    this.lbSub.textContent = this._lbDate;
-    const { list, remote } = await fetchDay(this._lbDate);
+    this.lbSub.textContent = `${this._lbDate} · ${this._lbMode === 'normal' ? '训练' : '每日挑战'}`;
+    const { list, remote } = await fetchDay(this._lbDate, this._lbMode);
     this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
     this.renderBoardList(list || [], `${this._lbDate} 战绩`);
   }
@@ -242,6 +244,17 @@ export class HUD {
     }
     $('lb-open')?.addEventListener('click', () => this.openLeaderboard());
     $('lb-close')?.addEventListener('click', () => this.closeLeaderboard());
+    this.lbModeButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this._lbMode = btn.dataset.mode === 'normal' ? 'normal' : 'daily';
+        this.lbModeButtons.forEach((b) => b.classList.toggle('sel', b === btn));
+        // 切榜后回到「今日」，避免停在另一个模式的日期上造成误解
+        this._lbView = 'day';
+        this._lbDate = todayKey();
+        this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
+        this.openLeaderboard();
+      });
+    });
     this.lbTabButtons.forEach((btn) => {
       btn.addEventListener('click', async () => {
         this.lbTabButtons.forEach((b) => b.classList.toggle('sel', b === btn));
@@ -250,13 +263,13 @@ export class HUD {
           this._lbDate = todayKey();
           this.renderDayBoard();
         } else if (view === 'all') {
-          const s = await fetchSummary();
+          const s = await fetchSummary(this._lbMode);
           this._lbAll = s.all || [];
           this._lbDays = s.days || [];
           this.lbSource.textContent = s.remote ? '全服' : '本机（云端不可用）';
           this.renderSummaryBoard();
         } else {
-          const s = await fetchSummary();
+          const s = await fetchSummary(this._lbMode);
           this._lbAll = s.all || [];
           this._lbDays = s.days || this._lbDays;
           this.lbSource.textContent = s.remote ? '全服' : '本机（云端不可用）';
@@ -350,7 +363,8 @@ export class HUD {
     this.app.classList.add('playing');
   }
 
-  showGameOver({ wave, kills, score, time, best, isNew, daily, synced, myName, leaderboard, overall }) {
+  showGameOver({ wave, kills, score, time, best, isNew, daily, mode, synced, syncReason, myName, leaderboard, overall }) {
+    const md = mode || (daily ? 'daily' : 'normal');
     this.finalWave.textContent = String(wave);
     this.finalKills.textContent = String(kills);
     this.finalScore.textContent = String(score);
@@ -358,26 +372,33 @@ export class HUD {
     this.newRecord.classList.toggle('hidden', !isNew);
     this.bestLine.textContent = `第 ${best.wave} 波 · ${best.score} 分`;
 
-    // 说清楚成绩去哪了：普通战斗不上榜 / 每日挑战未同步
+    // 说清楚成绩去哪了：上没上榜、云端有没有同步成功
     if (this.goNote) {
-      let note = '';
-      if (!daily) {
-        note = '本局为普通战斗 · 排行榜只统计「每日挑战」，本局仅计入本机最佳';
-      } else if (synced === false) {
-        note = '成绩已存到本机，但未能同步云端（KV 未绑定或网络异常）';
+      let note;
+      if (synced === false) {
+        const why = syncReason === 'offline' ? '网络不可用'
+          : syncReason === 'kv-unbound' ? '服务端未绑定 KV'
+          : syncReason === 'stale-date' ? '日期校验未通过'
+          : syncReason ? `服务端返回 ${syncReason}` : '未知原因';
+        note = `${md === 'daily' ? '每日挑战' : '训练模式'}成绩已存本机，云端同步失败（${why}）· 下次进入游戏会自动补传`;
+      } else {
+        note = md === 'daily'
+          ? '已上传全服 · 计入今日「每日挑战」榜与历史总榜'
+          : '已上传全服 · 计入今日「训练」榜（随机地图，分数仅供参考）';
       }
       this.goNote.textContent = note;
       this.goNote.classList.toggle('hidden', !note);
+      this.goNote.classList.toggle('warn', synced === false);
     }
 
-    // 每日挑战：今日 Top5 + 历史总榜
+    // 今日 Top5 + 历史总榜
     if (this.lb && this.lbList && this.lbTitle) {
-      const hasDay = !!daily && Array.isArray(leaderboard) && leaderboard.length > 0;
-      const hasAll = !!daily && Array.isArray(overall) && overall.length > 0;
+      const hasDay = Array.isArray(leaderboard) && leaderboard.length > 0;
+      const hasAll = Array.isArray(overall) && overall.length > 0;
       this.lb.classList.toggle('hidden', !(hasDay || hasAll));
       this.lbList.innerHTML = '';
       if (hasDay || hasAll) {
-        this.lbTitle.textContent = '今日排行榜';
+        this.lbTitle.textContent = md === 'daily' ? '今日排行榜' : '训练榜';
         const render = (list, label) => {
           if (!list || !list.length) return;
           const head = document.createElement('li');

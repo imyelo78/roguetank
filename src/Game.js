@@ -10,7 +10,7 @@ import { WEAPONS, resolveWeapon } from './weapons.js';
 import { CHASSIS } from './chassis.js';
 import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
-import { todayKey, seedFromKey, mulberry32, loadCallsign, submitScore } from './daily.js';
+import { todayKey, seedFromKey, mulberry32, loadCallsign, submitScore, flushPending } from './daily.js';
 import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
 
@@ -179,6 +179,9 @@ export class Game {
     this.scene.add(ring);
 
     this.camLook = new THREE.Vector3(0, 1, 26);
+
+    // 上次没传成功的成绩，进游戏时静默补传一次
+    flushPending().catch(() => {});
   }
 
   _resetPlayer() {
@@ -1323,27 +1326,35 @@ export class Game {
   }
 
   /** 每日挑战结算：上传成绩并拉取今日榜 + 历史总榜 */
-  async _finishDaily(base) {
+  /**
+   * 结算上报：daily（每日挑战）/ normal（训练模式）各自独立榜单。
+   * 上传结果（成功 / 失败原因）会显示在结算页，避免"打了却没上榜"无从判断。
+   */
+  async _submitRun(base, mode) {
     const name = this.callsign || loadCallsign() || '指挥官';
+    let res;
     try {
-      const res = await submitScore({
+      res = await submitScore({
         date: todayKey(),
         name,
         wave: base.wave,
         kills: base.kills,
         score: base.score,
-      });
-      this.hud.showGameOver({
-        ...base,
-        daily: true,
-        synced: res.remote,
-        myName: name,
-        leaderboard: (res.list || []).slice(0, 5),
-        overall: (res.all || []).slice(0, 5),
+        mode,
       });
     } catch {
-      this.hud.showGameOver(base);
+      res = { list: [], all: [], remote: false, reason: 'error' };
     }
+    this.hud.showGameOver({
+      ...base,
+      daily: mode === 'daily',
+      mode,
+      synced: res.remote,
+      syncReason: res.reason,
+      myName: name,
+      leaderboard: (res.list || []).slice(0, 5),
+      overall: (res.all || []).slice(0, 5),
+    });
   }
 
   _updateCamera(dt) {
@@ -1419,11 +1430,8 @@ export class Game {
             best,
             isNew,
           };
-          if (this.daily) {
-            this._finishDaily(base);
-          } else {
-            this.hud.showGameOver(base);
-          }
+          // 每日挑战与训练模式都上传（各自独立榜单），训练模式分数不可比但可围观
+          this._submitRun(base, this.daily ? 'daily' : 'normal');
         }
       }
     }
