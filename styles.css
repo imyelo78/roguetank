@@ -548,6 +548,78 @@ html, body {
 }
 .start-panel { width: min(92vw, 520px); }
 
+/* ---------- 呼号与开始按钮 ---------- */
+.callsign {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.callsign input {
+  width: 150px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .04);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: center;
+  outline: none;
+}
+.callsign input:focus { border-color: var(--amber); }
+.start-btns { display: flex; gap: 10px; justify-content: center; }
+.start-btns button {
+  padding: 13px 30px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: linear-gradient(180deg, #ffb45c, #f08a1d);
+  color: #1a1206;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform .12s ease, filter .12s ease;
+}
+.start-btns button:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.start-btns button:active { transform: translateY(1px); }
+#daily-btn {
+  background: transparent;
+  border-color: rgba(255, 166, 61, .45);
+  color: var(--amber-soft);
+  font-weight: 600;
+}
+
+/* ---------- 每日排行榜 ---------- */
+.lb { margin: 4px 0 14px; }
+.lb-title {
+  font-size: 12.5px;
+  letter-spacing: .1em;
+  color: var(--amber-soft);
+  margin-bottom: 8px;
+}
+.lb ol { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.lb li {
+  display: grid;
+  grid-template-columns: 26px 1fr 64px 62px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .03);
+  font-size: 12.5px;
+  text-align: left;
+}
+.lb li i { font-style: normal; color: var(--muted); }
+.lb li b { font-weight: 600; }
+.lb li span { color: var(--muted); text-align: right; }
+.lb li em { font-style: normal; color: var(--amber-soft); text-align: right; font-weight: 700; }
+.lb li.me { background: rgba(255, 166, 61, .12); outline: 1px solid rgba(255, 166, 61, .35); }
+
 kbd {
   display: inline-block;
   min-width: 26px;

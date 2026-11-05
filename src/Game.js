@@ -10,6 +10,7 @@ import { WEAPONS, resolveWeapon } from './weapons.js';
 import { CHASSIS } from './chassis.js';
 import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
+import { todayKey, seedFromKey, mulberry32, loadCallsign, submitScore } from './daily.js';
 import { createNav } from './nav.js';
 
 const TMP = new THREE.Vector3();
@@ -277,6 +278,7 @@ export class Game {
 
     this.hud.bind({
       onStart: (id) => this.start(id),
+      onDaily: (id, opts) => this.start(id, opts || { daily: true }),
       onRestart: () => this.restart(),
       onPick: (id) => this.pickUpgrade(id),
       onWeapon: (id) => this.pickWeapon(id),
@@ -306,7 +308,10 @@ export class Game {
   }
 
   _clearField() {
-    for (const e of this.enemies) this.scene.remove(e.tank.group);
+    for (const e of this.enemies) {
+      this.scene.remove(e.tank.group);
+      if (e.sight) this.scene.remove(e.sight);
+    }
     this.enemies = [];
     for (const b of this.bullets) b.destroy();
     this.bullets = [];
@@ -353,8 +358,21 @@ export class Game {
     this.hud.setBest(this.best);
   }
 
-  start(chassisId) {
+  /** 每日挑战：全局安装确定性随机（种子=当日日期），普通模式还原 */
+  _setSeedMode(on) {
+    if (on && !this._origRandom) {
+      this._origRandom = Math.random;
+      Math.random = mulberry32(seedFromKey(todayKey()));
+    } else if (!on && this._origRandom) {
+      Math.random = this._origRandom;
+      this._origRandom = null;
+    }
+  }
+
+  start(chassisId, opts = {}) {
     if (chassisId && CHASSIS[chassisId]) this.chassisId = chassisId;
+    this.daily = !!opts.daily;
+    this._setSeedMode(this.daily);
     this.sound.unlock();
     this._clearField();
     this._resetRun();
@@ -386,7 +404,7 @@ export class Game {
   }
 
   restart() {
-    this.start(this.chassisId);
+    this.start(this.chassisId, { daily: this.daily });
   }
 
   startWave(n) {
@@ -457,6 +475,55 @@ export class Game {
           type: 'charger',
         });
       }
+
+      // ---- M3 敌人扩展（仅非 Boss 波） ----
+      if (n >= 4) {
+        // 自爆无人机：低血高速飞行
+        const drones = Math.min(4, Math.floor((n - 2) / 2));
+        for (let i = 0; i < drones; i++) {
+          this.pending.push({
+            t: 3.5 + i * 1.4,
+            hp: Math.max(18, Math.round(hp * 0.3)),
+            speed: speed * 1.15,
+            type: 'drone',
+          });
+        }
+      }
+      if (n >= 6) {
+        // 炮台：固定远程，必须拔掉
+        const turrets = Math.min(2, 1 + Math.floor(n / 12));
+        for (let i = 0; i < turrets; i++) {
+          this.pending.push({
+            t: 2.5 + i * 3,
+            hp: Math.round(hp * 2.2),
+            speed: 0,
+            type: 'turret',
+            warn: 1.4,
+          });
+        }
+      }
+      if (n >= 7) {
+        // 补给车：治疗光环
+        this.pending.push({
+          t: 4.5,
+          hp: Math.round(hp * 1.4),
+          speed: speed * 0.95,
+          type: 'support',
+          warn: 1.2,
+        });
+      }
+      if (n >= 8) {
+        // 重盾兵：正面减伤
+        const shields = Math.min(3, Math.floor((n - 4) / 2));
+        for (let i = 0; i < shields; i++) {
+          this.pending.push({
+            t: 5.5 + i * 2.2,
+            hp: Math.round(hp * 1.3),
+            speed: speed * 0.9,
+            type: 'shield',
+          });
+        }
+      }
       this.hud.showMessage(
         eliteWave
           ? `第 ${n} 波  ·  精英来袭`
@@ -519,10 +586,20 @@ export class Game {
     const spot = boss
       ? this._findSpawnPoint(32, 44)
       : this._findSpawnPoint();
-    const radius = boss ? 4.6 : type === 'charger' ? 2.0 : type === 'elite' ? 3.0 : 2.4;
+    const radius = boss ? 4.6
+      : type === 'charger' ? 2.0
+      : type === 'drone' ? 1.2
+      : type === 'turret' ? 2.0
+      : type === 'support' ? 2.2
+      : type === 'elite' ? 3.0 : 2.4;
     const color = boss
       ? (type === 'boss_breaker' ? 0xff2a1a : 0x38d8ff)
-      : type === 'charger' ? 0xff8a2a : type === 'elite' ? 0xffd257 : 0xff4a3a;
+      : type === 'charger' ? 0xff8a2a
+      : type === 'drone' ? 0xc07bff
+      : type === 'turret' ? 0xffa03a
+      : type === 'support' ? 0x57d877
+      : type === 'shield' ? 0x6fa8ff
+      : type === 'elite' ? 0xffd257 : 0xff4a3a;
     const mesh = new THREE.Mesh(WARN_GEO, new THREE.MeshBasicMaterial({
       color,
       transparent: true,
@@ -841,6 +918,7 @@ export class Game {
   _separate() {
     const p = this.player.group.position;
     for (const e of this.enemies) {
+      if (e.turretStatic) continue;   // 炮台固定不动，不参与推挤
       const ep = e.position;
       let dx = ep.x - p.x;
       let dz = ep.z - p.z;
@@ -932,9 +1010,15 @@ export class Game {
 
       b.hits.add(hitTarget);
       // 玩家受伤走减伤结算（反应装甲 / 壁垒协议）
-      const dmg = hitTarget === this.player
+      let dmg = hitTarget === this.player
         ? Math.max(1, Math.round(b.damage * (this.stats.damageTakenMul ?? 1)))
         : b.damage;
+      // 重盾兵：命中方向与车头同向（正面）时 80% 减伤，绕后无减伤
+      if (hitTarget !== this.player && hitTarget.isShielded) {
+        const facing = hitTarget.group.rotation.y;
+        const dot = Math.sin(facing) * b.dir.x + Math.cos(facing) * b.dir.z;
+        if (dot > 0.25) dmg = Math.max(1, Math.round(dmg * 0.2));
+      }
       const died = hitTarget.takeDamage(dmg);
       this.effects.spark(b.pos);
       this.sound.hit();
@@ -973,6 +1057,7 @@ export class Game {
     this.effects.explosion(enemy.position.clone().setY(1.1), 0xff8a3d, enemy.isBoss ? 48 : 20, enemy.isBoss ? 1.9 : 1.15);
     this.sound.explosion(enemy.isBoss ? 1.9 : enemy.isElite ? 1.2 : 0.9);
     this.scene.remove(enemy.tank.group);
+    if (enemy.sight) this.scene.remove(enemy.sight);
     this.kills += 1;
 
     // 猎手型：击杀回甲
@@ -991,8 +1076,14 @@ export class Game {
       this.shake = Math.max(this.shake, 0.3);
       this.hud.showMessage(`精英击破  +${Math.round((450 + this.mods.eliteScoreBonus) * this.mods.killScoreMul)}`, 1.1);
     } else {
-      this.score += Math.round(100 * this.mods.killScoreMul);
+      // M3 新敌人基础分：无人机 150 / 炮台 250 / 补给车 250 / 重盾兵 180 / 普通 100
+      const base = { drone: 150, turret: 250, support: 250, shield: 180 }[enemy.type] || 100;
+      this.score += Math.round(base * this.mods.killScoreMul);
       this.shake = Math.max(this.shake, 0.12);
+      if (base >= 180) {
+        const names = { drone: '无人机', turret: '炮台', support: '补给车', shield: '重盾兵' };
+        this.hud.showMessage(`${names[enemy.type]}击破  +${Math.round(base * this.mods.killScoreMul)}`, 0.9);
+      }
     }
 
     this.hud.setKills(this.kills);
@@ -1191,6 +1282,28 @@ export class Game {
     return { prev, best, isNew };
   }
 
+  /** 每日挑战结算：上传成绩并拉取今日排行榜 */
+  async _finishDaily(base) {
+    const name = loadCallsign() || '指挥官';
+    try {
+      const { list } = await submitScore({
+        date: todayKey(),
+        name,
+        wave: base.wave,
+        kills: base.kills,
+        score: base.score,
+      });
+      this.hud.showGameOver({
+        ...base,
+        daily: true,
+        myName: name,
+        leaderboard: (list || []).slice(0, 5),
+      });
+    } catch {
+      this.hud.showGameOver(base);
+    }
+  }
+
   _updateCamera(dt) {
     const p = this.player.group.position;
     const target = TMP.set(p.x, 27, p.z + 23);
@@ -1239,14 +1352,19 @@ export class Game {
         if (this.overTimer <= 0) {
           const { best, isNew } = this._gameOverTime();
           this.hud.setBest(best);
-          this.hud.showGameOver({
+          const base = {
             wave: this.wave,
             kills: this.kills,
             score: this.score,
             time: formatTime(this.runTime),
             best,
             isNew,
-          });
+          };
+          if (this.daily) {
+            this._finishDaily(base);
+          } else {
+            this.hud.showGameOver(base);
+          }
         }
       }
     }

@@ -43,15 +43,30 @@ export class Enemy {
     const elite = type === 'elite';
     const bossInfo = BOSS_INFO[type];
     const boss = !!bossInfo;
+    // ---- M3 新敌人 ----
+    const drone = type === 'drone';        // 自爆无人机：飞行、无视地形、贴脸自爆
+    const turret = type === 'turret';      // 炮台：固定、超远射程、瞄准线预警
+    const support = type === 'support';    // 补给车：治疗光环、会逃跑
+    const shield = type === 'shield';      // 重盾兵：正面减伤，绕后有戏
+
     const scale = boss ? (bossInfo.kind === 'breaker' ? 1.75 : 1.45)
+      : drone ? 0.62
+      : turret ? 0.95
+      : support ? 1.05
+      : shield ? 1.12
       : charger ? 0.85 : elite ? 1.18 : 1;
-    const speedMul = charger ? 1.25 : elite ? 0.85 : 1;
+    const speedMul = drone ? 1.9 : turret ? 0 : support ? 1.15 : shield ? 0.72
+      : charger ? 1.25 : elite ? 0.85 : 1;
     const bodies = boss
       ? (bossInfo.kind === 'breaker'
         ? { body: 0x7d3a2c, accent: 0x4a1e16, metal: 0x2a2220 }
         : { body: 0x2f6f86, accent: 0x1d4354, metal: 0x223038 })
       : elite
         ? { body: 0xc0963a, accent: 0x6d5018, metal: 0x332b28 }
+        : drone ? { body: 0x8d5fb0, accent: 0x4d2e66, metal: 0x2a2432 }
+        : turret ? { body: 0x77806b, accent: 0x454c3e, metal: 0x2e332c }
+        : support ? { body: 0x4f8f5f, accent: 0x2c5537, metal: 0x2b332c }
+        : shield ? { body: 0x5d6d9c, accent: 0x333f63, metal: 0x2a2e38 }
         : { body: charger ? 0xc25a20 : 0xa8483a, accent: charger ? 0x6d2a0e : 0x5e2318, metal: charger ? 0x2b2522 : 0x332b28 };
 
     this.tank = new Tank(scene, {
@@ -66,17 +81,57 @@ export class Enemy {
       rotY: Math.random() * Math.PI * 2,
     });
     this.tank.group.scale.setScalar(scale);
-    this.tank.radius = boss ? (bossInfo.kind === 'breaker' ? 2.5 : 2.1) : elite ? 1.65 : 1.45;
+    this.tank.radius = boss ? (bossInfo.kind === 'breaker' ? 2.5 : 2.1)
+      : drone ? 0.9
+      : turret ? 1.3
+      : support ? 1.5
+      : shield ? 1.55
+      : elite ? 1.65 : 1.45;
 
     this.type = type;
     this.charger = charger;
     this.isBoss = boss;
     this.isElite = elite;
+    this.flying = drone;
+    this.turretStatic = turret;
+    this.support = support;
+    if (shield) this.tank.isShielded = true;   // 供子弹结算做正面减伤
+    this.selfDestruct = charger ? { damage: 16, radius: 4.6 }
+      : drone ? { damage: 10, radius: 3.5 } : null;
     this.bossKind = bossInfo ? bossInfo.kind : null;
     this.bossName = bossInfo ? bossInfo.name : null;
-    this.damage = damage ?? (boss ? (bossInfo.kind === 'breaker' ? 15 : 8) : elite ? 10 : 7);
+    this.damage = damage ?? (boss ? (bossInfo.kind === 'breaker' ? 15 : 8)
+      : turret ? 12 : shield ? 8 : drone ? 10 : elite ? 10 : support ? 0 : 7);
     this.baseScale = scale;
     this.camera = camera;
+
+    // 补给车：治疗光环指示圈
+    if (support) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(7.6, 8.0, 40),
+        new THREE.MeshBasicMaterial({
+          color: 0x57d877, transparent: true, opacity: 0.4,
+          side: THREE.DoubleSide, depthWrite: false,
+        })
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.07 / scale;
+      this.tank.group.add(ring);
+      this.healT = 0;
+    }
+
+    // 炮台：瞄准线预警（世界空间细线，指向玩家时可见）
+    if (turret) {
+      const line = new THREE.Mesh(
+        new THREE.BoxGeometry(0.07, 0.07, 1),
+        new THREE.MeshBasicMaterial({
+          color: 0xff4a3a, transparent: true, opacity: 0.35, depthWrite: false,
+        })
+      );
+      line.visible = false;
+      scene.add(line);
+      this.sight = line;
+    }
 
     // ---- Boss 专属状态 ----
     this.enraged = false;
@@ -270,6 +325,20 @@ export class Enemy {
       return;
     }
 
+    // ---- M3 新敌人：独立行为 ----
+    if (this.flying) {
+      this._updateDrone(dt, ctx, dist, dx, dz);
+      return;
+    }
+    if (this.turretStatic) {
+      this._updateTurret(dt, ctx, dist, dx, dz);
+      return;
+    }
+    if (this.support) {
+      this._updateSupport(dt, ctx, dist, dx, dz);
+      return;
+    }
+
     // ---- 状态机 ----
     if (this.charger) {
       this.state = this.los ? 'chase' : 'flank';
@@ -312,10 +381,10 @@ export class Enemy {
       aimYaw = Math.atan2(this.flankGoal.x - p.x, this.flankGoal.z - p.z);
     }
 
-    // ---- 冲锋兵：贴脸自爆 ----
+    // ---- 冲锋兵 / 无人机：贴脸自爆 ----
     if (this.charger) {
-      if (dist < 4.6 && this.los && this.spawnShield <= 0) {
-        ctx.chargerBurst(this, 16, 5);
+      if (dist < this.selfDestruct.radius && this.los && this.spawnShield <= 0) {
+        ctx.chargerBurst(this, this.selfDestruct.damage, this.selfDestruct.radius);
         return;
       }
       tank.aimTowards(aimYaw, dt, 7);
@@ -339,6 +408,98 @@ export class Enemy {
       ctx.fire(tank, dir, this.damage, 'enemy');
     }
 
+    this._updateBar();
+  }
+
+  // ---------------- M3 新敌人 ----------------
+
+  /** 自爆无人机：低空飞行直扑玩家，无视地形与掩体，贴脸自爆 */
+  _updateDrone(dt, ctx, dist, dx, dz) {
+    const tank = this.tank;
+    const p = tank.group.position;
+    this.bobT = (this.bobT || 0) + dt;
+    tank.aimTowards(Math.atan2(dx, dz), dt, 8);
+
+    // 飞行位移：不做地面碰撞，手动推进 + 边界钳制
+    if (dist > 0.2) {
+      const step = tank.speed * dt;
+      const half = ctx.world.half;
+      p.x = THREE.MathUtils.clamp(p.x + (dx / dist) * step, -half + 2, half - 2);
+      p.z = THREE.MathUtils.clamp(p.z + (dz / dist) * step, -half + 2, half - 2);
+    }
+    p.y = 1.05 + Math.sin(this.bobT * 3.2) * 0.3;
+
+    if (dist < this.selfDestruct.radius * 0.9 && this.spawnShield <= 0) {
+      p.y = 0;
+      ctx.chargerBurst(this, this.selfDestruct.damage, this.selfDestruct.radius);
+      return;
+    }
+    this._updateBar();
+  }
+
+  /** 炮台：固定不动，38m 超远射程，开火前有瞄准线预警 */
+  _updateTurret(dt, ctx, dist, dx, dz) {
+    const tank = this.tank;
+    const player = ctx.player.group.position;
+    const aimYaw = Math.atan2(dx, dz);
+    const aimErr = tank.aimTowards(aimYaw, dt, 2.5);
+
+    // 瞄准线：有视线且进入射程时闪烁预警
+    if (this.sight) {
+      if (this.los && dist < 40) {
+        const p = this.position;
+        this.sight.visible = true;
+        this.sight.position.set((p.x + player.x) / 2, 1.3, (p.z + player.z) / 2);
+        this.sight.scale.set(1, 1, Math.max(0.1, dist));
+        this.sight.rotation.y = aimYaw;
+        this.sight.material.opacity = 0.2 + 0.16 * Math.abs(Math.sin(performance.now() / 170));
+      } else {
+        this.sight.visible = false;
+      }
+    }
+
+    if (this.los && dist < 38 && this.fireCd <= 0 && this.spawnShield <= 0 && aimErr < 0.2) {
+      this.fireCd = 2.6 + Math.random() * 0.8;
+      ctx.fire(tank, new THREE.Vector3(dx, 0, dz).normalize(), this.damage, 'enemy', {
+        speed: 46, color: 0xffe2a0, glow: 0xff8a2a, scale: 1.6,
+      });
+    }
+    this._updateBar();
+  }
+
+  /** 补给车：治疗 8m 内队友，玩家靠近就跑；击杀有额外分 */
+  _updateSupport(dt, ctx, dist, dx, dz) {
+    // 治疗光环
+    this.healT -= dt;
+    if (this.healT <= 0) {
+      this.healT = 1.2;
+      let healed = 0;
+      for (const e of ctx.enemies) {
+        if (e === this || !e.alive) continue;
+        if (e.position.distanceTo(this.position) < 8 && e.tank.hp < e.tank.maxHp) {
+          e.tank.hp = Math.min(e.tank.maxHp, e.tank.hp + 6);
+          healed++;
+        }
+      }
+      if (healed > 0) ctx.effects.explosion(this.position.clone().setY(1), 0x57d877, 6, 0.5);
+    }
+
+    // 移动：玩家 15m 内背向逃跑，否则缓慢徘徊
+    const p = this.position;
+    if (dist < 15) {
+      this._navigate(dt, ctx, p.x - (dx / dist) * 12, p.z - (dz / dist) * 12, 1);
+    } else {
+      if (!this.target || Math.hypot(this.target.x - p.x, this.target.z - p.z) < 3) {
+        const half = ctx.world.half;
+        this.target = new THREE.Vector3(
+          THREE.MathUtils.clamp(p.x + (Math.random() - 0.5) * 20, -half + 6, half - 6),
+          0,
+          THREE.MathUtils.clamp(p.z + (Math.random() - 0.5) * 20, -half + 6, half - 6)
+        );
+      }
+      this._navigate(dt, ctx, this.target.x, this.target.z, 0.5);
+    }
+    this.tank.aimTowards(Math.atan2(dx, dz), dt, 4);
     this._updateBar();
   }
 

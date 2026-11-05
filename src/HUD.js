@@ -1,5 +1,6 @@
 import { RARITY } from './upgrades.js';
 import { CHASSIS_LIST } from './chassis.js';
+import { loadCallsign, saveCallsign } from './daily.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -52,6 +53,13 @@ export class HUD {
     this.finalTime = $('final-time');
     this.newRecord = $('new-record');
     this.bestLine = $('best-line');
+    this.lb = $('lb');
+    this.lbList = $('lb-list');
+    this.lbTitle = $('lb-title');
+
+    // 呼号
+    this.callsignEl = $('callsign');
+    if (this.callsignEl) this.callsignEl.value = loadCallsign();
 
     this.msgTimer = 0;
     this._pickHandler = null;
@@ -98,8 +106,14 @@ export class HUD {
     }
   }
 
-  bind({ onStart, onRestart, onPick, onWeapon }) {
+  bind({ onStart, onDaily, onRestart, onPick, onWeapon }) {
     $('start-btn').addEventListener('click', () => onStart(this.selectedChassis));
+    if ($('daily-btn')) {
+      $('daily-btn').addEventListener('click', () => onStart(this.selectedChassis, { daily: true }));
+    }
+    if (this.callsignEl) {
+      this.callsignEl.addEventListener('change', () => saveCallsign(this.callsignEl.value.trim()));
+    }
     $('again-btn').addEventListener('click', onRestart);
     this._pickHandler = onPick;
     this._weaponHandler = onWeapon;
@@ -186,13 +200,30 @@ export class HUD {
     this.app.classList.add('playing');
   }
 
-  showGameOver({ wave, kills, score, time, best, isNew }) {
+  showGameOver({ wave, kills, score, time, best, isNew, daily, myName, leaderboard }) {
     this.finalWave.textContent = String(wave);
     this.finalKills.textContent = String(kills);
     this.finalScore.textContent = String(score);
     this.finalTime.textContent = time;
     this.newRecord.classList.toggle('hidden', !isNew);
     this.bestLine.textContent = `第 ${best.wave} 波 · ${best.score} 分`;
+
+    // 每日挑战排行榜
+    if (this.lb && this.lbList && this.lbTitle) {
+      const show = !!daily && Array.isArray(leaderboard) && leaderboard.length > 0;
+      this.lb.classList.toggle('hidden', !show);
+      if (show) {
+        this.lbTitle.textContent = daily ? '今日排行榜' : '排行榜';
+        this.lbList.innerHTML = '';
+        leaderboard.forEach((e, i) => {
+          const li = document.createElement('li');
+          if (myName && e.name === myName) li.className = 'me';
+          li.innerHTML = `<i>${i + 1}</i><b>${e.name}</b><span>第 ${e.wave} 波</span><em>${e.score}</em>`;
+          this.lbList.appendChild(li);
+        });
+      }
+    }
+
     this.gameover.classList.remove('hidden');
     this.hud.classList.add('hidden');
     this.crosshair.classList.add('hidden');

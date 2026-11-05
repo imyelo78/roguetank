@@ -89,12 +89,20 @@
         <div id="chassis-cards" class="chassis-cards"></div>
       </div>
 
+      <div class="callsign">
+        <span>呼号</span>
+        <input id="callsign" maxlength="12" placeholder="指挥官" autocomplete="off" />
+      </div>
+
       <div id="best" class="best hidden">
         <span>最佳记录</span>
         <b id="best-text">—</b>
       </div>
 
-      <button id="start-btn">开始战斗</button>
+      <div class="start-btns">
+        <button id="start-btn">开始战斗</button>
+        <button id="daily-btn">每日挑战</button>
+      </div>
       <p class="tip">每清完一波选择强化；每 3 波军械补给，每 5 波 Boss</p>
     </div>
   </div>
@@ -123,6 +131,11 @@
         <div><span>击杀</span><b id="final-kills">0</b></div>
         <div><span>得分</span><b id="final-score">0</b></div>
         <div><span>存活</span><b id="final-time">0:00</b></div>
+      </div>
+
+      <div id="lb" class="lb hidden">
+        <p id="lb-title" class="lb-title">今日排行榜</p>
+        <ol id="lb-list"></ol>
       </div>
 
       <button id="again-btn">再来一局</button>
