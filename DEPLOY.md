@@ -52,6 +52,26 @@ https://<项目名>.pages.dev
 
 之后每次推送到 `main` 都会自动部署；推送其他分支/PR 会生成预览地址。
 
+### 2.1 Cloudflare 看不到 / 无法读取仓库
+
+通常是 **Cloudflare Pages GitHub App 没有授予该仓库权限**，不是代码问题。按顺序检查：
+
+1. **安装或授权 GitHub App**  
+   打开 https://github.com/apps/cloudflare-pages/installations/new  
+   登录 `imyelo78` 账号 → 选择 **Only select repositories** → 勾选 `roguetank` → **Install / Save**。
+2. **已安装但没勾选仓库**  
+   打开 https://github.com/settings/installations → 找到 **Cloudflare Pages** → **Configure** → **Repository access** → 勾选 `roguetank` → **Save**。
+3. **确认 GitHub 账号一致**  
+   浏览器当前登录的 GitHub 必须是 `imyelo78`，或拥有该仓库权限的账号；否则 Cloudflare 只能看到那个账号名下的仓库。
+4. **组织仓库需要管理员批准**  
+   如果仓库属于 GitHub 组织，需要组织 Owner 在 **Organization settings → Third-party access / Installed GitHub Apps** 里批准 Cloudflare Pages，并授予该仓库访问权。
+5. **授权弹窗被拦截**  
+   关闭广告拦截/隐私插件，允许弹窗和第三方 Cookie，或换 Chrome 无痕窗口重试。
+6. **回到 Cloudflare 刷新列表**  
+   Workers & Pages → Create → Pages → Connect to Git → 刷新仓库列表；必要时先断开 GitHub 再重新连接。
+
+如果以上仍不行，直接用下面的 **GitHub Actions 备选方案**，不依赖 Cloudflare 读取仓库。
+
 ### 3. 多目录仓库（仓库根不是 tank3d-p0）
 
 如果 `tank3d-p0` 只是仓库里的一个子目录：
