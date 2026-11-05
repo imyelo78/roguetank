@@ -71,6 +71,36 @@ git push
 
 Cloudflare 自动构建，约 30~60 秒后线上生效。
 
+### 5. 备选：GitHub Actions 部署（Cloudflare 连不上 GitHub 时）
+
+如果 Cloudflare 面板一直无法授权/找不到仓库，可跳过 Git 集成，改用仓库自带的
+`.github/workflows/deploy.yml`：推送 `main` → GitHub Actions 构建 `dist/` → wrangler 上传到 Cloudflare Pages。
+
+只需要在 GitHub 仓库配置两个 Secrets：
+
+1. 获取 **Account ID**：Cloudflare Dashboard → **Workers & Pages**，右侧账户信息里可复制。
+2. 创建 **API Token**：Cloudflare Dashboard → 右上角头像 → **My Profile** → **API Tokens** → **Create Token**
+   - 权限：`Account` → `Cloudflare Pages` → `Edit`
+   - 账户资源：选择你的账户
+   - 创建后复制 Token（只显示一次）
+3. 打开 GitHub 仓库 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，添加：
+
+| Secret | 值 |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | 上一步创建的 Token |
+| `CLOUDFLARE_ACCOUNT_ID` | 你的 Cloudflare Account ID |
+
+4. 到仓库 **Actions** 标签，选择 **Deploy to Cloudflare Pages** → **Run workflow** 手动跑一次，或直接再推一次 `main`。
+
+工作流会自动创建名为 `roguetank` 的 Pages 项目并部署，之后地址是：
+
+```
+https://roguetank.pages.dev
+```
+
+> 如果 `Ensure Pages project` 这一步报“项目已存在”是正常的，`continue-on-error` 会忽略。
+> 如果部署仍提示项目不存在，先在 Cloudflare 面板用 **Upload assets** 建一个同名项目，再重跑工作流。
+
 ---
 
 ## 二、方式 B：拖拽上传（不接 GitHub）

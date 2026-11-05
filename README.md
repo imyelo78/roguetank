@@ -94,6 +94,7 @@ tank3d-p0/
 ├─ build.mjs           生成可部署的 dist/
 ├─ package.json        npm scripts（dev / build）
 ├─ .gitignore          忽略 dist、node_modules、wrangler 缓存
+├─ .github/workflows/  GitHub Actions 自动部署到 Cloudflare Pages
 ├─ DEPLOY.md           Cloudflare Pages 部署说明（含 GitHub 自动部署）
 ├─ vendor/three.module.js
 └─ src/
@@ -123,6 +124,10 @@ npm run build       # 生成 dist/（发布用）
 ## 发布
 
 推荐 GitHub + Cloudflare Pages 自动部署：推送到 `main` 即自动构建上线。
+
+- 面板能连接 GitHub：按 [DEPLOY.md](./DEPLOY.md) 的 Pages Git 集成配置。
+- 面板连不上 GitHub：仓库已内置 `.github/workflows/deploy.yml`，配好两个 Secrets 后由 GitHub Actions 自动部署。
+
 完整步骤见 [DEPLOY.md](./DEPLOY.md)。
 
 ## 后续可做
