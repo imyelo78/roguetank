@@ -78,6 +78,11 @@ export class Game {
     this.overTimer = 0;
     this.clearedTimer = 0;
 
+    // 反龟缩：连续静止检测与惩罚等级
+    this.campT = 0;
+    this.campLevel = 0;
+    this.campPos = null;
+
     this.stats = createStats();
     this.upgradeCounts = {};
     this.choices = [];
@@ -302,6 +307,9 @@ export class Game {
     this.waveTime = 0;
     this.strikeT = 18;
     this.clearedTimer = 0;
+    this.campT = 0;
+    this.campLevel = 0;
+    this.campPos = null;
     this.playerCd = 0;
     this.overTimer = 0;
     this.shake = 0;
@@ -352,6 +360,9 @@ export class Game {
     this.waveActive = true;
     this.waveTime = 0;
     this.strikeT = 18;
+    this.campT = 0;
+    this.campLevel = 0;
+    this.campPos = null;
     this.pending = [];
     this.playerCd = 0;
     this.heat = 0;
@@ -381,13 +392,17 @@ export class Game {
       this.hud.showMessage(`第 ${n} 波  ·  ${name} 来袭`, 2.2);
     } else {
       if (eliteWave) {
-        this.pending.push({
-          t: 1.2,
-          hp: Math.round(hp * 5.2),
-          speed: speed * 0.8,
-          type: 'elite',
-          warn: 1.1,
-        });
+        // 精英小队：2~3 辆错峰入场，单体血量相应下调（5.2x → 4x）
+        const eliteCount = this.wave >= 13 ? 3 : 2;
+        for (let i = 0; i < eliteCount; i++) {
+          this.pending.push({
+            t: 1.2 + i * 2.4,
+            hp: Math.round(hp * 4),
+            speed: speed * 0.8,
+            type: 'elite',
+            warn: 1.1,
+          });
+        }
       }
       for (let i = 0; i < count; i++) {
         this.pending.push({ t: i * 0.75, hp, speed, type: 'gunner' });
@@ -501,9 +516,14 @@ export class Game {
       w.mesh.scale.setScalar((w.radius / 1.85) * (0.72 + 0.34 * k));
 
       if (w.t <= 0) {
-        // 预警期间玩家可能开过来了：重新找远处落点，避免贴脸生成
+        // 生成前的硬校验：距离玩家或任何存活坦克过近就换点，杜绝贴脸刷
         const pp = this.player.group.position;
-        if (Math.hypot(pp.x - w.x, pp.z - w.z) < 20) {
+        const minPlayer = w.type.startsWith('boss_') ? 26 : 24;
+        const dPlayer = Math.hypot(pp.x - w.x, pp.z - w.z);
+        const dEnemy = this.enemies.some(
+          (e) => Math.hypot(e.position.x - w.x, e.position.z - w.z) < 9
+        );
+        if (dPlayer < minPlayer || dEnemy) {
           const boss = w.type.startsWith('boss_');
           const spot = boss ? this._findSpawnPoint(32, 44) : this._findSpawnPoint();
           w.x = spot.x;
@@ -518,6 +538,39 @@ export class Game {
         this.warnings.splice(i, 1);
         this._spawnEnemyAt(w.hp, w.speed, w.x, w.z, w.type);
       }
+    }
+  }
+
+  /**
+   * 反龟缩：玩家在波次进行中持续不动（<30% 正常移速）累计 3.2 秒即惩罚升级——
+   * 立即一轮压制炮击、缩短后续炮击间隔，2 级起刷冲锋兵，最高 3 级。移动即快速回落。
+   */
+  _updateCamp(dt) {
+    const p = this.player.group.position;
+    if (!this.campPos) this.campPos = p.clone();
+    const moved = Math.hypot(p.x - this.campPos.x, p.z - this.campPos.z);
+    this.campPos.copy(p);
+
+    const idle = this.waveActive && this.enemies.length > 0 &&
+      moved < this.player.speed * dt * 0.3;
+    if (idle) this.campT += dt;
+    else this.campT = Math.max(0, this.campT - dt * 2.5);
+
+    if (this.campT > 3.2) {
+      this.campT = 0;
+      this.campLevel = Math.min(3, this.campLevel + 1);
+      this.strikeT = Math.min(this.strikeT, 3.2 - this.campLevel * 0.7);
+      this._startStrike();
+
+      if (this.campLevel >= 2) {
+        const n = this.campLevel >= 3 ? 2 : 1;
+        const hp = Math.max(30, Math.round((55 + this.wave * 14) * 0.5));
+        const speed = 8.5 + Math.min(4.5, this.wave * 0.6);
+        for (let i = 0; i < n; i++) {
+          this._beginSpawn(hp, speed * 1.05, 'charger', 0.9);
+        }
+      }
+      this.hud.showMessage(`检测到龟缩 · 压制火力升级 ×${this.campLevel}`, 1.2);
     }
   }
 
@@ -590,7 +643,9 @@ export class Game {
 
       const p = this.player.group.position;
       if (this.player.alive && Math.hypot(p.x - s.x, p.z - s.z) < s.radius) {
-        const died = this.player.takeDamage(s.damage ?? 22);
+        const died = this.player.takeDamage(
+          Math.max(1, Math.round((s.damage ?? 22) * (this.stats.damageTakenMul ?? 1)))
+        );
         this.hud.hurt();
         this.hud.setHealth(this.player.hp, this.player.maxHp);
         if (died) this._onPlayerDeath();
@@ -615,7 +670,9 @@ export class Game {
 
     const p = this.player.group.position;
     if (this.player.alive && Math.hypot(p.x - pos.x, p.z - pos.z) < radius) {
-      const died = this.player.takeDamage(damage);
+      const died = this.player.takeDamage(
+        Math.max(1, Math.round(damage * (this.stats.damageTakenMul ?? 1)))
+      );
       this.hud.hurt();
       this.hud.setHealth(this.player.hp, this.player.maxHp);
       if (died) this._onPlayerDeath();
@@ -822,7 +879,11 @@ export class Game {
       if (!hitTarget) continue;
 
       b.hits.add(hitTarget);
-      const died = hitTarget.takeDamage(b.damage);
+      // 玩家受伤走减伤结算（反应装甲 / 壁垒协议）
+      const dmg = hitTarget === this.player
+        ? Math.max(1, Math.round(b.damage * (this.stats.damageTakenMul ?? 1)))
+        : b.damage;
+      const died = hitTarget.takeDamage(dmg);
       this.effects.spark(b.pos);
 
       // 高爆：命中后溅射（不重复伤害直接命中目标）
@@ -912,9 +973,9 @@ export class Game {
     const bonus = 150 + this.wave * 25;
     this.score += bonus;
 
-    // 清波回血
+    // 清波回血：基础 6 + 纳米修复加成
     const before = this.player.hp;
-    this.player.hp = Math.min(this.player.maxHp, this.player.hp + 6);
+    this.player.hp = Math.min(this.player.maxHp, this.player.hp + 6 + this.stats.waveHeal);
     const healed = Math.round(this.player.hp - before);
 
     this.hud.setScore(this.score);
@@ -1029,6 +1090,7 @@ export class Game {
       this.strikeT = 7;
       this._startStrike();
     }
+    this._updateCamp(dt);
 
     for (let i = this.pending.length - 1; i >= 0; i--) {
       this.pending[i].t -= dt;

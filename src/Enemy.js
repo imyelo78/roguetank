@@ -183,7 +183,7 @@ export class Enemy {
     if (this.repathT <= 0 || goalMoved) {
       this.repathT = 0.8 + Math.random() * 0.4;
       this.pathGoal.set(tx, 0, tz);
-      if (nav && !nav.clearWalk(p.x, p.z, tx, tz, 1.55)) {
+      if (nav && !nav.clearWalk(p.x, p.z, tx, tz, this.tank.radius)) {
         this.path = nav.findPath(p.x, p.z, tx, tz);
       } else {
         this.path = [];

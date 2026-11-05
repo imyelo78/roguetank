@@ -13,11 +13,13 @@ export function createStats() {
     fireRateMul: 1,
     bulletSpeedMul: 1,
     splashDamageMul: 1,
+    damageTakenMul: 1,
     speed: 15,
     maxHp: 120,
     multishot: 1,
     pierce: 0,
     explosive: 0,
+    waveHeal: 0,
     weaponId: 'assault',
     weaponMods: {},
   };
@@ -73,6 +75,21 @@ export const UPGRADES = [
     id: 'overload', name: '过载核心', icon: '🔥', rarity: 'epic', max: 1,
     desc: '伤害 +35%，射速 +20%',
     apply(s) { s.damageMul *= 1.35; s.fireRateMul *= 1.2; },
+  },
+  {
+    id: 'reactive', name: '反应装甲', icon: '💠', rarity: 'rare', max: 2,
+    desc: '受到的伤害 -12%',
+    apply(s) { s.damageTakenMul *= 0.88; },
+  },
+  {
+    id: 'nano', name: '纳米修复', icon: '🧬', rarity: 'common', max: 3,
+    desc: '每波清除额外修复 12 点装甲',
+    apply(s) { s.waveHeal += 12; },
+  },
+  {
+    id: 'bulwark', name: '壁垒协议', icon: '🏰', rarity: 'epic', max: 1,
+    desc: '受到的伤害 -22%，移动速度 -5%',
+    apply(s) { s.damageTakenMul *= 0.78; s.speed *= 0.95; },
   },
 ];
 

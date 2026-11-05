@@ -64,10 +64,25 @@ export function createNav(world) {
   const toCell = (v) => Math.max(0, Math.min(n - 1, Math.floor((v - origin) / CELL)));
   const cellCenter = (c) => origin + (c + 0.5) * CELL;
 
+  // 可走判定：格子矩形按坦克半径整体膨胀后与障碍 AABB 求交。
+  // 只采样中心点会让格角压进障碍、路径斜穿墙角，导致坦克卡在墙缝。
+  function cellRectBlocked(x0, x1, z0, z1) {
+    if (x0 < -half || x1 > half || z0 < -half || z1 > half) return true;
+    for (let i = 0; i < world.obstacles.length; i++) {
+      const b = world.obstacles[i].box;
+      if (x0 < b.max.x && x1 > b.min.x && z0 < b.max.z && z1 > b.min.z) return true;
+    }
+    return false;
+  }
+
   const walkable = new Uint8Array(n * n);
   for (let cz = 0; cz < n; cz++) {
     for (let cx = 0; cx < n; cx++) {
-      walkable[cellIndex(cx, cz)] = world.blocked(cellCenter(cx), cellCenter(cz), TANK_RADIUS) ? 0 : 1;
+      const x0 = origin + cx * CELL - TANK_RADIUS;
+      const x1 = origin + (cx + 1) * CELL + TANK_RADIUS;
+      const z0 = origin + cz * CELL - TANK_RADIUS;
+      const z1 = origin + (cz + 1) * CELL + TANK_RADIUS;
+      walkable[cellIndex(cx, cz)] = cellRectBlocked(x0, x1, z0, z1) ? 0 : 1;
     }
   }
 
