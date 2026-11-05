@@ -130,8 +130,8 @@ function buildBalanced(group, s, mats, hi) {
     for (let i = -1; i <= 1; i++) {
       add(group, BOX(s.hw - 0.36, 0.04, 0.05), mats.metal, 0, s.hy + s.hh * 0.5 + 0.06, -s.hl * 0.34 + i * 0.14);
     }
-    // 尾部排气
-    add(group, CYLZ(0.11, 0.13, 0.34, 8), mats.dark, -s.hw * 0.28, s.hy + 0.2, -s.hl * 0.5);
+    // 尾部排气（朝后伸出）
+    add(group, CYLZ(0.11, 0.13, 0.34, 8), mats.dark, -s.hw * 0.28, s.hy + 0.2, -s.hl * 0.5, 0, Math.PI, 0);
   }
 
   // ---- 炮塔：八角铸造塔 ----
@@ -151,7 +151,7 @@ function buildBalanced(group, s, mats, hi) {
     add(turret, CYLY(0.11, 0.13, 0.14, 8), mats.metal, 0.42, 0.5, 0.05);
     add(turret, CYLZ(0.045, 0.045, 0.85, 7), mats.dark, 0.42, 0.62, 0.05);
     // 天线
-    add(turret, CYLZ(0.018, 0.018, 1.1, 5), mats.dark, -0.56, 0.9, -0.42, -0.22, 0, 0.16);
+    add(turret, CYLZ(0.018, 0.018, 0.95, 5), mats.dark, -0.56, 0.44, -0.36, -0.2, 0, 0.14);
     // 烟幕弹发射器
     for (let i = 0; i < 3; i++) {
       add(turret, CYLZ(0.055, 0.055, 0.24, 6), mats.dark, 0.62 - i * 0.11, 0.2, -0.3, -0.5, 0, 0);
@@ -214,7 +214,7 @@ function buildLight(group, s, mats, hi) {
       add(turret, CYLZ(0.05, 0.05, 0.22, 6), mats.dark, -0.5 + i * 0.1, 0.16, -0.28, -0.55, 0, 0);
     }
     // 细长天线（后倾）
-    add(turret, CYLZ(0.015, 0.015, 1.25, 5), mats.dark, -0.36, 0.62, -0.34, -0.3, 0, 0.1);
+    add(turret, CYLZ(0.015, 0.015, 1.1, 5), mats.dark, -0.36, 0.33, -0.3, -0.26, 0, 0.1);
     // 驾驶员潜望镜
     add(group, BOX(0.34, 0.09, 0.12), mats.dark, 0.42, s.hy + s.hh * 0.5 + 0.06, s.hl * 0.3, 0.3);
     add(group, BOX(0.3, 0.05, 0.03), mats.glass, 0.42, s.hy + s.hh * 0.5 + 0.11, s.hl * 0.3 + 0.04, 0.3);
@@ -277,7 +277,7 @@ function buildHeavy(group, s, mats, hi) {
     // 12.7 机枪塔
     add(turret, CYLY(0.2, 0.24, 0.26, 10), mats.accent, 0.56, 0.54, 0.02);
     add(turret, CYLZ(0.05, 0.05, 1.0, 7), mats.dark, 0.56, 0.7, 0.02);
-    add(turret, CYLZ(0.02, 0.02, 1.5, 5), mats.dark, -0.7, 1.0, -0.5, -0.2, 0, 0.14);
+    add(turret, CYLZ(0.02, 0.02, 1.2, 5), mats.dark, -0.7, 0.52, -0.46, -0.18, 0, 0.12);
     // 烟幕弹
     for (let i = 0; i < 2; i++) {
       add(turret, CYLZ(0.07, 0.07, 0.28, 6), mats.dark, -0.72 - i * 0.0, 0.24, 0.4 + i * 0.24, -0.4, 0, 0);
@@ -317,7 +317,7 @@ function buildHunter(group, s, mats, hi) {
   }
   // 前部备用履带板
   for (let i = 0; i < 3; i++) {
-    add(group, BOX(0.5, 0.07, 0.16), mats.dark, -0.5 + i * 0.5, s.hy + 0.5, s.hl * 0.44, 0.66);
+    add(group, BOX(0.5, 0.07, 0.16), mats.dark, -0.5 + i * 0.5, s.hy + 0.42, s.hl * 0.44, 0.66);
   }
 
   // ---- 战斗室（作为炮塔组，可随瞄准转动）----
@@ -337,7 +337,7 @@ function buildHunter(group, s, mats, hi) {
     add(turret, BOX(0.28, 0.1, 0.16), mats.dark, -0.34, 0.48, 0.1);
     add(turret, BOX(0.24, 0.05, 0.02), mats.glass, -0.34, 0.5, 0.19);
     // 天线
-    add(turret, CYLZ(0.016, 0.016, 1.35, 5), mats.dark, -0.62, 0.5, -0.62, -0.16, 0, 0.12);
+    add(turret, CYLZ(0.016, 0.016, 1.15, 5), mats.dark, -0.62, 0.42, -0.58, -0.15, 0, 0.12);
     // 伪装沙袋（车体前部）
     for (let i = 0; i < 3; i++) {
       const bag = add(group, SPH(0.2), mats.accent, -0.42 + i * 0.42, s.hy + 0.48, s.hl * 0.42 + (i % 2) * 0.06);
