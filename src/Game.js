@@ -7,6 +7,7 @@ import { Effects } from './Effects.js';
 import { HUD } from './HUD.js';
 import { createStats, UPGRADES, rollChoices } from './upgrades.js';
 import { WEAPONS, resolveWeapon } from './weapons.js';
+import { CHASSIS } from './chassis.js';
 import { createNav } from './nav.js';
 
 const TMP = new THREE.Vector3();
@@ -84,6 +85,7 @@ export class Game {
     this.campPos = null;
 
     this.stats = createStats();
+    this.chassisId = 'balanced';
     this.upgradeCounts = {};
     this.choices = [];
     this.weaponChoices = [];
@@ -167,11 +169,12 @@ export class Game {
       this.scene.remove(this.player.group);
       this.player = null;
     }
+    const c = CHASSIS[this.chassisId] || CHASSIS.balanced;
     this.player = new Tank(this.scene, {
       team: 'player',
-      body: 0x8fae5c,
-      accent: 0x53682f,
-      metal: 0x3a4048,
+      body: c.colors.body,
+      accent: c.colors.accent,
+      metal: c.colors.metal,
       hp: this.stats.maxHp,
       speed: this.stats.speed,
       x: PLAYER_START.x,
@@ -188,6 +191,13 @@ export class Game {
 
     window.addEventListener('keydown', (e) => {
       const k = e.key.toLowerCase();
+
+      // 开始菜单：1~4 选车体
+      if (this.state === 'menu' && ['1', '2', '3', '4'].includes(k)) {
+        this.hud.selectChassis(Number(k) - 1);
+        e.preventDefault();
+        return;
+      }
 
       // 强化选择：1 / 2 / 3
       if (this.state === 'reward' && (k === '1' || k === '2' || k === '3')) {
@@ -251,7 +261,7 @@ export class Game {
     window.addEventListener('resize', () => this.resize());
 
     this.hud.bind({
-      onStart: () => this.start(),
+      onStart: (id) => this.start(id),
       onRestart: () => this.restart(),
       onPick: (id) => this.pickUpgrade(id),
       onWeapon: (id) => this.pickWeapon(id),
@@ -291,7 +301,7 @@ export class Game {
   }
 
   _resetRun() {
-    this.stats = createStats();
+    this.stats = createStats(this.chassisId);
     this.upgradeCounts = {};
     this.choices = [];
     this.weaponChoices = [];
@@ -328,7 +338,8 @@ export class Game {
     this.hud.setBest(this.best);
   }
 
-  start() {
+  start(chassisId) {
+    if (chassisId && CHASSIS[chassisId]) this.chassisId = chassisId;
     this._clearField();
     this._resetRun();
 
@@ -341,11 +352,12 @@ export class Game {
     this.hud.startPlaying();
     this.state = 'playing';
     this.aimMarker.visible = true;
+    this.hud.showMessage(`${CHASSIS[this.chassisId].name} · 出击`, 1.2);
     this.startWave(1);
   }
 
   restart() {
-    this.start();
+    this.start(this.chassisId);
   }
 
   startWave(n) {
@@ -919,6 +931,12 @@ export class Game {
     this.effects.explosion(enemy.position.clone().setY(1.1), 0xff8a3d, enemy.isBoss ? 48 : 20, enemy.isBoss ? 1.9 : 1.15);
     this.scene.remove(enemy.tank.group);
     this.kills += 1;
+
+    // 猎手型：击杀回甲
+    if (this.stats.killHeal > 0 && this.player.alive && this.player.hp < this.player.maxHp) {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.stats.killHeal);
+      this.hud.setHealth(this.player.hp, this.player.maxHp);
+    }
 
     if (enemy.isBoss) {
       this.score += 1200 + this.wave * 80;

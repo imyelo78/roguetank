@@ -1,4 +1,5 @@
 import { RARITY } from './upgrades.js';
+import { CHASSIS_LIST } from './chassis.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -54,10 +55,49 @@ export class HUD {
     this._pickHandler = null;
     this._weaponHandler = null;
     this._panelKind = 'upgrade';
+
+    // 车体选择
+    this.chassisEl = $('chassis-cards');
+    this.selectedChassis = 'balanced';
+    this.renderChassis();
+  }
+
+  /** 渲染开始菜单的车体选择卡（1~4 或点击） */
+  renderChassis() {
+    if (!this.chassisEl) return;
+    this.chassisEl.innerHTML = '';
+    CHASSIS_LIST.forEach((c, i) => {
+      const perk = c.perks?.damageTakenMul
+        ? `受伤 -${Math.round((1 - c.perks.damageTakenMul) * 100)}%`
+        : c.perks?.killHeal
+          ? `击杀回甲 +${c.perks.killHeal}`
+          : '无特性';
+      const btn = document.createElement('button');
+      btn.className = 'chassis-card' + (c.id === this.selectedChassis ? ' sel' : '');
+      btn.dataset.id = c.id;
+      btn.innerHTML = `
+        <span class="chassis-key">${i + 1}</span>
+        <span class="chassis-icon">${c.icon}</span>
+        <b>${c.name}</b>
+        <i>装甲 ${c.hp} · 移速 ${c.speed}</i>
+        <em>${c.tag} · ${perk}</em>
+      `;
+      btn.addEventListener('click', () => this.selectChassis(i));
+      this.chassisEl.appendChild(btn);
+    });
+  }
+
+  selectChassis(index) {
+    const c = CHASSIS_LIST[index];
+    if (!c) return;
+    this.selectedChassis = c.id;
+    for (const el of this.chassisEl.children) {
+      el.classList.toggle('sel', el.dataset.id === c.id);
+    }
   }
 
   bind({ onStart, onRestart, onPick, onWeapon }) {
-    $('start-btn').addEventListener('click', onStart);
+    $('start-btn').addEventListener('click', () => onStart(this.selectedChassis));
     $('again-btn').addEventListener('click', onRestart);
     this._pickHandler = onPick;
     this._weaponHandler = onWeapon;

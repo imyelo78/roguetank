@@ -1,5 +1,6 @@
 // 肉鸽强化系统
 import { WEAPONS, weaponCards } from './weapons.js';
+import { CHASSIS } from './chassis.js';
 
 export const RARITY = {
   common: { label: '常规', color: '#93a7b8' },
@@ -7,19 +8,22 @@ export const RARITY = {
   epic: { label: '史诗', color: '#c07bff' },
 };
 
-export function createStats() {
+export function createStats(chassisId = 'balanced') {
+  const c = CHASSIS[chassisId] || CHASSIS.balanced;
   return {
     damageMul: 1,
     fireRateMul: 1,
     bulletSpeedMul: 1,
     splashDamageMul: 1,
-    damageTakenMul: 1,
-    speed: 15,
-    maxHp: 120,
+    damageTakenMul: c.perks?.damageTakenMul ?? 1,
+    speed: c.speed,
+    maxHp: c.hp,
     multishot: 1,
     pierce: 0,
     explosive: 0,
     waveHeal: 0,
+    killHeal: c.perks?.killHeal ?? 0,
+    chassisId: c.id,
     weaponId: 'assault',
     weaponMods: {},
   };

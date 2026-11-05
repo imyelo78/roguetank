@@ -472,6 +472,69 @@ html, body {
 }
 .keys span { margin-left: 8px; color: #7a8e9f; }
 
+/* ---------- 车体选择 ---------- */
+.chassis-block { margin-bottom: 22px; }
+.chassis-title {
+  font-size: 13px;
+  letter-spacing: .1em;
+  color: var(--amber-soft);
+  margin-bottom: 10px;
+}
+.chassis-title span { color: var(--muted); letter-spacing: 0; }
+.chassis-title kbd {
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 11px;
+}
+.chassis-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.chassis-card {
+  position: relative;
+  padding: 10px 8px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .03);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: center;
+  font-family: inherit;
+  transition: border-color .15s ease, background .15s ease, transform .15s ease;
+}
+.chassis-card:hover { background: rgba(255, 166, 61, .08); transform: translateY(-1px); }
+.chassis-card.sel {
+  border-color: var(--amber);
+  background: rgba(255, 166, 61, .12);
+  box-shadow: 0 0 0 1px var(--amber), 0 6px 18px rgba(255, 166, 61, .15);
+}
+.chassis-card .chassis-key {
+  position: absolute;
+  top: 5px; left: 7px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.chassis-card.sel .chassis-key { color: var(--amber); }
+.chassis-card .chassis-icon { font-size: 20px; display: block; margin-bottom: 3px; }
+.chassis-card b { display: block; font-size: 13px; letter-spacing: .04em; }
+.chassis-card i {
+  display: block;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.chassis-card em {
+  display: block;
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--amber-soft);
+  margin-top: 2px;
+}
+.start-panel { width: min(92vw, 520px); }
+
 kbd {
   display: inline-block;
   min-width: 26px;
