@@ -231,6 +231,13 @@ export class HUD {
       this.callsignEl.addEventListener('input', () => {
         if (this.callsignEl.value.trim()) this.setCallsignError('');
       });
+      // 呼号框里按 Enter 直接出击（走和按钮完全一致的校验流程）
+      this.callsignEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          $('start-btn')?.click();
+        }
+      });
     }
     $('lb-open')?.addEventListener('click', () => this.openLeaderboard());
     $('lb-close')?.addEventListener('click', () => this.closeLeaderboard());

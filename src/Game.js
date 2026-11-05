@@ -206,7 +206,23 @@ export class Game {
   _initInput() {
     const moveKeys = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 
+    // 焦点在输入框（呼号）时，键盘事件必须完整交还给浏览器，
+    // 否则 WASD / 空格 / 数字 会被下面的 preventDefault 吃掉，打不出字。
+    const isTyping = (e) => {
+      const t = e.target;
+      if (!t) return false;
+      const tag = t.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!t.isContentEditable;
+    };
+
     window.addEventListener('keydown', (e) => {
+      if (isTyping(e) || e.isComposing) {
+        // 顺便清掉可能残留的移动状态，避免输入时坦克还在跑
+        this.keys.clear();
+        this.firing = false;
+        return;
+      }
+
       const k = e.key.toLowerCase();
 
       // M 键静音
@@ -382,6 +398,12 @@ export class Game {
   }
 
   start(chassisId, opts = {}) {
+    // 出击时收回输入框焦点并清空按键，避免呼号框吃掉游戏按键 / 菜单按键残留
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur?.();
+    }
+    this.keys.clear();
+    this.firing = false;
     if (chassisId && CHASSIS[chassisId]) this.chassisId = chassisId;
     this.daily = !!opts.daily;
     if (opts.name) this.callsign = opts.name;
