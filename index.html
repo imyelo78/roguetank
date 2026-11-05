@@ -91,8 +91,9 @@
 
       <div class="callsign">
         <span>呼号</span>
-        <input id="callsign" maxlength="12" placeholder="指挥官" autocomplete="off" />
+        <input id="callsign" maxlength="12" placeholder="必填，如 铁骑01" autocomplete="off" />
       </div>
+      <p id="callsign-err" class="callsign-err hidden"></p>
 
       <div id="best" class="best hidden">
         <span>最佳记录</span>
@@ -103,7 +104,9 @@
         <button id="start-btn">开始战斗</button>
         <button id="daily-btn">每日挑战</button>
       </div>
-      <p class="tip">每清完一波选择强化；每 3 波军械补给，每 5 波 Boss</p>
+      <p class="tip">
+        <a id="lb-open" class="link">查看排行榜</a> · 每清完一波选择强化；每 3 波军械补给，每 5 波 Boss
+      </p>
     </div>
   </div>
 
@@ -117,6 +120,23 @@
       </div>
       <div id="cards" class="cards"></div>
       <p class="reward-hint">点击卡片，或按 <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></p>
+    </div>
+  </div>
+
+  <!-- ================= 排行榜 ================= -->
+  <div id="lb-panel" class="overlay hidden">
+    <div class="panel lb-panel">
+      <h2>排行榜</h2>
+      <p class="lb-sub">
+        <span id="lb-sub">—</span> · <span id="lb-source" class="lb-source">—</span>
+      </p>
+      <div class="lb-tabs">
+        <button class="lb-tab sel" data-view="day">今日</button>
+        <button class="lb-tab" data-view="all">总榜</button>
+        <button class="lb-tab" data-view="history">历史每日</button>
+      </div>
+      <ol id="lb-body" class="lb-list"></ol>
+      <button id="lb-close" class="ghost-btn">关闭</button>
     </div>
   </div>
 

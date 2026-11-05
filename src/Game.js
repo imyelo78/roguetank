@@ -277,7 +277,7 @@ export class Game {
     window.addEventListener('resize', () => this.resize());
 
     this.hud.bind({
-      onStart: (id) => this.start(id),
+      onStart: (id, opts) => this.start(id, opts || {}),
       onDaily: (id, opts) => this.start(id, opts || { daily: true }),
       onRestart: () => this.restart(),
       onPick: (id) => this.pickUpgrade(id),
@@ -372,6 +372,7 @@ export class Game {
   start(chassisId, opts = {}) {
     if (chassisId && CHASSIS[chassisId]) this.chassisId = chassisId;
     this.daily = !!opts.daily;
+    if (opts.name) this.callsign = opts.name;
     this._setSeedMode(this.daily);
     this.sound.unlock();
     this._clearField();
@@ -404,7 +405,9 @@ export class Game {
   }
 
   restart() {
-    this.start(this.chassisId, { daily: this.daily });
+    const opts = { name: this.callsign };
+    if (this.daily) opts.daily = true;
+    this.start(this.chassisId, opts);
   }
 
   startWave(n) {
@@ -1282,11 +1285,11 @@ export class Game {
     return { prev, best, isNew };
   }
 
-  /** 每日挑战结算：上传成绩并拉取今日排行榜 */
+  /** 每日挑战结算：上传成绩并拉取今日榜 + 历史总榜 */
   async _finishDaily(base) {
-    const name = loadCallsign() || '指挥官';
+    const name = this.callsign || loadCallsign() || '指挥官';
     try {
-      const { list } = await submitScore({
+      const res = await submitScore({
         date: todayKey(),
         name,
         wave: base.wave,
@@ -1297,7 +1300,8 @@ export class Game {
         ...base,
         daily: true,
         myName: name,
-        leaderboard: (list || []).slice(0, 5),
+        leaderboard: (res.list || []).slice(0, 5),
+        overall: (res.all || []).slice(0, 5),
       });
     } catch {
       this.hud.showGameOver(base);

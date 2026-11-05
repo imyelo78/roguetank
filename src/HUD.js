@@ -1,6 +1,6 @@
 import { RARITY } from './upgrades.js';
 import { CHASSIS_LIST } from './chassis.js';
-import { loadCallsign, saveCallsign } from './daily.js';
+import { loadCallsign, saveCallsign, todayKey, fetchSummary, fetchDay } from './daily.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -60,6 +60,18 @@ export class HUD {
     // 呼号
     this.callsignEl = $('callsign');
     if (this.callsignEl) this.callsignEl.value = loadCallsign();
+    this.callsignErr = $('callsign-err');
+
+    // 排行榜面板
+    this.lbPanel = $('lb-panel');
+    this.lbBody = $('lb-body');
+    this.lbSub = $('lb-sub');
+    this.lbSource = $('lb-source');
+    this.lbTabButtons = Array.from(document.querySelectorAll('.lb-tab[data-view]'));
+    this._lbView = 'day';
+    this._lbDate = '';
+    this._lbAll = [];
+    this._lbDays = [];
 
     this.msgTimer = 0;
     this._pickHandler = null;
@@ -106,14 +118,144 @@ export class HUD {
     }
   }
 
+  /** 呼号校验提示 */
+  setCallsignError(msg) {
+    if (!this.callsignErr) return;
+    this.callsignErr.textContent = msg || '';
+    this.callsignErr.classList.toggle('hidden', !msg);
+  }
+
+  // ---------------- 排行榜面板 ----------------
+
+  /** 打开排行榜：默认今日，可切总榜 / 历史每日 */
+  async openLeaderboard() {
+    if (!this.lbPanel) return;
+    this.lbPanel.classList.remove('hidden');
+    this._lbView = 'day';
+    this._lbDate = todayKey();
+    this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
+    this.lbSub.textContent = this._lbDate;
+    this.lbBody.innerHTML = '<li class="lb-empty">读取中…</li>';
+
+    const [summary] = await Promise.all([fetchSummary()]);
+    this._lbDays = summary.days || [];
+    this.lbSource.textContent = summary.remote ? '全服' : '本机（未绑定 KV）';
+    this.renderDayBoard();
+  }
+
+  closeLeaderboard() {
+    this.lbPanel?.classList.add('hidden');
+  }
+
+  async renderDayBoard() {
+    if (!this._lbDate) return;
+    this.lbSub.textContent = this._lbDate;
+    const { list, remote } = await fetchDay(this._lbDate);
+    this.lbSource.textContent = remote ? '全服' : '本机（未绑定 KV）';
+    this.renderBoardList(list || [], `${this._lbDate} 战绩`);
+  }
+
+  renderSummaryBoard() {
+    this.lbSub.textContent = '全部历史';
+    this.renderBoardList(this._lbAll || [], '历史总榜', true);
+  }
+
+  renderHistoryBoard() {
+    const days = this._lbDays || [];
+    this.lbSub.textContent = `${days.length} 天有战绩`;
+    this.lbBody.innerHTML = '';
+    if (days.length === 0) {
+      this.lbBody.innerHTML = '<li class="lb-empty">还没有任何战绩</li>';
+      return;
+    }
+    days.forEach((d, i) => {
+      const li = document.createElement('li');
+      li.className = 'lb-day';
+      li.innerHTML = `<i>${i + 1}</i><b>${d}</b><span>查看当日战绩</span>`;
+      li.addEventListener('click', () => {
+        this._lbDate = d;
+        this._lbView = 'day';
+        this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
+        this.renderDayBoard();
+      });
+      this.lbBody.appendChild(li);
+    });
+  }
+
+  renderBoardList(list, title = '', overall = false) {
+    this.lbBody.innerHTML = '';
+    if (!list || list.length === 0) {
+      this.lbBody.innerHTML = `<li class="lb-empty">${title}暂无记录</li>`;
+      return;
+    }
+    const me = (loadCallsign() || '').trim();
+    list.slice(0, 20).forEach((e, i) => {
+      const li = document.createElement('li');
+      if (me && e.name === me) li.className = 'me';
+      li.innerHTML = `<i>${i + 1}</i><b>${e.name}</b><span>第 ${e.wave} 波</span><em>${e.score}</em>`;
+      this.lbBody.appendChild(li);
+    });
+  }
+
   bind({ onStart, onDaily, onRestart, onPick, onWeapon }) {
-    $('start-btn').addEventListener('click', () => onStart(this.selectedChassis));
+    // 开局强制填写呼号：空值就地提示，不弹窗打断
+    const ensureName = () => {
+      const name = (this.callsignEl?.value || '').trim();
+      if (name) {
+        saveCallsign(name);
+        this.setCallsignError('');
+        return name;
+      }
+      this.setCallsignError('先填一个呼号再出击');
+      this.callsignEl?.focus();
+      this.callsignEl?.classList.add('shake');
+      setTimeout(() => this.callsignEl?.classList.remove('shake'), 420);
+      return null;
+    };
+
+    $('start-btn').addEventListener('click', () => {
+      const name = ensureName();
+      if (name) onStart(this.selectedChassis, { name });
+    });
     if ($('daily-btn')) {
-      $('daily-btn').addEventListener('click', () => onStart(this.selectedChassis, { daily: true }));
+      $('daily-btn').addEventListener('click', () => {
+        const name = ensureName();
+        if (name) onStart(this.selectedChassis, { daily: true, name });
+      });
     }
     if (this.callsignEl) {
-      this.callsignEl.addEventListener('change', () => saveCallsign(this.callsignEl.value.trim()));
+      this.callsignEl.addEventListener('change', () => {
+        const v = this.callsignEl.value.trim();
+        if (v) { saveCallsign(v); this.setCallsignError(''); }
+      });
+      this.callsignEl.addEventListener('input', () => {
+        if (this.callsignEl.value.trim()) this.setCallsignError('');
+      });
     }
+    $('lb-open')?.addEventListener('click', () => this.openLeaderboard());
+    $('lb-close')?.addEventListener('click', () => this.closeLeaderboard());
+    this.lbTabButtons.forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        this.lbTabButtons.forEach((b) => b.classList.toggle('sel', b === btn));
+        const view = btn.dataset.view;
+        if (view === 'day') {
+          this._lbDate = todayKey();
+          this.renderDayBoard();
+        } else if (view === 'all') {
+          const s = await fetchSummary();
+          this._lbAll = s.all || [];
+          this._lbDays = s.days || [];
+          this.lbSource.textContent = s.remote ? '全服' : '本机（未绑定 KV）';
+          this.renderSummaryBoard();
+        } else {
+          const s = await fetchSummary();
+          this._lbAll = s.all || [];
+          this._lbDays = s.days || this._lbDays;
+          this.lbSource.textContent = s.remote ? '全服' : '本机（未绑定 KV）';
+          this.renderHistoryBoard();
+        }
+      });
+    });
     $('again-btn').addEventListener('click', onRestart);
     this._pickHandler = onPick;
     this._weaponHandler = onWeapon;
@@ -200,7 +342,7 @@ export class HUD {
     this.app.classList.add('playing');
   }
 
-  showGameOver({ wave, kills, score, time, best, isNew, daily, myName, leaderboard }) {
+  showGameOver({ wave, kills, score, time, best, isNew, daily, myName, leaderboard, overall }) {
     this.finalWave.textContent = String(wave);
     this.finalKills.textContent = String(kills);
     this.finalScore.textContent = String(score);
@@ -208,19 +350,29 @@ export class HUD {
     this.newRecord.classList.toggle('hidden', !isNew);
     this.bestLine.textContent = `第 ${best.wave} 波 · ${best.score} 分`;
 
-    // 每日挑战排行榜
+    // 每日挑战：今日 Top5 + 历史总榜
     if (this.lb && this.lbList && this.lbTitle) {
-      const show = !!daily && Array.isArray(leaderboard) && leaderboard.length > 0;
-      this.lb.classList.toggle('hidden', !show);
-      if (show) {
-        this.lbTitle.textContent = daily ? '今日排行榜' : '排行榜';
-        this.lbList.innerHTML = '';
-        leaderboard.forEach((e, i) => {
-          const li = document.createElement('li');
-          if (myName && e.name === myName) li.className = 'me';
-          li.innerHTML = `<i>${i + 1}</i><b>${e.name}</b><span>第 ${e.wave} 波</span><em>${e.score}</em>`;
-          this.lbList.appendChild(li);
-        });
+      const hasDay = !!daily && Array.isArray(leaderboard) && leaderboard.length > 0;
+      const hasAll = !!daily && Array.isArray(overall) && overall.length > 0;
+      this.lb.classList.toggle('hidden', !(hasDay || hasAll));
+      this.lbList.innerHTML = '';
+      if (hasDay || hasAll) {
+        this.lbTitle.textContent = '今日排行榜';
+        const render = (list, label) => {
+          if (!list || !list.length) return;
+          const head = document.createElement('li');
+          head.className = 'lb-group';
+          head.textContent = label;
+          this.lbList.appendChild(head);
+          list.slice(0, 5).forEach((e, i) => {
+            const li = document.createElement('li');
+            if (myName && e.name === myName) li.className = 'me';
+            li.innerHTML = `<i>${i + 1}</i><b>${e.name}</b><span>第 ${e.wave} 波</span><em>${e.score}</em>`;
+            this.lbList.appendChild(li);
+          });
+        };
+        render(leaderboard, '今日');
+        render(overall, '历史总榜');
       }
     }
 

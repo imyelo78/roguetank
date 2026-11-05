@@ -1,12 +1,15 @@
-// 每日挑战：日期种子确定性随机 + 分数上传/排行榜（远端 KV 失败时回退 localStorage）
+// 每日挑战：日期种子确定性随机 + 分数上传 / 排行榜（远端 KV 失败时回退 localStorage）
 
-const LB_KEY = 'tank3d.daily.lb.v1';
+const LB_KEY = 'tank3d.daily.lb.v2';   // { days: { 'YYYY-MM-DD': [entry] }, all: [entry] }
 const NAME_KEY = 'tank3d.name.v1';
 
-/** 当日日期键（本地时区）YYYY-MM-DD */
-export function todayKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/**
+ * 当日日期键 YYYY-MM-DD，固定用 UTC+8，
+ * 与后端 functions/api/scores.js 保持一致（避免时区导致跨日对不上榜）。
+ */
+export function todayKey(offsetDays = 0) {
+  const t = Date.now() + 8 * 3600 * 1000 + offsetDays * 86400000;
+  return new Date(t).toISOString().slice(0, 10);
 }
 
 /** 字符串哈希 → uint32 种子（FNV-1a） */
@@ -34,30 +37,63 @@ export function loadCallsign() {
 }
 
 export function saveCallsign(name) {
-  try { localStorage.setItem(NAME_KEY, name.slice(0, 12)); } catch { /* 忽略 */ }
+  try { localStorage.setItem(NAME_KEY, name.trim().slice(0, 12)); } catch { /* 忽略 */ }
 }
 
-function localList(date) {
-  try { return JSON.parse(localStorage.getItem(LB_KEY))?.[date] || []; } catch { return []; }
-}
+// ---------------- 本地兜底存储 ----------------
 
-function localSave(date, list) {
+function readLocal() {
   try {
-    const all = JSON.parse(localStorage.getItem(LB_KEY)) || {};
-    all[date] = list.slice(0, 50);
-    localStorage.setItem(LB_KEY, JSON.stringify(all));
+    const v = JSON.parse(localStorage.getItem(LB_KEY));
+    if (v && typeof v === 'object' && v.days) return v;
   } catch { /* 忽略 */ }
+  return { days: {}, all: [] };
 }
+
+function writeLocal(data) {
+  try { localStorage.setItem(LB_KEY, JSON.stringify(data)); } catch { /* 忽略 */ }
+}
+
+const sortDesc = (a, b) => b.score - a.score || b.wave - a.wave || (a.t || 0) - (b.t || 0);
+
+/** 同呼号只保留最高分，返回 Top50 */
+export function mergeEntry(list, entry) {
+  const prev = list.find((e) => e.name === entry.name);
+  // 已有更高分（或同分但更靠前）则保留原成绩
+  if (prev && (prev.score > entry.score ||
+      (prev.score === entry.score && (prev.wave || 0) >= (entry.wave || 0)))) {
+    return list;
+  }
+  const rest = list.filter((e) => e.name !== entry.name);
+  rest.push(entry);
+  rest.sort(sortDesc);
+  return rest.slice(0, 50);
+}
+
+function localSubmit({ date, name, wave, kills, score }) {
+  const data = readLocal();
+  const entry = { name, wave, kills, score, t: Date.now() };
+  data.days[date] = mergeEntry(data.days[date] || [], entry);
+  data.all = mergeEntry(data.all, entry);
+  // 只保留最近 120 天
+  const keys = Object.keys(data.days).sort().reverse().slice(0, 120);
+  const trimmed = {};
+  for (const k of keys) trimmed[k] = data.days[k];
+  data.days = trimmed;
+  writeLocal(data);
+  return data;
+}
+
+const localDays = (local) => Object.keys(local.days).sort().reverse();
+
+// ---------------- 对外接口 ----------------
 
 /**
- * 提交成绩：先更新本地，再尝试远端（Cloudflare Pages Function + KV）。
- * 返回 { list, remote }
+ * 提交当日成绩。本地始终写入，再尝试远端。
+ * @returns {{ list: object[], all: object[], days: string[], remote: boolean }}
  */
 export async function submitScore({ date, name, wave, kills, score }) {
-  const local = localList(date).filter((e) => e.name !== name || e.score < score);
-  local.push({ name: name || '指挥官', wave, kills, score, t: Date.now() });
-  local.sort((a, b) => b.score - a.score || b.wave - a.wave);
-  localSave(date, local);
+  const local = localSubmit({ date, name, wave, kills, score });
 
   try {
     const r = await fetch('/api/scores', {
@@ -67,14 +103,27 @@ export async function submitScore({ date, name, wave, kills, score }) {
     });
     if (r.ok) {
       const data = await r.json();
-      if (data.ok && Array.isArray(data.list)) return { list: data.list, remote: true };
+      if (data.ok && Array.isArray(data.list)) {
+        return {
+          list: data.list,
+          all: data.all || local.all,
+          days: data.days || localDays(local),
+          remote: true,
+        };
+      }
     }
-  } catch { /* 无后端/离线，走本地 */ }
-  return { list: local, remote: false };
+  } catch { /* 无后端 / 离线，用本地 */ }
+
+  return {
+    list: local.days[date] || [],
+    all: local.all,
+    days: localDays(local),
+    remote: false,
+  };
 }
 
-/** 拉取排行榜：远端优先，失败回退本地 */
-export async function fetchLeaderboard(date) {
+/** 拉取某天战绩 */
+export async function fetchDay(date) {
   try {
     const r = await fetch(`/api/scores?date=${encodeURIComponent(date)}`);
     if (r.ok) {
@@ -82,5 +131,27 @@ export async function fetchLeaderboard(date) {
       if (data.ok && Array.isArray(data.list)) return { list: data.list, remote: true };
     }
   } catch { /* 回退 */ }
-  return { list: localList(date), remote: false };
+  const local = readLocal();
+  return { list: local.days[date] || [], remote: false };
 }
+
+/** 拉取总榜 + 已有战绩的日期列表 */
+export async function fetchSummary() {
+  try {
+    const r = await fetch('/api/scores?view=all');
+    if (r.ok) {
+      const data = await r.json();
+      if (data.ok) {
+        return {
+          all: Array.isArray(data.all) ? data.all : [],
+          days: Array.isArray(data.days) ? data.days : [],
+          remote: true,
+        };
+      }
+    }
+  } catch { /* 回退 */ }
+  const local = readLocal();
+  return { all: local.all, days: localDays(local), remote: false };
+}
+
+export { sortDesc };
