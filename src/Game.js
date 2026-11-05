@@ -12,9 +12,14 @@ import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
 import { todayKey, seedFromKey, mulberry32, loadCallsign, submitScore } from './daily.js';
 import { createNav } from './nav.js';
+import { Minimap } from './minimap.js';
 
 const TMP = new THREE.Vector3();
 const TMP2 = new THREE.Vector3();
+const TMP3 = new THREE.Vector3();
+// 相机：高度 26 / 后拉 31 → 俯角约 39°，比原来的 48° 更低平，压近地面更有临场感
+const CAM_HEIGHT = 26;
+const CAM_BACK = 31;
 const BEST_KEY = 'tank3d.best.v1';
 const WARN_GEO = new THREE.RingGeometry(1.68, 2.0, 32);
 
@@ -128,7 +133,7 @@ export class Game {
     this.scene.fog = new THREE.Fog(0x172430, 95, 215);
 
     this.camera = new THREE.PerspectiveCamera(52, 1, 0.1, 420);
-    this.camera.position.set(0, 28, 52);
+    this.camera.position.set(0, CAM_HEIGHT + 1, 52);
 
     const hemi = new THREE.HemisphereLight(0xcfe4f5, 0x4a5240, 1.25);
     this.scene.add(hemi);
@@ -151,6 +156,13 @@ export class Game {
     this.world = createLevel(this.scene);
     this.nav = createNav(this.world);
     this.effects = new Effects(this.scene);
+
+    // 小地图（静态障碍烘焙一次）
+    const mapEl = document.getElementById('minimap');
+    this.minimap = mapEl
+      ? new Minimap(mapEl, this.world, { size: window.innerWidth < 720 ? 124 : 168 })
+      : null;
+    this.mapAcc = 0;
 
     // 瞄准指示环
     const ring = new THREE.Mesh(
@@ -391,7 +403,7 @@ export class Game {
     this.hud.setModifier(this.mods);
 
     this._resetPlayer();
-    this.camera.position.set(PLAYER_START.x, 28, PLAYER_START.z + 26);
+    this.camera.position.set(PLAYER_START.x, CAM_HEIGHT, PLAYER_START.z + CAM_BACK);
     this.camLook.set(PLAYER_START.x, 1, PLAYER_START.z);
     this.aimPoint.set(PLAYER_START.x, 0, PLAYER_START.z - 10);
     this.hud.setHealth(this.player.hp, this.player.maxHp);
@@ -414,7 +426,8 @@ export class Game {
     this.wave = n;
     const bossWave = n % 5 === 0;
     const eliteWave = !bossWave && (n % 5 === 3 || this.mods.eliteEveryWave);
-    const count = 2 + n * 2 - (n % 5 === 3 ? 2 : 0);
+    // 战场扩大到 200×200 后，每波追加少量敌人，避免密度被摊薄
+    const count = 2 + n * 2 + Math.min(6, Math.floor(n / 2)) - (n % 5 === 3 ? 2 : 0);
     const hp = Math.round((55 + n * 14) * this.mods.enemyHpMul);
     const speed = 8.5 + Math.min(4.5, n * 0.6);
     const chargers = n >= 2 && !bossWave ? Math.min(6, Math.floor(n / 2)) : 0;
@@ -1310,11 +1323,11 @@ export class Game {
 
   _updateCamera(dt) {
     const p = this.player.group.position;
-    const target = TMP.set(p.x, 27, p.z + 23);
+    const target = TMP.set(p.x, CAM_HEIGHT, p.z + CAM_BACK);
     const k = 1 - Math.exp(-5.5 * dt);
     this.camera.position.lerp(target, k);
 
-    this.camLook.lerp(new THREE.Vector3(p.x, 1.1, p.z), 1 - Math.exp(-8 * dt));
+    this.camLook.lerp(TMP3.set(p.x, 1.1, p.z), 1 - Math.exp(-8 * dt));
     this.camera.lookAt(this.camLook);
 
     if (this.shake > 0) {
@@ -1326,9 +1339,26 @@ export class Game {
     }
   }
 
+  /** 小地图：12 帧/秒刷新即可，节流降低开销 */
+  _updateMinimap(dt) {
+    if (!this.minimap) return;
+    this.mapAcc += dt;
+    if (this.mapAcc < 0.08) return;
+    this.mapAcc = 0;
+
+    const p = this.player && this.player.alive ? this.player.group.position : null;
+    this.minimap.update({
+      player: p ? { x: p.x, z: p.z, rot: this.player.group.rotation.y } : null,
+      enemies: this.enemies,
+      strikes: this.strikes,
+      warnings: this.warnings,
+    });
+  }
+
   // ------------------------------------------------------------------
   update(dt) {
     this.hud.update(dt);
+    this._updateMinimap(dt);
 
     if (this.state === 'playing') {
       this.runTime += dt;

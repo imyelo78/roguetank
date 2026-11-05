@@ -1,6 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 
-export const HALF = 74;          // 可行驶半边长
+export const HALF = 100;         // 可行驶半边长（200×200 战场）
 export const PLAYER_START = new THREE.Vector3(0, 0, 26);
 
 function mulberry32(a) {
@@ -43,7 +43,7 @@ function groundTexture() {
 
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(37, 37);
+  tex.repeat.set(49, 49);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   return tex;
@@ -66,6 +66,20 @@ function addBox(scene, obstacles, x, z, w, h, d, color, matCache) {
   return mesh;
 }
 
+function addVisual(scene, x, z, w, h, d, color, matCache) {
+  let mat = matCache.get(color);
+  if (!mat) {
+    mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.08 });
+    matCache.set(color, mat);
+  }
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, h / 2, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  return mesh;
+}
+
 export function createLevel(scene) {
   const obstacles = [];
   const matCache = new Map();
@@ -82,13 +96,30 @@ export function createLevel(scene) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // ---- 外围围墙 ----
-  const wallH = 9;
-  const wallT = 3;
-  addBox(scene, obstacles, 0, -HALF - wallT, HALF * 2 + wallT * 2, wallH, wallT, '#7e8794', matCache);
-  addBox(scene, obstacles, 0, HALF + wallT, HALF * 2 + wallT * 2, wallH, wallT, '#7e8794', matCache);
-  addBox(scene, obstacles, -HALF - wallT, 0, wallT, wallH, HALF * 2 + wallT * 2, '#7e8794', matCache);
-  addBox(scene, obstacles, HALF + wallT, 0, wallT, wallH, HALF * 2 + wallT * 2, '#7e8794', matCache);
+  // ---- 远景底板：铺到雾里，低视角时不会看到地图"断崖"（去掉高墙后的必要补丁） ----
+  const farGround = new THREE.Mesh(
+    new THREE.PlaneGeometry(1400, 1400),
+    new THREE.MeshStandardMaterial({ color: 0x3b4534, roughness: 1, metalness: 0 })
+  );
+  farGround.rotation.x = -Math.PI / 2;
+  farGround.position.y = -0.08;
+  scene.add(farGround);
+
+  // ---- 外围边界：低矮界桩（0.8m，不遮挡视线；也不进碰撞表，边界由坐标钳制） ----
+  const edgeH = 0.8;
+  const edgeT = 2.2;
+  const edgeLen = HALF * 2 + edgeT * 2;
+  addVisual(scene, 0, -HALF - edgeT / 2, edgeLen, edgeH, edgeT, '#6d7683', matCache);
+  addVisual(scene, 0, HALF + edgeT / 2, edgeLen, edgeH, edgeT, '#6d7683', matCache);
+  addVisual(scene, -HALF - edgeT / 2, 0, edgeT, edgeH, edgeLen, '#6d7683', matCache);
+  addVisual(scene, HALF + edgeT / 2, 0, edgeT, edgeH, edgeLen, '#6d7683', matCache);
+
+  // 边界顶灯带（暗琥珀，远处能看出战场范围，但完全不挡视线）
+  const bevelH = 0.1;
+  addVisual(scene, 0, -HALF - edgeT / 2, edgeLen, bevelH, edgeT * 0.6, '#9a7f42', matCache);
+  addVisual(scene, 0, HALF + edgeT / 2, edgeLen, bevelH, edgeT * 0.6, '#9a7f42', matCache);
+  addVisual(scene, -HALF - edgeT / 2, 0, edgeT * 0.6, bevelH, edgeLen, '#9a7f42', matCache);
+  addVisual(scene, HALF + edgeT / 2, 0, edgeT * 0.6, bevelH, edgeLen, '#9a7f42', matCache);
 
   // ---- 手工摆放：中央掩体群 ----
   const fixed = [
@@ -98,6 +129,15 @@ export function createLevel(scene) {
     [-34, 24, 8, 5, 8, '#818b99'],
     [34, 24, 8, 5, 8, '#818b99'],
     [0, 44, 18, 3.5, 4, '#8a8a6a'],
+    // 外围掩体群（扩大战场后的战术点）
+    [-64, -36, 14, 6, 6, '#8b95a3'],
+    [64, -36, 14, 6, 6, '#8b95a3'],
+    [-70, 52, 10, 4.5, 10, '#818b99'],
+    [70, 52, 10, 4.5, 10, '#818b99'],
+    [0, -72, 22, 5, 4, '#8a8a6a'],
+    [-30, 78, 8, 3.2, 8, '#858f7a'],
+    [30, -50, 6, 4, 12, '#929aa6'],
+    [-6, 62, 10, 2.8, 8, '#7f8b7c'],
   ];
   for (const [x, z, w, h, d, c] of fixed) addBox(scene, obstacles, x, z, w, h, d, c, matCache);
 
@@ -106,7 +146,7 @@ export function createLevel(scene) {
   const colors = ['#9a8a6c', '#7f9070', '#8e929c', '#a08a70'];
   const placed = [];
   let guard = 0;
-  while (placed.length < 16 && guard++ < 400) {
+  while (placed.length < 30 && guard++ < 700) {
     const x = (rnd() * 2 - 1) * (HALF - 12);
     const z = (rnd() * 2 - 1) * (HALF - 12);
     // 玩家出生点与中央通路保持空旷
@@ -124,14 +164,14 @@ export function createLevel(scene) {
 
   // ---- 出生点 ----
   const spawnPoints = [
-    new THREE.Vector3(-58, 0, -58),
-    new THREE.Vector3(58, 0, -58),
-    new THREE.Vector3(-58, 0, 58),
-    new THREE.Vector3(58, 0, 58),
-    new THREE.Vector3(0, 0, -62),
-    new THREE.Vector3(-62, 0, 0),
-    new THREE.Vector3(62, 0, 0),
-    new THREE.Vector3(0, 0, 62),
+    new THREE.Vector3(-82, 0, -82),
+    new THREE.Vector3(82, 0, -82),
+    new THREE.Vector3(-82, 0, 82),
+    new THREE.Vector3(82, 0, 82),
+    new THREE.Vector3(0, 0, -88),
+    new THREE.Vector3(-88, 0, 0),
+    new THREE.Vector3(88, 0, 0),
+    new THREE.Vector3(0, 0, 88),
   ];
 
   return {

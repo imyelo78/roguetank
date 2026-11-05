@@ -86,6 +86,11 @@ export function createNav(world) {
     }
   }
 
+  // A* 复用缓冲区（大地图下每帧寻路可省去大量临时分配）
+  const gScore = new Float32Array(n * n);
+  const cameFrom = new Int32Array(n * n);
+  const closed = new Uint8Array(n * n);
+
   function isWalkableCell(cx, cz) {
     if (cx < 0 || cz < 0 || cx >= n || cz >= n) return false;
     return walkable[cellIndex(cx, cz)] === 1;
@@ -159,9 +164,9 @@ export function createNav(world) {
     }
 
     const total = n * n;
-    const gScore = new Float32Array(total).fill(Infinity);
-    const cameFrom = new Int32Array(total).fill(-1);
-    const closed = new Uint8Array(total);
+    gScore.fill(Infinity);
+    cameFrom.fill(-1);
+    closed.fill(0);
 
     const h = (cx, cz) => {
       const dx = Math.abs(cx - goal[0]);
