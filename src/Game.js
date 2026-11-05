@@ -8,6 +8,8 @@ import { HUD } from './HUD.js';
 import { createStats, UPGRADES, rollChoices } from './upgrades.js';
 import { WEAPONS, resolveWeapon } from './weapons.js';
 import { CHASSIS } from './chassis.js';
+import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
+import { Sound } from './sound.js';
 import { createNav } from './nav.js';
 
 const TMP = new THREE.Vector3();
@@ -86,6 +88,8 @@ export class Game {
 
     this.stats = createStats();
     this.chassisId = 'balanced';
+    this.mods = { ...MODIFIER_DEFAULTS };
+    this.sound = new Sound();
     this.upgradeCounts = {};
     this.choices = [];
     this.weaponChoices = [];
@@ -191,6 +195,17 @@ export class Game {
 
     window.addEventListener('keydown', (e) => {
       const k = e.key.toLowerCase();
+
+      // M 键静音
+      if (k === 'm' && !e.repeat) {
+        const muted = this.sound.toggleMute();
+        this.sound.unlock();
+        if (this.state === 'playing' || this.state === 'menu') {
+          this.hud.showMessage(muted ? '音效 关' : '音效 开', 0.8);
+        }
+        e.preventDefault();
+        return;
+      }
 
       // 开始菜单：1~4 选车体
       if (this.state === 'menu' && ['1', '2', '3', '4'].includes(k)) {
@@ -340,8 +355,21 @@ export class Game {
 
   start(chassisId) {
     if (chassisId && CHASSIS[chassisId]) this.chassisId = chassisId;
+    this.sound.unlock();
     this._clearField();
     this._resetRun();
+
+    // 本局挑战词条
+    this.mods = rollModifier();
+    this.stats.fireRateMul *= this.mods.fireRateMul;
+    if (this.mods.fogNear) {
+      this.scene.fog.near = this.mods.fogNear;
+      this.scene.fog.far = this.mods.fogFar;
+    } else {
+      this.scene.fog.near = 95;
+      this.scene.fog.far = 215;
+    }
+    this.hud.setModifier(this.mods);
 
     this._resetPlayer();
     this.camera.position.set(PLAYER_START.x, 28, PLAYER_START.z + 26);
@@ -352,7 +380,8 @@ export class Game {
     this.hud.startPlaying();
     this.state = 'playing';
     this.aimMarker.visible = true;
-    this.hud.showMessage(`${CHASSIS[this.chassisId].name} · 出击`, 1.2);
+    const c = CHASSIS[this.chassisId];
+    this.hud.showMessage(`${c.name} · 出击 ｜ ${this.mods.icon} ${this.mods.name} · ${this.mods.desc}`, 2.6);
     this.startWave(1);
   }
 
@@ -363,15 +392,15 @@ export class Game {
   startWave(n) {
     this.wave = n;
     const bossWave = n % 5 === 0;
-    const eliteWave = !bossWave && n % 5 === 3;
-    const count = 2 + n * 2 - (eliteWave ? 2 : 0);
-    const hp = 55 + n * 14;
+    const eliteWave = !bossWave && (n % 5 === 3 || this.mods.eliteEveryWave);
+    const count = 2 + n * 2 - (n % 5 === 3 ? 2 : 0);
+    const hp = Math.round((55 + n * 14) * this.mods.enemyHpMul);
     const speed = 8.5 + Math.min(4.5, n * 0.6);
     const chargers = n >= 2 && !bossWave ? Math.min(6, Math.floor(n / 2)) : 0;
 
     this.waveActive = true;
     this.waveTime = 0;
-    this.strikeT = 18;
+    this.strikeT = 18;   // 每波前 18 秒喘息，之后按词条间隔炮击
     this.campT = 0;
     this.campLevel = 0;
     this.campPos = null;
@@ -382,6 +411,7 @@ export class Game {
     this.hud.setHeat(0, false, !!WEAPONS[this.stats.weaponId].heat);
 
     if (bossWave) {
+      this.sound.bossIn();
       const breaker = Math.floor(n / 5) % 2 === 1;
       const type = breaker ? 'boss_breaker' : 'boss_prism';
       const name = breaker ? '破城者' : '棱镜';
@@ -606,6 +636,7 @@ export class Game {
     mesh.scale.setScalar(radius / 1.85);
     this.scene.add(mesh);
     this.strikes.push({ x, z, t: 1.6, dur: 1.6, radius, mesh });
+    this.sound.warn();
     this.hud.showMessage('炮击锁定 · 立刻转移', 0.9);
   }
 
@@ -632,6 +663,7 @@ export class Game {
       this.scene.add(mesh);
       this.strikes.push({ x, z, t: 1.25, dur: 1.25, radius, damage: 18, mesh });
     }
+    this.sound.warn();
     this.hud.showMessage('攻城炮击 · 离开红圈', 1.1);
   }
 
@@ -651,6 +683,7 @@ export class Game {
 
       const hit = new THREE.Vector3(s.x, 1.2, s.z);
       this.effects.explosion(hit, 0xffb040, 34, 1.5);
+      this.sound.explosion(1.4);
       this.shake = Math.max(this.shake, 0.55);
 
       const p = this.player.group.position;
@@ -659,6 +692,7 @@ export class Game {
           Math.max(1, Math.round((s.damage ?? 22) * (this.stats.damageTakenMul ?? 1)))
         );
         this.hud.hurt();
+        this.sound.hurt();
         this.hud.setHealth(this.player.hp, this.player.maxHp);
         if (died) this._onPlayerDeath();
       }
@@ -678,6 +712,7 @@ export class Game {
     this.hud.setKills(this.kills);
     this.hud.setScore(this.score);
     this.effects.explosion(pos.clone().setY(1), 0xff9a3d, 26, 1.3);
+    this.sound.explosion(1.2);
     this.shake = Math.max(this.shake, 0.4);
 
     const p = this.player.group.position;
@@ -686,6 +721,7 @@ export class Game {
         Math.max(1, Math.round(damage * (this.stats.damageTakenMul ?? 1)))
       );
       this.hud.hurt();
+      this.sound.hurt();
       this.hud.setHealth(this.player.hp, this.player.maxHp);
       if (died) this._onPlayerDeath();
     }
@@ -710,6 +746,7 @@ export class Game {
     }));
     this.effects.muzzle(pos, dir);
     tank.recoil();
+    this.sound.shoot(team, opts.weaponKind);
     if (team === 'player') this.shake = Math.max(this.shake, 0.1);
   }
 
@@ -732,6 +769,7 @@ export class Game {
         color: w.color,
         glow: w.glow,
         scale: w.scale,
+        weaponKind: w.weapon.id,
       });
     }
   }
@@ -789,6 +827,7 @@ export class Game {
         if (this.heat >= 1) {
           this.heat = 1;
           this.overheated = true;
+          this.sound.overheat();
           this.hud.showMessage('炮管过热 · 停火冷却', 1.1);
         }
       }
@@ -847,6 +886,7 @@ export class Game {
     );
 
     this.effects.explosion(pos.clone().setY(Math.max(0.4, pos.y)), 0xffb040, 16 + level * 6, 1.05 + level * 0.15);
+    this.sound.explosion(0.8 + level * 0.25);
 
     for (const e of victims) {
       const died = e.tank.takeDamage(damage);
@@ -897,6 +937,7 @@ export class Game {
         : b.damage;
       const died = hitTarget.takeDamage(dmg);
       this.effects.spark(b.pos);
+      this.sound.hit();
 
       // 高爆：命中后溅射（不重复伤害直接命中目标）
       if (b.explosive > 0) {
@@ -906,6 +947,7 @@ export class Game {
       if (hitTarget === this.player) {
         this.shake = Math.max(this.shake, 0.25);
         this.hud.hurt();
+        this.sound.hurt();
         this.hud.setHealth(this.player.hp, this.player.maxHp);
         if (died) this._onPlayerDeath();
       } else if (died) {
@@ -929,6 +971,7 @@ export class Game {
     const enemy = this.enemies[idx];
     this.enemies.splice(idx, 1);
     this.effects.explosion(enemy.position.clone().setY(1.1), 0xff8a3d, enemy.isBoss ? 48 : 20, enemy.isBoss ? 1.9 : 1.15);
+    this.sound.explosion(enemy.isBoss ? 1.9 : enemy.isElite ? 1.2 : 0.9);
     this.scene.remove(enemy.tank.group);
     this.kills += 1;
 
@@ -939,16 +982,16 @@ export class Game {
     }
 
     if (enemy.isBoss) {
-      this.score += 1200 + this.wave * 80;
+      this.score += Math.round((1200 + this.wave * 80) * this.mods.killScoreMul);
       this.shake = Math.max(this.shake, 0.85);
       this.hud.showMessage(`${enemy.bossName} 已击破`, 1.8);
       this.hud.hideBossBar();
     } else if (enemy.isElite) {
-      this.score += 450;
+      this.score += Math.round((450 + this.mods.eliteScoreBonus) * this.mods.killScoreMul);
       this.shake = Math.max(this.shake, 0.3);
-      this.hud.showMessage('精英击破  +450', 1.1);
+      this.hud.showMessage(`精英击破  +${Math.round((450 + this.mods.eliteScoreBonus) * this.mods.killScoreMul)}`, 1.1);
     } else {
-      this.score += 100;
+      this.score += Math.round(100 * this.mods.killScoreMul);
       this.shake = Math.max(this.shake, 0.12);
     }
 
@@ -964,6 +1007,8 @@ export class Game {
     this._clearHazards();
     this.hud.hideBossBar();
     this.effects.explosion(this.player.group.position.clone().setY(1), 0xffb347, 30, 1.5);
+    this.sound.explosion(1.6);
+    this.sound.hurt();
     this.shake = 0.8;
     this.hud.showMessage('装甲被击穿', 1.6);
     this.hud.setHealth(0, this.player.maxHp);
@@ -988,13 +1033,15 @@ export class Game {
     this._clearHazards();
     this.hud.hideBossBar();
 
-    const bonus = 150 + this.wave * 25;
+    const bonus = Math.round((150 + this.wave * 25) * this.mods.waveBonusMul);
     this.score += bonus;
 
     // 清波回血：基础 6 + 纳米修复加成
     const before = this.player.hp;
     this.player.hp = Math.min(this.player.maxHp, this.player.hp + 6 + this.stats.waveHeal);
     const healed = Math.round(this.player.hp - before);
+
+    this.sound.clear();
 
     this.hud.setScore(this.score);
     this.hud.setHealth(this.player.hp, this.player.maxHp);
@@ -1005,7 +1052,7 @@ export class Game {
   }
 
   _showReward() {
-    const allowArmory = this.wave % 3 === 0 && this.unlocked.length < Object.keys(WEAPONS).length;
+    const allowArmory = this.wave % this.mods.armoryEvery === 0 && this.unlocked.length < Object.keys(WEAPONS).length;
     this.choices = rollChoices(this.upgradeCounts, 3, {
       weaponId: this.stats.weaponId,
       allowArmory,
@@ -1017,6 +1064,7 @@ export class Game {
       this.startWave(this.wave + 1);
       return;
     }
+    this.sound.clear();
     this.hud.showRewards(this.wave, this.choices, this.upgradeCounts);
   }
 
@@ -1029,6 +1077,7 @@ export class Game {
     const upgrade = this.choices.find((u) => u.id === id);
     if (!upgrade) return;
 
+    this.sound.select();
     upgrade.apply(this.stats, this.player);
 
     this.upgradeCounts[upgrade.id] = (this.upgradeCounts[upgrade.id] || 0) + 1;
@@ -1063,6 +1112,7 @@ export class Game {
   pickWeapon(id) {
     if (this.state !== 'armory') return;
     if (!this.weaponChoices.some((w) => w.id === id)) return;
+    this.sound.select();
     if (!this.unlocked.includes(id)) this.unlocked.push(id);
     this.equipWeapon(id);
     this.hud.hideRewards();
@@ -1105,7 +1155,7 @@ export class Game {
     this.waveTime += dt;
     this.strikeT -= dt;
     if (this.wave >= 2 && this.strikeT <= 0) {
-      this.strikeT = 7;
+      this.strikeT = this.mods.strikeInterval;
       this._startStrike();
     }
     this._updateCamp(dt);

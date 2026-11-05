@@ -156,6 +156,19 @@ html, body {
 
 .hud-center { text-align: center; }
 
+/* 挑战词条标签 */
+.modifier {
+  margin-top: 6px;
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: .04em;
+  color: var(--amber-soft);
+  background: rgba(255, 166, 61, .1);
+  border: 1px solid rgba(255, 166, 61, .25);
+  border-radius: 6px;
+  padding: 3px 10px;
+}
+
 .wave-chip {
   display: inline-flex;
   flex-direction: column;

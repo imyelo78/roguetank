@@ -43,6 +43,8 @@ export class HUD {
     this.bossFill = $('boss-fill');
     this._bossKind = null;
 
+    this.modifierEl = $('modifier');
+
     this.gameover = $('gameover');
     this.finalWave = $('final-wave');
     this.finalKills = $('final-kills');
@@ -264,6 +266,17 @@ export class HUD {
   }
 
   setWave(n) { this.waveEl.textContent = String(n); }
+
+  /** 顶部显示本局挑战词条 */
+  setModifier(mod) {
+    if (!this.modifierEl) return;
+    if (mod && mod.id) {
+      this.modifierEl.textContent = `${mod.icon} ${mod.name} · ${mod.desc}`;
+      this.modifierEl.classList.remove('hidden');
+    } else {
+      this.modifierEl.classList.add('hidden');
+    }
+  }
   setLeft(n) { this.leftEl.textContent = String(n); }
   setKills(n) { this.killsEl.textContent = String(n); }
   setScore(n) { this.scoreEl.textContent = String(n); }
