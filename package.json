@@ -1,0 +1,15 @@
+{
+  "name": "tank3d-rogue",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "钢铁突击 · 3D 坦克肉鸽生存（Three.js，纯静态，可部署 Cloudflare Pages）",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node server.mjs",
+    "build": "node build.mjs",
+    "preview": "node server.mjs"
+  }
+}

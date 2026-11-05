@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#0a0e12" />
+<title>钢铁突击 · 3D 坦克肉鸽</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+  <div id="vignette"></div>
+  <div id="crosshair" class="hidden"></div>
+
+  <!-- ================= HUD ================= -->
+  <div id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="hud-left">
+        <div class="hp-row">
+          <span class="label">装甲</span>
+          <span id="hp-text" class="hp-text">120 / 120</span>
+        </div>
+        <div class="bar">
+          <div id="hp-ghost" class="ghost"></div>
+          <div id="hp-fill" class="fill"></div>
+        </div>
+        <div id="chips" class="chips"></div>
+      </div>
+
+      <div class="hud-center">
+        <div class="wave-chip">
+          <span class="wave-label">WAVE</span>
+          <b id="wave">1</b>
+          <i class="enemy-left">剩余 <em id="left">0</em></i>
+        </div>
+      </div>
+
+      <div class="hud-right">
+        <div class="stat"><span>击杀</span><b id="kills">0</b></div>
+        <div class="stat"><span>得分</span><b id="score">0</b></div>
+      </div>
+    </div>
+
+    <div id="boss-bar" class="boss-bar hidden">
+      <div class="boss-head">
+        <span class="boss-tag">BOSS</span>
+        <b id="boss-name">破城者</b>
+        <span id="boss-hp-text">0 / 0</span>
+      </div>
+      <div class="boss-track">
+        <i id="boss-fill"></i>
+      </div>
+    </div>
+
+    <div class="weapon-hud">
+      <div class="weapon-line">
+        <span id="weapon-icon">🎯</span>
+        <b id="weapon-name">突击炮</b>
+        <i id="weapon-tag">均衡</i>
+      </div>
+      <div class="reload"><div id="reload-fill"></div></div>
+      <div id="heat-row" class="heat-row hidden">
+        <span>热量</span>
+        <div class="heat-bar"><i id="heat-fill"></i></div>
+      </div>
+    </div>
+    <div id="center-msg" class="center-msg"></div>
+  </div>
+
+  <!-- ================= 开始界面 ================= -->
+  <div id="overlay" class="overlay">
+    <div class="panel start-panel">
+      <div class="logo-line"></div>
+      <h1>钢铁突击</h1>
+      <p class="sub">3D 坦克 · 肉鸽生存</p>
+
+      <ul class="keys">
+        <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>驾驶</span></li>
+        <li><kbd>鼠标</kbd><span>炮塔瞄准</span></li>
+        <li><kbd>左键</kbd><kbd>空格</kbd><span>开炮</span></li>
+        <li><kbd>Q</kbd><span>切换已解锁主炮</span></li>
+        <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><span>选择强化</span></li>
+      </ul>
+
+      <div id="best" class="best hidden">
+        <span>最佳记录</span>
+        <b id="best-text">—</b>
+      </div>
+
+      <button id="start-btn">开始战斗</button>
+      <p class="tip">每清完一波选择强化；每 3 波军械补给，每 5 波 Boss</p>
+    </div>
+  </div>
+
+  <!-- ================= 强化三选一 ================= -->
+  <div id="reward" class="overlay hidden">
+    <div class="reward-panel">
+      <div class="reward-head">
+        <span class="reward-kicker">WAVE <b id="reward-wave">1</b> CLEAR</span>
+        <h2 id="reward-title">选择强化</h2>
+        <p id="reward-sub" class="reward-sub">本波已清除，装甲已修复 6 点</p>
+      </div>
+      <div id="cards" class="cards"></div>
+      <p class="reward-hint">点击卡片，或按 <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></p>
+    </div>
+  </div>
+
+  <!-- ================= 结算 ================= -->
+  <div id="gameover" class="overlay hidden">
+    <div class="panel">
+      <h2 class="fail">阵地失守</h2>
+      <p id="new-record" class="new-record hidden">★ 新纪录 ★</p>
+
+      <div class="stats-grid">
+        <div><span>抵达波次</span><b id="final-wave">1</b></div>
+        <div><span>击杀</span><b id="final-kills">0</b></div>
+        <div><span>得分</span><b id="final-score">0</b></div>
+        <div><span>存活</span><b id="final-time">0:00</b></div>
+      </div>
+
+      <button id="again-btn">再来一局</button>
+      <p class="tip">最佳 <b id="best-line">—</b></p>
+    </div>
+  </div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

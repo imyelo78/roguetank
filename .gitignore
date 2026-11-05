@@ -1,0 +1,12 @@
+# 构建产物由 Cloudflare Pages 在部署时生成
+dist/
+
+# 依赖与本地工具缓存
+node_modules/
+.wrangler/
+.dev.vars
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
