@@ -14,6 +14,10 @@
 一个 Node 进程同时提供页面、榜单、联机，**同源**，所以前端不需要配任何服务器地址。
 Nginx 只负责 TLS、gzip、限流和缓存头。
 
+> **服务器上有宝塔面板？** 不要跑本文的 `deploy/bootstrap.sh`——它会用 apt 装第二套 Nginx 去抢
+> 80/443，和宝塔自带的 `/www/server/nginx` 打架。宝塔的完整步骤见
+> [部署手册.md](./部署手册.md) 第 3 章（Node 项目 + 反代补 `Connection "upgrade"` + 一键证书）。
+
 > 历史包袱：早期版本部署在 Cloudflare Worker + Durable Object 上，那套代码（`worker/`、
 > `wrangler.toml`、KV 榜单）已从仓库移除。现在唯一支持的线上形态就是本文这一种。
 

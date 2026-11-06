@@ -79,6 +79,23 @@ function cacheHeaders(filePath, stat) {
   };
 }
 
+/**
+ * 允许对外访问的路径白名单。
+ *
+ * 为什么要白名单而不是黑名单：这个进程的根目录就是站点目录，里面同时躺着
+ * server/、deploy/、test/、.data/scores.json。黑名单一旦漏一个名字（比如以后
+ * 加了 scripts/），源码和榜单就直接可下载了。白名单的默认结论是"不给看"，
+ * 新加目录不会自动暴露。
+ */
+const PUBLIC_FILES = new Set([
+  '/index.html', '/styles.css', '/preview.jpg',
+  '/favicon.ico', '/robots.txt', '/site.webmanifest',
+]);
+const PUBLIC_DIRS = ['/src/', '/vendor/', '/assets/'];
+
+/** rel 是已解码、已归一化的绝对路径 */
+const isPublicPath = (rel) => PUBLIC_FILES.has(rel) || PUBLIC_DIRS.some((d) => rel.startsWith(d));
+
 async function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let rel;
@@ -91,6 +108,14 @@ async function serveStatic(req, res) {
     return;
   }
   if (rel === '/' || rel === '') rel = '/index.html';
+
+  // 必须在白名单判断之前归一化：否则 /src/../.data/scores.json 会因为
+  // 前缀是 /src/ 而被放行，join 之后却正好指向榜单文件。
+  rel = path.posix.normalize(rel);
+  if (!isPublicPath(rel)) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('404 Not Found');
+    return;
+  }
 
   const filePath = path.join(root, rel);
   // 路径穿越防护：必须有分隔符边界，否则 /srv/roguetank-evil 也能通过前缀判断
