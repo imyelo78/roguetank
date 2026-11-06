@@ -1613,6 +1613,10 @@ export class Game {
 
     this.net.on('deny', (m) => {
       const text = m.text || '连接被拒绝';
+      // 被拒绝也是一次连接尝试的终点：必须解锁，否则下一次点"加入"会被防连点挡住，
+      // 表现就是"输错一次码之后，再输什么都不动了"。
+      hud._joining = false;
+      clearTimeout(this._joinTimer);
       if (this.mode === 'coop') {
         // 已在局内被拒（房间已散），直接回主菜单并说明原因
         this.leaveCoop();
@@ -1620,6 +1624,8 @@ export class Game {
         return;
       }
       hud.setLobbyError(text);
+      // 状态栏还留着"正在加入 XXXX…"会和失败提示打架，清掉
+      hud.lobbyStatus.textContent = '';
       hud.lobbyChoose.classList.remove('hidden');
       hud.lobbyWait.classList.add('hidden');
       hud.lobby.classList.remove('hidden');
@@ -1641,7 +1647,7 @@ export class Game {
         this.leaveCoop();
         return;
       }
-      if (wasJoining) this._coopOffline();
+      if (wasJoining && !this.net.lastDeny) this._coopOffline();
     });
   }
 
@@ -1660,9 +1666,12 @@ export class Game {
     if (this.net && this.net.state !== 'idle') this.net.close();
 
     const custom = new URLSearchParams(location.search).get('ws');
+    // 把实际尝试的地址写进提示：排障时第一句话就能看出连的是哪个服务器，
+    // 不用再猜"它到底连了哪里"。
+    const target = custom || `${location.host}/ws`;
     const hint = custom
-      ? `连不上联机服务（${custom}）：确认服务端已启动，且端口可被访问`
-      : '连不上联机服务：网页版是静态托管，房间服务器要单独跑（npm start），或用 ?ws=主机:端口 指向服务端';
+      ? `连不上联机服务（${target}）：确认服务端已启动，且该端口可从外网访问`
+      : `连不上联机服务（${target}）：这个地址上没有房间服务。本机请 npm start；线上需部署 Worker，或用 ?ws=主机:端口 指向服务端`;
     hud.setLobbyError(hint);
     hud.lobbyStatus.textContent = '';
     hud.lobbyChoose.classList.remove('hidden');

@@ -36,6 +36,10 @@ export class NetClient {
     this.lastSnap = null;
     this.prevSnap = null;
 
+    // 服务端最后一次拒绝的原因（{reason,text}）。用来区分"被拒绝"和"连不上"：
+    // 两者都会触发 close，但给用户的提示完全不同。
+    this.lastDeny = null;
+
     this.handlers = {
       welcome: [], deny: [], snap: [], event: [], roster: [], end: [], close: [],
     };
@@ -131,6 +135,9 @@ export class NetClient {
 
         case S2C.DENY:
           this.state = 'closed';
+          // 记下服务端的拒绝原因：随后的 onclose 会再发一次 close 事件，
+          // 上层如果不看这个字段，就会把"房间不存在"覆盖成"连不上服务器"。
+          this.lastDeny = msg;
           this._emit('deny', msg);
           try { ws.close(); } catch { /* 已关闭 */ }
           break;
@@ -188,6 +195,7 @@ export class NetClient {
     this.players = [];
     this.lastSnap = null;
     this.prevSnap = null;
+    this.lastDeny = null;
   }
 
   // ---------------- 插值 ----------------
