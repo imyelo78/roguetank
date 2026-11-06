@@ -11,8 +11,6 @@
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "build": "node build.mjs",
-    "deploy": "npm run build && npx wrangler deploy",
-    "dev:worker": "npm run build && npx wrangler dev",
     "test": "node test/rng.test.mjs && node test/scores.test.mjs && node test/world.test.mjs",
     "test:net": "node test/net.test.mjs"
   },

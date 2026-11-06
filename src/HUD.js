@@ -588,7 +588,7 @@ export class HUD {
       const teamText = mode === 'coop' && teamScore > 0 ? ` · 队伍合计 ${Number(teamScore).toLocaleString()} 分` : '';
       if (synced === false) {
         const why = syncReason === 'offline' ? '网络不可用'
-          : syncReason === 'kv-unbound' ? '服务端未绑定 KV'
+          : syncReason === 'storage' ? '服务端存储异常'
           : syncReason === 'stale-date' ? '日期校验未通过'
           : syncReason ? `服务端返回 ${syncReason}` : '未知原因';
         note = `${modeText}成绩已存本机，云端同步失败（${why}）· 下次进入游戏会自动补传`;

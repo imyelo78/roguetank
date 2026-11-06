@@ -113,16 +113,15 @@ export class Room {
    * 当定时器实际步长只有 8ms 时，毫秒取整会把累加器永远压在 33ms 以下，
    * 结果就是"房间在跑但世界不动"——这类问题在日志里完全看不出来，只能靠单测抓住。
    *
-   * periodMs：轮询间隔。本机 Node 用 4ms（追逐精确的 33.3ms tick）；
-   * Durable Object 里定时器开销按 CPU 计费，用 33ms 一档、每次只走一步更划算。
-   * 两种间隔都靠累加器补帧，实际 tick 频率一致。
+   * periodMs：轮询间隔，默认 4ms（追逐精确的 33.3ms tick）。
+   * 宿主定时器精度不够时可以传更大的值，靠累加器补帧，实际 tick 频率不变。
    */
   run(periodMs = 4) {
     if (this.timer) return;
     let acc = 0;
     let last = nowMs();
     const period = Math.max(1, periodMs);
-    // 一次回调最多补几帧：DO 里间隔大，允许补 3 帧；本机 4ms 轮询补 8 帧
+    // 一次回调最多补几帧：4ms 轮询下补 8 帧足够，间隔更大时也不会雪崩
     const maxCatchUp = period >= 20 ? 3 : 8;
 
     this.timer = setInterval(() => {
@@ -147,10 +146,10 @@ export class Room {
    * 走一步模拟。
    *
    * 快照按"真实时间"节流，而不是按 tick 计数（tick % SNAP_EVERY）。
-   * 原因：Durable Object 里世界时钟由 alarm 驱动，一次 alarm 会连走好几步，
-   * 按计数发快照就变成"一次涌出 8 帧、然后静默 260ms"——客户端插值缓冲
-   * 只有 100ms，碰上这种突发就会一顿一顿。这里改用时间节流后，
-   * 无论调用方是一次一步还是一次八步，对外发出的快照间隔都稳定在 66ms。
+   * 原因：如果按 tick 计数（tick % SNAP_EVERY）发快照，一旦宿主某次回调里
+   * 连走了好几步，就会"一次涌出 8 帧、然后静默 260ms"——客户端插值缓冲
+   * 只有 100ms，碰上这种突发就一顿一顿。改用时间节流后，
+   * 无论调用方一次走一步还是一次走八步，对外发出的快照间隔都稳定在 66ms。
    */
   _oneTick() {
     const w = this.world;
@@ -192,8 +191,7 @@ export class Room {
       this.over = true;
       if (this.timer) { clearInterval(this.timer); this.timer = null; }
       // 结算后再留一会儿，让客户端播完动画再回收。
-      // 宿主是 Durable Object 时不能依赖 setTimeout（实例可能已被挂起），
-      // 那边由 alarm 循环自己判断 this.over 后停止续订。
+      // noSelfDestroy=true 的宿主（生命周期不受自己控制）跳过这步，由宿主自己回收。
       if (this.noSelfDestroy) return;
       setTimeout(() => this.destroy(), 8000);
     }
@@ -202,12 +200,11 @@ export class Room {
   /**
    * 到点就发一份快照。
    *
-   * 与 _oneTick 解耦，是因为宿主节奏不同：
-   * 本机 Node 4ms 轮询，tick 很密；Durable Object 100ms 一次 alarm。
+   * 与 _oneTick 解耦，是因为宿主调用节奏可能不均匀。
    * 如果快照挂在内层循环里，节奏就跟着宿主调用频率走，客户端插值缓冲接不住。
    *
-   * catchUp=true 时（DO 每轮 alarm 调一次）会把错过的帧一次性补出来，
-   * 让客户端收到的仍是连续的 15Hz 序列；本机轮询不需要补，避免重复发。
+   * catchUp=true 时会把错过的帧一次性补出来，让客户端收到的仍是连续的 15Hz 序列；
+   * 本机 4ms 轮询不需要补，避免重复发。
    */
   maybeSnapshot(catchUp = false) {
     if (!this.world || !this.members.size) return;

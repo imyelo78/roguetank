@@ -73,14 +73,13 @@ export class NetClient {
     // 允许用 ?ws=host:port 指向另一台机器上的联机服务（本机静态托管 + 内网服务端）
     const override = resolveOverride();
     // 协议跟着页面走：https 页面必须 wss（浏览器会拦截混合内容），
-    // 纯 IP 的 http 页面用 ws。腾讯云那台只有 IP、没有证书，就是 http + ws。
+    // http 页面（本机开发、纯 IP 直连）用 ws。
     const proto = override
       ? (override.startsWith('wss:') ? 'wss:' : 'ws:')
       : (location.protocol === 'https:' ? 'wss:' : 'ws:');
     const host = override || location.host;
-    // 房间码同时放在查询串里：Durable Object 需要在"升级连接之前"就知道该路由到哪个房间，
-    // 握手消息（hello）要等连接建立后才发得出去，来不及。
-    // 本机 server.mjs 忽略这个参数，仍然以 hello 里的 code 为准，两边都能跑。
+    // 房间码同时放在查询串里：服务端可以在握手阶段就拿到房间码，便于将来做
+    // 边缘路由/分片。server.mjs 以 hello 里的 code 为准，这个参数不影响行为。
     const q = this.room ? `?code=${encodeURIComponent(this.room)}` : '';
     const url = `${proto}//${host}/ws${q}`;
     let ws;

@@ -1,7 +1,7 @@
-// 本地榜单存储：一个最小可用的 KV 替身
+// 榜单存储：基于本地 JSON 文件的最小键值实现
 //
-// 接口和 Cloudflare KV 保持一致（get / put 都返回 Promise，值都是字符串），
-// 所以 functions/api/_lib/leaderboard.js 那份逻辑可以原样跑在本地。
+// 接口刻意做成 get / put 都返回 Promise、值都是字符串，与常见 KV 一致，
+// 所以 functions/api/_lib/leaderboard.js 那份规则可以完全不用关心存储实现。
 //
 // 落盘位置：<项目根>/.data/scores.json（已写进 .gitignore）
 // 设计取舍：整文件读写。单房间、几百条成绩的规模下足够；换机器/备份也只是一个 JSON。

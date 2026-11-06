@@ -29,14 +29,14 @@ const port = Number(process.env.PORT || 5173);
 /**
  * 监听地址。
  *
- * 生产环境（Nginx 反代）必须设 HOST=127.0.0.1：否则 Node 直接暴露在公网，
- * 绕过 Nginx 的限流与 TLS，也会被扫描器直接打。
- * 本地开发保持默认 0.0.0.0，方便手机在同一 WiFi 下访问。
+ * 线上（阿里云 + Nginx）由 systemd 传 HOST=127.0.0.1：Node 只服务本机的反代，
+ * 公网流量统一走 443，这样 TLS、限流、健康检查才是唯一入口，端口也不会被扫描器直接打。
+ * 本地开发保持默认 0.0.0.0，方便手机在同一 WiFi 下用 http://<内网IP>:5173 访问。
  */
 const host = process.env.HOST || '0.0.0.0';
 
-// 本地榜单：与线上 Pages Functions 走同一份规则，只是换成文件存储。
-// 这样 `npm start` 就是一个完整环境，单人和组队的成绩都能立刻在榜上看到。
+// 榜单：规则在 functions/api/_lib/leaderboard.js，这里只给它挂一个文件存储。
+// 所以 `npm start` 就是一个完整环境，单人和组队的成绩都能立刻在榜上看到。
 const scores = new FileStore(path.join(root, '.data', 'scores.json'));
 
 const MIME = {
@@ -135,12 +135,11 @@ async function serveStatic(req, res) {
 }
 
 /**
- * 可选的 HTTPS。
+ * 可选的 TLS 终结（TLS_CERT / TLS_KEY）。
  *
- * 没有域名就没有可信证书，这里只支持自签（TLS_CERT / TLS_KEY 指向自己生成的文件）。
- * 用途很窄但真实：纯 IP 下 navigator.clipboard 被禁用（需要安全上下文），
- * 想让"复制邀请链接"能用就得走 https。代价是每个新设备第一次要点一次警告，
- * 所以默认不开——不设这两个环境变量就是普通 HTTP。
+ * 线上不用它：证书与 TLS 都交给 Nginx，Node 只监听回环说 HTTP。
+ * 保留是为了两种边角场景：纯 IP 临时连一台自签证书，或前面没有反代却想要 https。
+ * 读不到证书不会让服务起不来，降级成 HTTP 并明确提示。
  */
 function createServer(handler) {
   const cert = process.env.TLS_CERT;
@@ -182,7 +181,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // 榜单：与 functions/api/scores.js 同一套逻辑
+  // 榜单：规则在 functions/api/_lib/leaderboard.js，前端 Pages Function 与这里共用
   if (url.pathname === '/api/scores') {
     const send = (r) => {
       res.writeHead(r.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -223,6 +222,16 @@ const server = createServer(async (req, res) => {
     await serveStatic(req, res);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('404 Not Found');
+  }
+});
+
+// 兜底：请求处理里任何未捕获的异常都只影响这一个请求，不能把进程带走。
+// 生产环境（systemd）虽然会自动拉起，但每崩一次房间就全没了，代价太大。
+server.on('clientError', (err, socket) => {
+  if (socket.writable && !socket.writableEnded) {
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+  } else {
+    socket.destroy();
   }
 });
 

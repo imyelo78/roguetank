@@ -4,7 +4,7 @@
 //   今日  / 总榜
 //
 // 三条原则：
-//   1. 本地永远先写（断网、KV 未绑定也不丢战绩），远端失败进补传队列。
+//   1. 本地永远先写（断网、服务端异常也不丢战绩），远端失败进补传队列。
 //   2. 去重身份优先用 pid（改名后仍是同一个人），与服务端保持一致。
 //   3. 榜单条目带人数与车体，读者自己判断可比性。
 
@@ -94,7 +94,7 @@ const sortDesc = (a, b) => (b.score || 0) - (a.score || 0)
   || (b.wave || 0) - (a.wave || 0)
   || (a.t || 0) - (b.t || 0);
 
-/** 去重身份：与 Service Worker 端一致，优先 pid */
+/** 去重身份：与服务端一致，优先 pid */
 const identOf = (e) => e.pid || e.id || e.name;
 
 const TOP_N = 100;
@@ -115,7 +115,7 @@ export function mergeEntry(list, entry) {
 
 /**
  * 合并远端与本地榜单：同身份取最高分。
- * 避免"云端为空/未绑定"时把本机成绩抹掉（断网、KV 未绑定期间打的局会丢记录）。
+ * 避免"云端返回空/服务端异常"时把本机成绩抹掉（期间打的局不能丢）。
  */
 export function mergeLists(remote = [], local = []) {
   let out = Array.isArray(remote) ? [...remote] : [];

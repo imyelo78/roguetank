@@ -1713,7 +1713,7 @@ export class Game {
   /**
    * 大厅里连不上联机服务时的统一出口。
    *
-   * 场景：页面是静态托管（Cloudflare Pages / GitHub Pages），只部署了前端，
+   * 场景：页面被放到只能托管静态文件的平台（对象存储 / 静态站点），
    * 没有常驻的 WebSocket 房间服务器 —— 这时点击必然连不上，界面必须说清楚，
    * 而不是停在"正在创建房间…"。
    */
@@ -1730,7 +1730,7 @@ export class Game {
     const target = custom || `${location.host}/ws`;
     const hint = custom
       ? `连不上联机服务（${target}）：确认服务端已启动，且该端口可从外网访问`
-      : `连不上联机服务（${target}）：这个地址上没有房间服务。本机请 npm start；线上需部署 Worker，或用 ?ws=主机:端口 指向服务端`;
+      : `连不上联机服务（${target}）：这个地址上没有房间服务。本机请 npm start；线上请确认 Nginx 已启动并把 /ws 转发到 Node`;
     hud.setLobbyError(hint);
     hud.lobbyStatus.textContent = '';
     hud.lobbyChoose.classList.remove('hidden');

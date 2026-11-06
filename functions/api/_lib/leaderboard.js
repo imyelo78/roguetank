@@ -1,11 +1,9 @@
 // 榜单核心逻辑（不依赖任何平台 API）
 //
 // 为什么单独抽出来：
-//   Cloudflare Pages Functions 只能跑在 KV 上，本地 `npm start` 又只有 Node 进程。
-//   两边如果各写一份，迟早会出现"线上能上榜、本地看不到榜"的错位。
-//   这里只认一个极简 KV 接口 { get(key), put(key, value) }，两边各给一个实现即可：
-//     · Cloudflare  → env.DAILY_SCORES
-//     · 本地 Node   → server/score-store.js（写 .data/scores.json）
+//   榜单规则与"存哪"无关。这里只认一个极简 KV 接口 { get(key), put(key, value) }，
+//   换存储只要再给一个实现：
+//     · 线上 / 本地 → server/score-store.js（写 .data/scores.json）
 //
 // 榜单结构（只有一条榜，单人/多人同榜）：
 //   今日榜  lb:<YYYY-MM-DD>   Top100

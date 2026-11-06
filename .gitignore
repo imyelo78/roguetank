@@ -1,4 +1,4 @@
-# 构建产物由 Cloudflare Pages 在部署时生成
+# 构建产物（npm run build 生成，纯静态托管时才需要；线上直接托管源码）
 dist/
 
 # 依赖与本地工具缓存

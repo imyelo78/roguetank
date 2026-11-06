@@ -1,15 +1,14 @@
 // 一条 WebSocket 连接的协议处理
 //
-// 平台无关：本机 node server.mjs（ws 库）与 Cloudflare Durable Object（原生
-// WebSocket）共用这一份，避免两边对协议的理解慢慢分叉——比如一边允许空房间码
-// 建房、另一边拒绝，玩家就会遇到"本机能建房、线上建不了"这种最难查的 bug。
+// 与传输层解耦：只依赖标准的 WebSocket 形状（readyState / send / addEventListener），
+// 所以既能跑在 node 的 ws 上，也能被其它宿主复用与单独测试。
 //
 // 只负责"会话"：解析消息、握手、转发输入。房间本身（谁在里面、怎么跑）由
 // server/room.js 负责，这里不碰。
 
 import { PROTOCOL_VERSION, C2S, S2C, DENY_TEXT } from '../src/core/protocol.js';
 
-/** socket.readyState === 1 表示可写；Node 的 ws 与浏览器/DO 的 WebSocket 一致 */
+/** socket.readyState === 1 表示可写；node ws 与标准 WebSocket 一致 */
 const isOpen = (socket) => !!socket && socket.readyState === 1;
 
 function listen(socket, type, handler) {

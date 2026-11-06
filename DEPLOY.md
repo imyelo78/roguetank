@@ -1,170 +1,179 @@
-# 部署
+# 部署：阿里云 ECS + 域名 HTTPS
 
-线上是**一个 Cloudflare Worker**，同时干三件事：
+线上地址 **https://roguetank.i1978.com**
 
-| 路径 | 能力 | 实现 |
-| --- | --- | --- |
-| `/`、`/src/*`、`/vendor/*` | 静态页面 | Worker 静态资源（`dist/`，由 `npm run build` 产出） |
-| `/api/scores` | 今日榜 / 总榜 | KV 绑定 `DAILY_SCORES`（没绑也能跑，成绩存本地） |
-| `/ws` | 4 人合作房间 | Durable Object（一个房间码 = 一个实例） |
+```
+浏览器 ──TLS(443)──> Nginx ──HTTP──> node server.mjs (127.0.0.1:5173)
+                      │                ├─ 静态文件（index.html / src / vendor）
+                      │                ├─ /api/scores  今日榜 + 总榜
+                      └─ 80 只做         ├─ /ws          4 人房间（WebSocket）
+                         301 跳转 +      └─ /healthz     探活
+                         ACME 验证
+```
 
-为什么不是 Pages：Pages 的 Functions 是无状态的，**跑不了常驻 WebSocket**，
-所以线上组队会永远连不上。换成 Worker + Durable Objects 之后，页面、榜单、
-联机同源，前端不需要配任何服务器地址。
+一个 Node 进程同时提供页面、榜单、联机，**同源**，所以前端不需要配任何服务器地址。
+Nginx 只负责 TLS、gzip、限流和缓存头。
+
+> 历史包袱：早期版本部署在 Cloudflare Worker + Durable Object 上，那套代码（`worker/`、
+> `wrangler.toml`、KV 榜单）已从仓库移除。现在唯一支持的线上形态就是本文这一种。
 
 ---
 
-## 一、本地开发
+## 〇、一次性准备（务必先做完，否则脚本一定报错）
+
+| # | 事项 | 在哪做 | 检查方式 |
+| --- | --- | --- | --- |
+| 1 | **域名备案**（`.com` 域名指向境内 ECS 必须备案，否则 80/443 直接被拦） | 阿里云控制台 → 备案 | 备案号下来才算完成 |
+| 2 | **A 记录** `roguetank` → 服务器公网 IP | 阿里云 DNS 解析 | `ping roguetank.i1978.com` 显示服务器 IP |
+| 3 | **安全组放行 80、443**（22 只对你自己的 IP 开放） | 阿里云 → ECS → 安全组 → 入方向 | 见下方自查命令 |
+| 4 | 服务器装 **Ubuntu 22.04 / Debian 11+** | ECS 镜像 | `cat /etc/os-release` |
+
+域名解析自查（在你自己的电脑上）：
 
 ```bash
-npm install          # 只装 ws（联机服务用）
-npm start            # http://localhost:5173 完整环境：静态页 + 榜单 + 联机房间
+dig +short roguetank.i1978.com        # 应输出服务器公网 IP
+telnet roguetank.i1978.com 80         # 不通 = 安全组没放行
 ```
 
-想验证"线上那套"（Worker + Durable Object）而不部署：
-
-```bash
-npm run dev:worker   # 构建 dist 后起本地 Worker，地址 http://127.0.0.1:8787
-```
-
-两种环境跑的是同一份房间逻辑（`server/room.js`、`server/session.js`），
-区别只有传输层。
+> **5173 端口不要对公网放行**。Node 只监听 `127.0.0.1`，公网流量统一走 Nginx，
+> 这样 HTTPS、限流、健康检查才是唯一入口。
 
 ---
 
-## 二、部署方式 A：命令行（推荐）
+## 一、部署（两种方式，选一种）
 
-首次需要登录 Cloudflare（会弹浏览器授权）：
-
-```bash
-npx wrangler login
-npm run build
-npx wrangler deploy
-```
-
-输出里会给出地址，形如：
-
-```
-https://roguetank.<你的子域>.workers.dev
-```
-
-以后每次更新只要：
+### 方式 A：git 拉代码（推荐，以后更新最省事）
 
 ```bash
-npm run deploy      # = npm run build && npx wrangler deploy
+# 服务器上
+sudo apt-get update -y && sudo apt-get install -y git
+sudo git clone https://github.com/imyelo78/roguetank.git /opt/roguetank
+cd /opt/roguetank
+sudo bash deploy/bootstrap.sh
 ```
 
-也可以在 Cloudflare 面板生成 API Token 后免登录部署：
+私有仓库请改成 SSH 地址并先在服务器上配好 deploy key。
+
+### 方式 B：压缩包上传
 
 ```bash
-export CLOUDFLARE_API_TOKEN=xxxx
-export CLOUDFLARE_ACCOUNT_ID=yyyy
-npm run deploy
+# 本地
+scp roguetank-server.tar.gz root@<服务器IP>:/tmp/
+
+# 服务器
+sudo mkdir -p /opt/roguetank
+sudo tar -xzf /tmp/roguetank-server.tar.gz -C /opt/roguetank --strip-components=1
+cd /opt/roguetank
+sudo bash deploy/bootstrap.sh
 ```
 
-Token 权限需要 **Workers Scripts: Edit**，如需操作 KV 再加 **Workers KV Storage: Edit**。
+> 方式 B 没有 `.git`，以后更新只能重新上传覆盖；`deploy/update.sh` 只支持方式 A。
+
+### bootstrap.sh 做了哪些事
+
+1. 校验域名解析是否指向本机（解析不对直接停下，不留半成品）；
+2. 装 Nginx / Node 20 / certbot（已装则跳过）；
+3. 建系统用户 `roguetank`，`npm ci --omit=dev`（只有 `ws` 一个依赖）；
+4. 装 systemd 服务，`HOST=127.0.0.1 PORT=5173`，崩溃自动拉起、开机自启；
+5. 先用临时 Nginx 配置跑通 ACME 验证 → 申请 Let's Encrypt 证书 → 换成完整配置；
+6. 装续期钩子：证书续期后自动 `nginx -t && systemctl reload nginx`；
+7. 自测 HTTP 跳转、HTTPS 200、`/healthz`，最后打印证书到期时间。
+
+**幂等**：重复执行不会重复建用户或重复申请证书。
 
 ---
 
-## 三、部署方式 B：GitHub Actions 自动部署
+## 二、验收清单
 
-仓库自带 `docs/deploy.workflow.yml`：**先把它整份复制到 `.github/workflows/deploy.yml`**
-（覆盖原来的 Pages 工作流），之后推 `main` 就会自动构建 + `wrangler deploy`。
+```bash
+# 1. 服务在跑
+systemctl status roguetank --no-pager
+curl -s http://127.0.0.1:5173/healthz
+# → {"ok":true,"uptime":12,"rooms":0,"players":0,"rssMB":48}
 
-> 为什么绕这一下：`.github/workflows/` 下的文件受 GitHub 保护，改它需要 token 带
-> `Workflows: Read and write` 权限，普通 fine-grained token 会被拒（403）。网页上直接
-> 编辑该文件没有这个限制，所以最快的方式是在 GitHub 页面里粘贴一次。
+# 2. HTTPS 正常 + 80 会跳转
+curl -sI https://roguetank.i1978.com/ | head -3      # HTTP/2 200
+curl -sI http://roguetank.i1978.com/  | head -2      # 301 → https
 
-在 GitHub 仓库 **Settings → Secrets and variables → Actions** 里配两个 Secret：
+# 3. 缓存协商生效（第二次应返回 304）
+E=$(curl -sI https://roguetank.i1978.com/src/net.js | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')
+curl -sI -H "If-None-Match: $E" https://roguetank.i1978.com/src/net.js | head -1
 
-| Secret | 说明 |
+# 4. WebSocket 握手（要 101，426/400 都不对）
+curl -si -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+     -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+     https://roguetank.i1978.com/ws | head -1
+
+# 5. 证书与续期
+sudo certbot certificates
+systemctl list-timers certbot.timer
+```
+
+浏览器再走一遍：打开首页 → 填呼号 → 组队 → 创建房间 → 另开窗口（或手机）用房间码加入 →
+双方都进战场。地址栏应有**锁形图标**，`F3` 面板里 `ping` 个位数、`snap` 约 15Hz、`停顿 0`。
+
+---
+
+## 三、日常运维
+
+| 操作 | 命令 |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token，权限 `Workers Scripts: Edit`（要改 KV 再勾 `Workers KV Storage: Edit`） |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 面板 **Workers & Pages** 右侧账户信息里的 Account ID |
+| 更新到最新代码 | `cd /opt/roguetank && sudo bash deploy/update.sh` |
+| 连 Nginx 配置一起更新 | `sudo bash deploy/update.sh --nginx` |
+| 看实时日志 | `journalctl -u roguetank -f` |
+| 重启游戏服务 | `sudo systemctl restart roguetank` |
+| 改 Nginx | 改 `deploy/nginx.conf` → `sudo cp deploy/nginx.conf /etc/nginx/conf.d/roguetank.conf` → `sudo nginx -t && sudo systemctl reload nginx` |
+| 续证书演练 | `sudo certbot renew --dry-run` |
+| 榜单数据 | `/opt/roguetank/.data/scores.json`，备份直接拷走 |
+| 清空榜单 | `sudo systemctl stop roguetank && sudo rm /opt/roguetank/.data/scores.json && sudo systemctl start roguetank` |
 
-配好后推一次 `main`，或到 **Actions → Deploy to Cloudflare Workers → Run workflow** 手动跑。
-
-### 这个 Token 在哪里建 / 在哪里改
-
-在 **Cloudflare** 建，不是 GitHub：
-
-1. 打开 https://dash.cloudflare.com/profile/api-tokens
-2. 找到正在用的那个 token（名字大概是你当初起的，比如 `pages-deploy`），点右侧 **⋯ → Edit**
-3. 在 **Permissions** 里补一条并保存：
-   - 已有 `Account → Cloudflare Pages → Edit`，保持不动也行
-   - **新增** `Account → Workers Scripts → Edit`
-   - 想顺便管 KV 再加 `Account → Workers KV Storage → Edit`
-4. **不用重新建 token**：编辑权限后 token 字符串不变，GitHub Secrets 里不用改
-
-如果当初的 token 已经找不到或忘了，直接 **Create Token → 自定义模板** 新建一个，权限照上面勾，
-然后把新字符串粘进 GitHub 仓库 **Settings → Secrets and variables → Actions → `CLOUDFLARE_API_TOKEN` → Update**。
-
-> GitHub 那边只存字符串，看不到内容，也**读不出**旧值——所以"确认旧 token 有没有权限"
-> 这件事只能回 Cloudflare 面板看，或者干脆新建一个覆盖掉。
-
-> 之前用 Pages 的同学注意：旧 token 可能只有 `Cloudflare Pages: Edit`，需要补上
-> `Workers Scripts: Edit`，否则 `wrangler deploy` 会报认证失败。
->
-> 普通 deploy 报的是 `Authentication error [code: 10000]`；如果还开了 KV 绑定，
-> 缺 `Workers KV Storage: Edit` 会报 `KV namespace not found` 或权限相关的 403。
+重启不会长时间踢人：`server.mjs` 收到 SIGTERM 会给房间里每个人发 `1012 server-restart`
+关闭帧再退出，客户端据此提示"服务器重启"而不是"网络异常"。
 
 ---
 
-## 四、榜单持久化（KV）
+## 四、排障
 
-不建 KV 也能上线：`/api/scores` 返回 `ok:false`，前端自动回退到 localStorage，
-只是每个人的成绩只存在自己浏览器里。
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `bootstrap.sh` 报"域名还没有解析" | A 记录没生效 / 指向别的 IP | 改 DNS，等 TTL 过期 |
+| `certbot` 报 `Timeout during connect` | 安全组没放行 80 | 安全组入方向加 80 |
+| `ERR_TOO_MANY_REDIRECTS` | Cloudflare 代理开着且 SSL 模式是 Flexible，或 CDN 回源到 80 | 改 Full(strict)，或直接关代理 |
+| **页面能开，组队一直"连不上服务器"** | Nginx 没透传 Upgrade | 按验收第 4 条测握手；确认 `location /ws` 的 `proxy_set_header Upgrade $http_upgrade` 没被删 |
+| 组队过一会掉一次 | 读超时太短 | `proxy_read_timeout 3600s`；Node 每 20s 心跳，两轮无 pong 才判掉线 |
+| 进战场一顿一顿 | 开了 `proxy_buffering on` | `/ws` 必须 `proxy_buffering off` |
+| 502 Bad Gateway | Node 没起来或端口不一致 | `systemctl status roguetank`，核对 `PORT=5173` 与 upstream |
+| 首页 200 但白屏 | 缓存了旧 HTML，或命中了别的站点 | `Ctrl+Shift+R`；`nginx -T \| grep server_name` 应只有 `roguetank.i1978.com` |
+| 手机 4G 打不开 | 备案未完成，运营商侧拦截 | 查备案状态 |
+| `unknown directive "http2"` | Nginx < 1.25 | `bootstrap.sh` 会自动改写成 `listen 443 ssl http2;` |
 
-要真正共享榜单，建一个命名空间并绑定：
+一键看全貌：
 
 ```bash
-npx wrangler kv namespace create DAILY_SCORES
-# 输出里会有 id = "xxxxxxxxxxxxxxxx"
+systemctl status roguetank nginx --no-pager | head -20
+curl -s http://127.0.0.1:5173/healthz; echo
+curl -s https://roguetank.i1978.com/api/scores?view=stats
+sudo nginx -t
+journalctl -u roguetank -n 50 --no-pager
 ```
-
-把 id 填进 `wrangler.toml` 末尾那三行（取消注释）：
-
-```toml
-[[kv_namespaces]]
-binding = "DAILY_SCORES"
-id = "xxxxxxxxxxxxxxxx"
-```
-
-再 `npm run deploy` 一次即可。排行榜规则在 `functions/api/_lib/leaderboard.js`，
-线上 KV 和本地文件存储共用这一份（`test/scores.test.mjs` 覆盖）。
 
 ---
 
-## 五、自定义域名
+## 五、可选：不走 Nginx 的两条路
 
-Cloudflare 面板 → **Workers & Pages** → 选 `roguetank` → **Settings → Domains & Routes**
-→ **Add custom domain**（域名需托管在 Cloudflare）。
+| 方案 | 何时用 | 代价 |
+| --- | --- | --- |
+| Node 直连 `HOST=0.0.0.0 PORT=8080` | 临时验证 | 没 HTTPS、剪贴板 API 不可用、无 gzip/限流，不要上线 |
+| `deploy/Dockerfile`（`-p 127.0.0.1:8080:8080 -v $PWD/.data:/app/.data`） | 想用容器管进程 | 仍需 Nginx 在前面做 TLS |
 
-绑定后 `wss://你的域名/ws` 自动可用，无需改代码。
-
----
-
-## 六、只部署静态页（组队不可用）
-
-如果只想放个页面预览，可以继续用 Pages：
-
-```bash
-npm run build
-npx wrangler pages deploy dist --project-name=roguetank
-```
-
-这种形态下 `/api/scores` 和 `/ws` 都不存在：榜单回退本地，点「组队」会提示
-"连不上联机服务"（见 `src/Game.js` 的 `_coopOffline`），而不是卡在"正在创建房间…"。
+容器方案记得把 `.data` 挂出来，否则重建容器成绩就没了。
 
 ---
 
-## 七、注意事项
+## 六、已知限制
 
-- 站点必须走 HTTP(S)，不要用 `file://` 打开（ES Module 跨域限制）。
-- 游戏用 `localStorage` 保存呼号与最佳记录，换域名/清缓存会丢。
-- 房间是内存态 + 少量 KV 标记：**DO 被回收后房间会重新开始**，正在打的局不会续上。
-- 每个房间 30Hz 模拟，1 核足够撑几十个并发房间；DO 按请求与时长计费，
-  Workers 免费额度对小规模朋友局够用。
-- 改了资源路径记得同步 `build.mjs` 的 `ITEMS` 和 `dist/_headers` 缓存规则。
-- 旧的 `functions/api/scores.js` 保留只是为了 Pages 形态兼容，Worker 直接复用
-  `functions/api/_lib/leaderboard.js`，两条路径的规则完全一致。
+- 房间状态全在内存，进程重启即清空（正在打的局会收到 `1012` 提示）。
+- 单进程：一个 4 人满房约占单核 8%（30Hz 模拟 + 15Hz 快照）。1 核 2G 的 ECS 大约带 8~12 个活跃房间，
+  到顶了不是加带宽，而是拆进程做房间分片。
+- 榜单是单文件 JSON 全量读写，适合几百到几千条；量级再大要换 SQLite。
+- 没有操作审计：谁在什么时候建了什么房间不落盘，只有 `/healthz` 的聚合数字。
