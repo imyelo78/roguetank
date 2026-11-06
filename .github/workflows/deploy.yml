@@ -1,4 +1,4 @@
-name: Deploy to Cloudflare Pages
+name: Deploy to Cloudflare Workers
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages-${{ github.ref }}
+  group: workers-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,20 +30,11 @@ jobs:
       - name: Build
         run: npm run build
 
-      # 项目不存在时自动创建；已存在会报错，这里忽略即可
-      - name: Ensure Pages project
-        if: env.CLOUDFLARE_API_TOKEN != ''
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages project create roguetank --production-branch=main
-
+      # Worker + 静态资源 + Durable Object，一条命令部署完
       - name: Deploy
         if: env.CLOUDFLARE_API_TOKEN != ''
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=roguetank --branch=main
+          command: deploy
