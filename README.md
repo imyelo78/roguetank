@@ -4,7 +4,7 @@
 **每清完一波三选一强化**，每 3 波可换装新主炮，每 5 波迎战 Boss，死亡结束本局并记录最佳成绩。
 
 - 本地：`node server.mjs` → http://localhost:5173（静态页 + 房间服务，一条命令全都有）
-- 发布：见 [DEPLOY.md](./DEPLOY.md)（Cloudflare Pages 拖拽 / wrangler）
+- 发布：见 [DEPLOY.md](./DEPLOY.md)（Cloudflare Worker + Durable Objects，静态页 / 榜单 / 联机同一个部署）
 
 ## 多人合作（最多 4 人）
 
@@ -21,17 +21,21 @@
 即使 100ms 延迟操作也不粘手。快照二进制量化后约 220 字节/帧。
 
 `npm start` 起的是一个完整环境：静态页 + 房间服务 + 榜单接口。
-榜单规则和线上 Cloudflare Pages Functions 是**同一份代码**（`functions/api/_lib/leaderboard.js`），
+榜单规则和线上是**同一份代码**（`functions/api/_lib/leaderboard.js`），
 本地只是把 KV 换成 `.data/scores.json`，所以本地打完就能在榜上看到自己。
+
+线上部署成一个 Cloudflare Worker：静态资源、`/api/scores`、`/ws` 同源，
+房间跑在 Durable Object 里（一个房间码 = 一个实例），打开网址点组队就能直接建房。
 
 ```bash
 npm start          # 起服务（默认 5173，PORT=8080 可改）
+npm run dev:worker # 本地模拟线上 Worker + Durable Object（127.0.0.1:8787）
 npm test           # 随机流 / 榜单 / 模拟，共 21 项
 ```
 
 联机测试需要先起服务：`npm start` 后另开终端跑 `npm run test:net`（13 项，含本地榜单读写）。
 
-页面放在纯静态托管（如 GitHub Pages）、房间服务跑在另一台机器时，用 `?ws=host:port` 指过去即可。
+只想跑纯静态托管（GitHub Pages 等）、房间服务另放一台机器时，用 `?ws=host:port` 指过去即可。
 
 界面预览（来自本地自动化验证环境，该环境没有 WebGL，所以截图只验证了 HUD 与弹层布局，3D 画面需在本机查看）：
 
@@ -109,7 +113,7 @@ npm test           # 随机流 / 榜单 / 模拟，共 21 项
 - 榜单读取是 **云端 + 本地合并（同身份取最高）**：断网、KV 未绑定期间打的成绩不会因为云端返回空列表而消失。
 - **去重按「呼号 + 本机 ID」**：不同玩家即使都叫「指挥官」也不会互相覆盖（早期按呼号去重，同名会互相顶掉）。
 - 上传失败的成绩进入本地补传队列，下次进游戏静默重试；同一身份**只保留最高分**。
-- 后端是 Cloudflare Pages Function（`functions/api/scores.js`）+ KV，规则写在 `functions/api/_lib/leaderboard.js`；
+- 后端是 Worker 的 `/api/scores` + KV，规则写在 `functions/api/_lib/leaderboard.js`；
   本地 `node server.mjs` 用**同一份代码**、把 KV 换成 `.data/scores.json`，所以本地打完也能在榜上看到自己。
 - 未绑定 KV 时线上自动回退浏览器本地排行，游戏功能不受影响。
 - 服务端只接收当天（含昨天，容忍跨零点）的成绩，拒绝伪造历史战绩。
@@ -203,10 +207,14 @@ roguetank/
 ├─ build.mjs           生成可部署的 dist/
 ├─ package.json        npm scripts（start / test / build）
 ├─ .gitignore          忽略 dist、node_modules、wrangler 缓存
-├─ .github/workflows/  GitHub Actions 自动部署到 Cloudflare Pages
-├─ DEPLOY.md           Cloudflare Pages 部署说明（含 GitHub 自动部署）
+├─ .github/workflows/  GitHub Actions 自动部署到 Cloudflare Workers
+├─ DEPLOY.md           Cloudflare 部署说明（Worker + Durable Objects）
+├─ wrangler.toml       Worker 配置：静态资源、房间 DO、榜单 KV
+├─ worker/index.js     Worker 入口：/ws 路由到房间 DO、/api/scores 走 KV、其余走静态资源
+├─ worker/room-do.js   房间的 Durable Object 实现（一个房间码一个实例）
 ├─ server.mjs          本地/自建服务器：静态文件 + /ws 房间服务 + /api/scores
 ├─ server/room.js      房间逻辑（成员、30Hz tick、快照广播）
+├─ server/session.js   连接会话处理（本地与 DO 共用，保证两端协议一致）
 ├─ server/score-store.js  本地榜单存储（KV 的文件版替身）
 ├─ functions/api/scores.js  Cloudflare Pages Function 适配层
 ├─ functions/api/_lib/leaderboard.js  榜单规则（线上 KV 与本地文件共用一份）
@@ -252,12 +260,17 @@ npm run build       # 生成 dist/（发布用）
 
 ## 发布
 
-推荐 GitHub + Cloudflare Pages 自动部署：推送到 `main` 即自动构建上线。
+推送到 `main` 由 GitHub Actions 自动部署（`.github/workflows/deploy.yml`），
+一条 `npx wrangler deploy` 也能手动上线。线上是一个 Cloudflare Worker：
 
-- 面板能连接 GitHub：按 [DEPLOY.md](./DEPLOY.md) 的 Pages Git 集成配置。
-- 面板连不上 GitHub：仓库已内置 `.github/workflows/deploy.yml`，配好两个 Secrets 后由 GitHub Actions 自动部署。
+- `/` 与静态资源：页面本体
+- `/api/scores`：今日榜 + 总榜（KV，没绑也能跑，自动回退本地）
+- `/ws`：4 人合作房间（Durable Object，一个房间码一个实例）
 
-完整步骤见 [DEPLOY.md](./DEPLOY.md)。
+之前用 Cloudflare Pages 的话，需要把 API Token 权限从 `Cloudflare Pages: Edit`
+补成 `Workers Scripts: Edit`，否则部署会认证失败。
+
+完整步骤（KV 绑定、自定义域名、纯静态部署）见 [DEPLOY.md](./DEPLOY.md)。
 
 ## 后续可做
 

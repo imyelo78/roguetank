@@ -1542,10 +1542,10 @@ export class Game {
       // 兜底：10 秒还没连上就告诉用户，别让"连接中…"一直转
       clearTimeout(this._joinTimer);
       this._joinTimer = setTimeout(() => {
-        if (this.net.state === 'connecting') {
-          hud._joining = false;
+        // 'closed' 也要算：连不上时 onclose 先到，state 已经不是 connecting 了
+        if (this.net.state === 'connecting' || this.net.state === 'closed') {
           this.net.close();
-          hud.setLobbyError('连接超时：检查一下服务端是否在运行（npm start）');
+          this._coopOffline();
         }
       }, 10000);
     };
@@ -1628,6 +1628,10 @@ export class Game {
     this.net.on('end', (m) => this._endCoop(m));
 
     this.net.on('close', () => {
+      // 连接尝试中被断开（连不上 / 服务端不存在）：必须给反馈。
+      // 之前这里只清了 _joining，界面就永远停在"正在创建房间…"，
+      // 用户看到的正是"点了组队没反应"。
+      const wasJoining = this.hud._joining;
       this.hud._joining = false;
       clearTimeout(this._joinTimer);
       if (this.mode === 'coop') {
@@ -1635,8 +1639,35 @@ export class Game {
         if (this.hud.gameover && !this.hud.gameover.classList.contains('hidden')) return;
         this.hud.showMessage('与服务器断开 · 按 Esc 返回主菜单', 4);
         this.leaveCoop();
+        return;
       }
+      if (wasJoining) this._coopOffline();
     });
+  }
+
+  /**
+   * 大厅里连不上联机服务时的统一出口。
+   *
+   * 场景：页面是静态托管（Cloudflare Pages / GitHub Pages），只部署了前端，
+   * 没有常驻的 WebSocket 房间服务器 —— 这时点击必然连不上，界面必须说清楚，
+   * 而不是停在"正在创建房间…"。
+   */
+  _coopOffline() {
+    const hud = this.hud;
+    hud._joining = false;
+    clearTimeout(this._joinTimer);
+    if (this.mode === 'coop') return;
+    if (this.net && this.net.state !== 'idle') this.net.close();
+
+    const custom = new URLSearchParams(location.search).get('ws');
+    const hint = custom
+      ? `连不上联机服务（${custom}）：确认服务端已启动，且端口可被访问`
+      : '连不上联机服务：网页版是静态托管，房间服务器要单独跑（npm start），或用 ?ws=主机:端口 指向服务端';
+    hud.setLobbyError(hint);
+    hud.lobbyStatus.textContent = '';
+    hud.lobbyChoose.classList.remove('hidden');
+    hud.lobbyWait.classList.add('hidden');
+    hud.lobby.classList.remove('hidden');
   }
 
   /** 主动退出组队，回到主菜单 */

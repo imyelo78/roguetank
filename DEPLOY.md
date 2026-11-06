@@ -1,203 +1,144 @@
-# 部署到 Cloudflare Pages
+# 部署
 
-本项目是**纯静态站点**。Cloudflare Pages 在部署时会执行 `npm run build`（即 `node build.mjs`），
-把 `index.html`、`styles.css`、`src/`、`vendor/` 复制到 `dist/`，再发布 `dist/`。
+线上是**一个 Cloudflare Worker**，同时干三件事：
 
-`dist/` 是构建产物，已加入 `.gitignore`，**不需要提交到 GitHub**。
-
----
-
-## 一、方式 A：GitHub 自动部署（推荐）
-
-配置一次，以后每次 `git push` 到 `main`，Cloudflare 都会自动重新构建并上线。
-
-### 1. 把代码推到 GitHub
-
-先在 GitHub 新建一个空仓库（不要勾选 README / .gitignore / License），然后：
-
-```powershell
-cd tank3d-p0
-git init
-git add .
-git commit -m "feat: 坦克肉鸽 v0.3 — Boss / 精英 / 多武器"
-git branch -M main
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
-git push -u origin main
-```
-
-> 建议直接把 `tank3d-p0` 作为仓库根目录。如果仓库根目录是外层文件夹，
-> 构建命令和输出目录需要按下方“多目录仓库”调整。
-
-### 2. 在 Cloudflare 连接仓库
-
-1. 打开 https://dash.cloudflare.com/ → **Workers & Pages**
-2. **Create** → **Pages** → **Connect to Git**
-3. 授权 GitHub，选择刚才的仓库
-4. 构建配置：
-
-| 配置项 | 值 |
-| --- | --- |
-| Framework preset | `None` |
-| Build command | `npm run build` |
-| Build output directory | `dist` |
-| Root directory | `/`（仓库根目录） |
-
-5. 点 **Save and Deploy**
-
-首次构建完成后会得到：
-
-```
-https://<项目名>.pages.dev
-```
-
-之后每次推送到 `main` 都会自动部署；推送其他分支/PR 会生成预览地址。
-
-### 2.1 Cloudflare 看不到 / 无法读取仓库
-
-通常是 **Cloudflare Pages GitHub App 没有授予该仓库权限**，不是代码问题。按顺序检查：
-
-1. **安装或授权 GitHub App**  
-   打开 https://github.com/apps/cloudflare-pages/installations/new  
-   登录 `imyelo78` 账号 → 选择 **Only select repositories** → 勾选 `roguetank` → **Install / Save**。
-2. **已安装但没勾选仓库**  
-   打开 https://github.com/settings/installations → 找到 **Cloudflare Pages** → **Configure** → **Repository access** → 勾选 `roguetank` → **Save**。
-3. **确认 GitHub 账号一致**  
-   浏览器当前登录的 GitHub 必须是 `imyelo78`，或拥有该仓库权限的账号；否则 Cloudflare 只能看到那个账号名下的仓库。
-4. **组织仓库需要管理员批准**  
-   如果仓库属于 GitHub 组织，需要组织 Owner 在 **Organization settings → Third-party access / Installed GitHub Apps** 里批准 Cloudflare Pages，并授予该仓库访问权。
-5. **授权弹窗被拦截**  
-   关闭广告拦截/隐私插件，允许弹窗和第三方 Cookie，或换 Chrome 无痕窗口重试。
-6. **回到 Cloudflare 刷新列表**  
-   Workers & Pages → Create → Pages → Connect to Git → 刷新仓库列表；必要时先断开 GitHub 再重新连接。
-
-如果以上仍不行，直接用下面的 **GitHub Actions 备选方案**，不依赖 Cloudflare 读取仓库。
-
-### 3. 多目录仓库（仓库根不是 tank3d-p0）
-
-如果 `tank3d-p0` 只是仓库里的一个子目录：
-
-| 配置项 | 值 |
-| --- | --- |
-| Build command | `cd tank3d-p0 && npm run build` |
-| Build output directory | `tank3d-p0/dist` |
-
-### 4. 更新流程
-
-```powershell
-git add .
-git commit -m "balance: 调整 Boss 血量"
-git push
-```
-
-Cloudflare 自动构建，约 30~60 秒后线上生效。
-
-### 5. 备选：GitHub Actions 部署（Cloudflare 连不上 GitHub 时）
-
-如果 Cloudflare 面板一直无法授权/找不到仓库，可跳过 Git 集成，改用仓库自带的
-`.github/workflows/deploy.yml`：推送 `main` → GitHub Actions 构建 `dist/` → wrangler 上传到 Cloudflare Pages。
-
-只需要在 GitHub 仓库配置两个 Secrets：
-
-1. 获取 **Account ID**：Cloudflare Dashboard → **Workers & Pages**，右侧账户信息里可复制。
-2. 创建 **API Token**：Cloudflare Dashboard → 右上角头像 → **My Profile** → **API Tokens** → **Create Token**
-   - 权限：`Account` → `Cloudflare Pages` → `Edit`
-   - 账户资源：选择你的账户
-   - 创建后复制 Token（只显示一次）
-3. 打开 GitHub 仓库 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，添加：
-
-| Secret | 值 |
-| --- | --- |
-| `CLOUDFLARE_API_TOKEN` | 上一步创建的 Token |
-| `CLOUDFLARE_ACCOUNT_ID` | 你的 Cloudflare Account ID |
-
-4. 到仓库 **Actions** 标签，选择 **Deploy to Cloudflare Pages** → **Run workflow** 手动跑一次，或直接再推一次 `main`。
-
-工作流会自动创建名为 `roguetank` 的 Pages 项目并部署，之后地址是：
-
-```
-https://roguetank.pages.dev
-```
-
-> 如果 `Ensure Pages project` 这一步报“项目已存在”是正常的，`continue-on-error` 会忽略。
-> 如果部署仍提示项目不存在，先在 Cloudflare 面板用 **Upload assets** 建一个同名项目，再重跑工作流。
-
----
-
-## 二、方式 B：拖拽上传（不接 GitHub）
-
-1. 本地生成 `dist/`：
-
-```powershell
-cd tank3d-p0
-npm run build
-```
-
-2. 打开 https://dash.cloudflare.com/ → **Workers & Pages** → **Create** → **Pages** → **Upload assets**
-3. 项目名填 `tank3d-rogue`
-4. 把 `tank3d-p0/dist` 文件夹整个拖进去
-5. 点 **Deploy site**
-
-以后更新：同一项目 → **Create new deployment** → 再拖一次新的 `dist/`。
-
----
-
-## 三、方式 C：命令行（wrangler）
-
-首次需要登录，会弹浏览器授权：
-
-```powershell
-cd tank3d-p0
-npm run build
-npx wrangler login
-npx wrangler pages deploy dist --project-name tank3d-rogue
-```
-
-首次部署会自动创建项目；之后每次更新只需最后一条命令。
-
----
-
-## 四、自定义域名（可选）
-
-Cloudflare Pages 项目 → **Custom domains** → 绑定自己的域名（域名需托管在 Cloudflare）。
-
----
-
-## 五、注意事项
-
-- **不要**直接拖整个 `tank3d-p0` 目录上线，里面包含 `README.md`、`server.mjs`、`preview.jpg` 等非站点文件；用 `dist/`。
-- 站点必须走 HTTP(S)，不要用 `file://` 打开（ES Module 跨域限制）。
-- 游戏用 `localStorage` 保存最佳记录，换域名/清缓存会丢。
-- 免费额度足够朋友游玩：每月 500 次构建、无限静态请求、100 GB 流量。
-- 如果改了资源路径，记得同步 `build.mjs` 的 `ITEMS` 列表和 `dist/_headers` 缓存规则。
-
-## 多人合作需要房间服务
-
-`functions/` 只有榜单接口（KV），**跑不了 WebSocket**。所以：
-
-| 部署形态 | 单人 + 榜单 | 4 人合作 |
+| 路径 | 能力 | 实现 |
 | --- | --- | --- |
-| 纯 Cloudflare Pages（静态 + Functions） | ✅ | ❌ |
-| 任意支持 WebSocket 的 Node 主机（本仓库 `server.mjs`） | ✅（榜单需另配） | ✅ |
-| Pages + 一台小主机只跑 `server.mjs` | ✅ | ✅ |
+| `/`、`/src/*`、`/vendor/*` | 静态页面 | Worker 静态资源（`dist/`，由 `npm run build` 产出） |
+| `/api/scores` | 今日榜 / 总榜 | KV 绑定 `DAILY_SCORES`（没绑也能跑，成绩存本地） |
+| `/ws` | 4 人合作房间 | Durable Object（一个房间码 = 一个实例） |
 
-第三种是推荐形态：页面照旧上 Pages，房间里跑 `node server.mjs`，玩家从
-`https://你的域名/?ws=房间服务器地址:端口` 进入即可（`?ws=` 会覆盖 WebSocket 目标，见 `src/net.js`）。
+为什么不是 Pages：Pages 的 Functions 是无状态的，**跑不了常驻 WebSocket**，
+所以线上组队会永远连不上。换成 Worker + Durable Objects 之后，页面、榜单、
+联机同源，前端不需要配任何服务器地址。
 
-最小 Node 主机（1 核 1G 足够，每个房间约 1~2ms/帧）：
+---
+
+## 一、本地开发
 
 ```bash
-git clone <repo> && cd roguetank
-npm install --omit=dev
-PORT=8080 node server.mjs      # 建议放 systemd / pm2 后面，前面挂 Nginx 转发 /ws
+npm install          # 只装 ws（联机服务用）
+npm start            # http://localhost:5173 完整环境：静态页 + 榜单 + 联机房间
 ```
 
-Nginx 反代要带上 WebSocket 升级头：
+想验证"线上那套"（Worker + Durable Object）而不部署：
 
-```nginx
-location /ws {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-}
+```bash
+npm run dev:worker   # 构建 dist 后起本地 Worker，地址 http://127.0.0.1:8787
 ```
+
+两种环境跑的是同一份房间逻辑（`server/room.js`、`server/session.js`），
+区别只有传输层。
+
+---
+
+## 二、部署方式 A：命令行（推荐）
+
+首次需要登录 Cloudflare（会弹浏览器授权）：
+
+```bash
+npx wrangler login
+npm run build
+npx wrangler deploy
+```
+
+输出里会给出地址，形如：
+
+```
+https://roguetank.<你的子域>.workers.dev
+```
+
+以后每次更新只要：
+
+```bash
+npm run deploy      # = npm run build && npx wrangler deploy
+```
+
+也可以在 Cloudflare 面板生成 API Token 后免登录部署：
+
+```bash
+export CLOUDFLARE_API_TOKEN=xxxx
+export CLOUDFLARE_ACCOUNT_ID=yyyy
+npm run deploy
+```
+
+Token 权限需要 **Workers Scripts: Edit**，如需操作 KV 再加 **Workers KV Storage: Edit**。
+
+---
+
+## 三、部署方式 B：GitHub Actions 自动部署
+
+仓库自带 `.github/workflows/deploy.yml`：推 `main` 就构建 + 部署。
+
+在 GitHub 仓库 **Settings → Secrets and variables → Actions** 里配两个 Secret：
+
+| Secret | 说明 |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token，权限 `Workers Scripts: Edit`（要改 KV 再勾 `Workers KV Storage: Edit`） |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 面板 **Workers & Pages** 右侧账户信息里的 Account ID |
+
+配好后推一次 `main`，或到 **Actions → Deploy to Cloudflare Workers → Run workflow** 手动跑。
+
+> 之前用 Pages 的同学注意：旧 token 可能只有 `Cloudflare Pages: Edit`，需要补上
+> `Workers Scripts: Edit`，否则 `wrangler deploy` 会报认证失败。
+
+---
+
+## 四、榜单持久化（KV）
+
+不建 KV 也能上线：`/api/scores` 返回 `ok:false`，前端自动回退到 localStorage，
+只是每个人的成绩只存在自己浏览器里。
+
+要真正共享榜单，建一个命名空间并绑定：
+
+```bash
+npx wrangler kv namespace create DAILY_SCORES
+# 输出里会有 id = "xxxxxxxxxxxxxxxx"
+```
+
+把 id 填进 `wrangler.toml` 末尾那三行（取消注释）：
+
+```toml
+[[kv_namespaces]]
+binding = "DAILY_SCORES"
+id = "xxxxxxxxxxxxxxxx"
+```
+
+再 `npm run deploy` 一次即可。排行榜规则在 `functions/api/_lib/leaderboard.js`，
+线上 KV 和本地文件存储共用这一份（`test/scores.test.mjs` 覆盖）。
+
+---
+
+## 五、自定义域名
+
+Cloudflare 面板 → **Workers & Pages** → 选 `roguetank` → **Settings → Domains & Routes**
+→ **Add custom domain**（域名需托管在 Cloudflare）。
+
+绑定后 `wss://你的域名/ws` 自动可用，无需改代码。
+
+---
+
+## 六、只部署静态页（组队不可用）
+
+如果只想放个页面预览，可以继续用 Pages：
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name=roguetank
+```
+
+这种形态下 `/api/scores` 和 `/ws` 都不存在：榜单回退本地，点「组队」会提示
+"连不上联机服务"（见 `src/Game.js` 的 `_coopOffline`），而不是卡在"正在创建房间…"。
+
+---
+
+## 七、注意事项
+
+- 站点必须走 HTTP(S)，不要用 `file://` 打开（ES Module 跨域限制）。
+- 游戏用 `localStorage` 保存呼号与最佳记录，换域名/清缓存会丢。
+- 房间是内存态 + 少量 KV 标记：**DO 被回收后房间会重新开始**，正在打的局不会续上。
+- 每个房间 30Hz 模拟，1 核足够撑几十个并发房间；DO 按请求与时长计费，
+  Workers 免费额度对小规模朋友局够用。
+- 改了资源路径记得同步 `build.mjs` 的 `ITEMS` 和 `dist/_headers` 缓存规则。
+- 旧的 `functions/api/scores.js` 保留只是为了 Pages 形态兼容，Worker 直接复用
+  `functions/api/_lib/leaderboard.js`，两条路径的规则完全一致。

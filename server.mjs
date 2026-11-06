@@ -14,10 +14,11 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 import { RoomRegistry } from './server/room.js';
+import { attachSession } from './server/session.js';
 import { FileStore, readBody } from './server/score-store.js';
 import { handleGet, handlePost } from './functions/api/_lib/leaderboard.js';
 import {
-  PROTOCOL_VERSION, C2S, S2C, DENY_TEXT, normalizeRoomCode, MAX_PLAYERS,
+  normalizeRoomCode, MAX_PLAYERS,
 } from './src/core/protocol.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
@@ -123,23 +124,8 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 wss.on('connection', (socket) => {
-  const ctx = { room: null, id: null, name: '' };
-
-  const send = (obj) => {
-    try { if (socket.readyState === 1) socket.send(JSON.stringify(obj)); } catch { /* 连接已断 */ }
-  };
-  const deny = (reason) => send({ k: S2C.DENY, reason, text: DENY_TEXT[reason] || '连接被拒绝' });
-
-  socket.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return deny('bad-proto'); }
-    if (!msg || typeof msg.k !== 'string') return deny('bad-proto');
-
-    // ---- 握手：第一条必须是 hello ----
-    if (!ctx.room) {
-      if (msg.k !== C2S.HELLO) return deny('bad-proto');
-      if (msg.v !== PROTOCOL_VERSION) return deny('bad-version');
-
+  attachSession(socket, {
+    join: (msg) => {
       const name = String(msg.name || '').trim().slice(0, 12) || '指挥官';
       const chassis = ['balanced', 'light', 'heavy', 'hunter'].includes(msg.chassis)
         ? msg.chassis : 'balanced';
@@ -148,55 +134,21 @@ wss.on('connection', (socket) => {
       if (msg.code) {
         room = registry.get(normalizeRoomCode(msg.code));
         // 给了房间码但不存在 → 拒绝，别偷偷建个新的（否则朋友永远进不到一起）
-        if (!room) return deny('no-room');
+        if (!room) return { deny: 'no-room' };
       } else {
         room = registry.create();
       }
 
       const r = room.join(socket, { name, chassis, seed: msg.seed });
-      if (!r.ok) return deny(r.reason);
-
-      ctx.room = room;
-      ctx.id = r.id;
-      ctx.name = name;
-
-      send(room.welcomePayload(r.id));
-      console.log(`[join] ${room.code} ← ${name} (${room.size}/${MAX_PLAYERS})`);
-      return;
-    }
-
-    // ---- 已在房内 ----
-    switch (msg.k) {
-      case C2S.INPUT:
-        ctx.room.onInput(ctx.id, msg);
-        break;
-      case C2S.READY:
-        if (ctx.room.requestStart(ctx.id)) {
-          console.log(`[start] ${ctx.room.code} 房主 ${ctx.name} 手动开局`);
-        }
-        break;
-      case C2S.PING:
-        send({ k: S2C.PONG, t0: msg.t0, t1: Date.now() });
-        break;
-      case C2S.LEAVE:
-        ctx.room.leave(ctx.id);
-        ctx.room = null;
-        socket.close();
-        break;
-      default:
-        break;
-    }
+      if (!r.ok) return { deny: r.reason };
+      return { ok: true, room, id: r.id, name };
+    },
+    onLog: (what, code, name) => {
+      if (what === 'join') console.log(`[join] ${code} ← ${name} (${registry.get(code)?.size}/${MAX_PLAYERS})`);
+      else if (what === 'start') console.log(`[start] ${code} 房主 ${name} 手动开局`);
+      else if (what === 'leave') console.log(`[leave] ${code} ← ${name}`);
+    },
   });
-
-  socket.on('close', () => {
-    if (ctx.room) {
-      console.log(`[leave] ${ctx.room.code} ← ${ctx.name}`);
-      ctx.room.leave(ctx.id);
-      ctx.room = null;
-    }
-  });
-
-  socket.on('error', () => { /* 由 close 统一清理 */ });
 });
 
 server.listen(port, () => {

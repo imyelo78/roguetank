@@ -110,11 +110,18 @@ export class Room {
    * 计时用 performance.now()（亚毫秒精度）。早期版本用 Date.now()（整毫秒），
    * 当定时器实际步长只有 8ms 时，毫秒取整会把累加器永远压在 33ms 以下，
    * 结果就是"房间在跑但世界不动"——这类问题在日志里完全看不出来，只能靠单测抓住。
+   *
+   * periodMs：轮询间隔。本机 Node 用 4ms（追逐精确的 33.3ms tick）；
+   * Durable Object 里定时器开销按 CPU 计费，用 33ms 一档、每次只走一步更划算。
+   * 两种间隔都靠累加器补帧，实际 tick 频率一致。
    */
-  run() {
+  run(periodMs = 4) {
     if (this.timer) return;
     let acc = 0;
     let last = nowMs();
+    const period = Math.max(1, periodMs);
+    // 一次回调最多补几帧：DO 里间隔大，允许补 3 帧；本机 4ms 轮询补 8 帧
+    const maxCatchUp = period >= 20 ? 3 : 8;
 
     this.timer = setInterval(() => {
       const t = nowMs();
@@ -125,11 +132,11 @@ export class Room {
       if (acc > TICK_MS * 5) acc = TICK_MS;
 
       let guard = 0;
-      while (acc >= TICK_MS && guard++ < 8) {
+      while (acc >= TICK_MS && guard++ < maxCatchUp) {
         acc -= TICK_MS;
         this._oneTick();
       }
-    }, 4);
+    }, period);
   }
 
   _oneTick() {

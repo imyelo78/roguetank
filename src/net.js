@@ -66,7 +66,11 @@ export class NetClient {
       ? (override.startsWith('wss:') ? 'wss:' : 'ws:')
       : (location.protocol === 'https:' ? 'wss:' : 'ws:');
     const host = override || location.host;
-    const url = `${proto}//${host}/ws`;
+    // 房间码同时放在查询串里：Durable Object 需要在"升级连接之前"就知道该路由到哪个房间，
+    // 握手消息（hello）要等连接建立后才发得出去，来不及。
+    // 本机 server.mjs 忽略这个参数，仍然以 hello 里的 code 为准，两边都能跑。
+    const q = this.room ? `?code=${encodeURIComponent(this.room)}` : '';
+    const url = `${proto}//${host}/ws${q}`;
     let ws;
     try {
       ws = new WebSocket(url);
