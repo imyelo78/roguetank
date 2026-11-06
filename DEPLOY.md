@@ -68,7 +68,12 @@ Token 权限需要 **Workers Scripts: Edit**，如需操作 KV 再加 **Workers 
 
 ## 三、部署方式 B：GitHub Actions 自动部署
 
-仓库自带 `.github/workflows/deploy.yml`：推 `main` 就构建 + 部署。
+仓库自带 `docs/deploy.workflow.yml`：**先把它整份复制到 `.github/workflows/deploy.yml`**
+（覆盖原来的 Pages 工作流），之后推 `main` 就会自动构建 + `wrangler deploy`。
+
+> 为什么绕这一下：`.github/workflows/` 下的文件受 GitHub 保护，改它需要 token 带
+> `Workflows: Read and write` 权限，普通 fine-grained token 会被拒（403）。网页上直接
+> 编辑该文件没有这个限制，所以最快的方式是在 GitHub 页面里粘贴一次。
 
 在 GitHub 仓库 **Settings → Secrets and variables → Actions** 里配两个 Secret：
 
