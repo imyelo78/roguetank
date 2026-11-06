@@ -72,6 +72,8 @@ export class NetClient {
 
     // 允许用 ?ws=host:port 指向另一台机器上的联机服务（本机静态托管 + 内网服务端）
     const override = resolveOverride();
+    // 协议跟着页面走：https 页面必须 wss（浏览器会拦截混合内容），
+    // 纯 IP 的 http 页面用 ws。腾讯云那台只有 IP、没有证书，就是 http + ws。
     const proto = override
       ? (override.startsWith('wss:') ? 'wss:' : 'ws:')
       : (location.protocol === 'https:' ? 'wss:' : 'ws:');

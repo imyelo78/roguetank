@@ -1,0 +1,46 @@
+[Unit]
+Description=Roguetank game server (Steel Assault)
+Documentation=https://github.com/imyelo78/roguetank
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 用普通用户跑，别用 root：游戏服务只需要读代码、写 .data
+User=roguetank
+Group=roguetank
+WorkingDirectory=/opt/roguetank
+
+Environment=NODE_ENV=production
+# 纯 IP 直连：监听所有网卡，客户端通过 http://<公网IP>:8080 访问
+# 若日后改成 Nginx 反代，把这两行换成 HOST=127.0.0.1 PORT=5173
+Environment=HOST=0.0.0.0
+Environment=PORT=8080
+
+ExecStart=/usr/bin/node server.mjs
+
+# 崩溃自动拉起。10 秒内连崩 5 次就先停下，避免疯狂重启刷日志
+Restart=always
+RestartSec=2
+StartLimitIntervalSec=10
+StartLimitBurst=5
+
+# 优雅退出：server.mjs 收到 SIGTERM 后会给房间里的人发关闭帧再退出，1.5 秒内完成
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=roguetank
+
+# ---- 安全加固（不牺牲功能）----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/roguetank/.data
+# 房间世界在内存里跑满 CPU 是正常的，这里只限制内存上限防泄漏
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
