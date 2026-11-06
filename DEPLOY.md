@@ -84,8 +84,29 @@ Token 权限需要 **Workers Scripts: Edit**，如需操作 KV 再加 **Workers 
 
 配好后推一次 `main`，或到 **Actions → Deploy to Cloudflare Workers → Run workflow** 手动跑。
 
+### 这个 Token 在哪里建 / 在哪里改
+
+在 **Cloudflare** 建，不是 GitHub：
+
+1. 打开 https://dash.cloudflare.com/profile/api-tokens
+2. 找到正在用的那个 token（名字大概是你当初起的，比如 `pages-deploy`），点右侧 **⋯ → Edit**
+3. 在 **Permissions** 里补一条并保存：
+   - 已有 `Account → Cloudflare Pages → Edit`，保持不动也行
+   - **新增** `Account → Workers Scripts → Edit`
+   - 想顺便管 KV 再加 `Account → Workers KV Storage → Edit`
+4. **不用重新建 token**：编辑权限后 token 字符串不变，GitHub Secrets 里不用改
+
+如果当初的 token 已经找不到或忘了，直接 **Create Token → 自定义模板** 新建一个，权限照上面勾，
+然后把新字符串粘进 GitHub 仓库 **Settings → Secrets and variables → Actions → `CLOUDFLARE_API_TOKEN` → Update**。
+
+> GitHub 那边只存字符串，看不到内容，也**读不出**旧值——所以"确认旧 token 有没有权限"
+> 这件事只能回 Cloudflare 面板看，或者干脆新建一个覆盖掉。
+
 > 之前用 Pages 的同学注意：旧 token 可能只有 `Cloudflare Pages: Edit`，需要补上
 > `Workers Scripts: Edit`，否则 `wrangler deploy` 会报认证失败。
+>
+> 普通 deploy 报的是 `Authentication error [code: 10000]`；如果还开了 KV 绑定，
+> 缺 `Workers KV Storage: Edit` 会报 `KV namespace not found` 或权限相关的 403。
 
 ---
 
