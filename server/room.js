@@ -11,7 +11,7 @@ import {
 
 const TICK_MS = 1000 / TICK_RATE;
 const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-const SNAP_EVERY = Math.round(TICK_RATE / SNAPSHOT_RATE);
+const SNAP_MS = 1000 / SNAPSHOT_RATE;
 
 /** 一名玩家在房间里的连接状态 */
 class Member {
@@ -39,6 +39,8 @@ export class Room {
     this.createdAt = Date.now();
     this.startedAt = 0;
     this.seq = 0;
+    // 上次发快照的时刻（时间节流用，见 _oneTick）
+    this._lastSnapAt = 0;
   }
 
   get size() { return this.members.size; }
@@ -136,9 +138,20 @@ export class Room {
         acc -= TICK_MS;
         this._oneTick();
       }
+      // 快照独立按时间发：轮询间隔再小，对外也是稳定的 15Hz
+      this.maybeSnapshot();
     }, period);
   }
 
+  /**
+   * 走一步模拟。
+   *
+   * 快照按"真实时间"节流，而不是按 tick 计数（tick % SNAP_EVERY）。
+   * 原因：Durable Object 里世界时钟由 alarm 驱动，一次 alarm 会连走好几步，
+   * 按计数发快照就变成"一次涌出 8 帧、然后静默 260ms"——客户端插值缓冲
+   * 只有 100ms，碰上这种突发就会一顿一顿。这里改用时间节流后，
+   * 无论调用方是一次一步还是一次八步，对外发出的快照间隔都稳定在 66ms。
+   */
   _oneTick() {
     const w = this.world;
     if (!w) return;
@@ -164,9 +177,9 @@ export class Room {
       for (const m of this.members.values()) this._send(m, msg);
     }
 
-    if (w.tick % SNAP_EVERY === 0) {
-      this._broadcastSnapshot();
-    }
+    // 快照按真实时间单独节流（见 tick 说明）。
+    // 这里不用 w.tick 计数，因为一次调用可能连走多步，计数会把快照挤成突发。
+    this.maybeSnapshot();
 
     if (w.state === 'over') {
       const results = w.players
@@ -175,11 +188,46 @@ export class Room {
       const msg = JSON.stringify({ k: S2C.END, results, wave: w.wave });
       for (const m of this.members.values()) this._send(m, msg);
       this._running = false;
-      // 结算后再等一会儿，让客户端播完动画
-      setTimeout(() => this.destroy(), 8000);
       this.startedAt = 0;
+      this.over = true;
       if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      // 结算后再留一会儿，让客户端播完动画再回收。
+      // 宿主是 Durable Object 时不能依赖 setTimeout（实例可能已被挂起），
+      // 那边由 alarm 循环自己判断 this.over 后停止续订。
+      if (this.noSelfDestroy) return;
+      setTimeout(() => this.destroy(), 8000);
     }
+  }
+
+  /**
+   * 到点就发一份快照。
+   *
+   * 与 _oneTick 解耦，是因为宿主节奏不同：
+   * 本机 Node 4ms 轮询，tick 很密；Durable Object 100ms 一次 alarm。
+   * 如果快照挂在内层循环里，节奏就跟着宿主调用频率走，客户端插值缓冲接不住。
+   *
+   * catchUp=true 时（DO 每轮 alarm 调一次）会把错过的帧一次性补出来，
+   * 让客户端收到的仍是连续的 15Hz 序列；本机轮询不需要补，避免重复发。
+   */
+  maybeSnapshot(catchUp = false) {
+    if (!this.world || !this.members.size) return;
+    const now = nowMs();
+    const gap = now - this._lastSnapAt;
+    // 留一点容差：宿主步长是 33ms，快照判定点很难刚好落在 66.7ms 上，
+    // 严格比较会稳定地漏掉一部分帧（表现为快照只有 13Hz 而不是 15Hz）。
+    if (gap < SNAP_MS - 8) return;
+
+    if (catchUp) {
+      // 宿主是低频 alarm（DO）：这一轮可能欠了 2~3 帧，一次补齐，
+      // 让客户端那边的序列保持连续。上限 3 帧，防止长挂起后狂发。
+      const due = Math.min(3, Math.max(1, Math.round(gap / SNAP_MS)));
+      this._lastSnapAt = now;
+      for (let i = 0; i < due; i++) this._broadcastSnapshot();
+      return;
+    }
+
+    this._lastSnapAt = now;
+    this._broadcastSnapshot();
   }
 
   _broadcastSnapshot() {

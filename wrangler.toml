@@ -34,6 +34,7 @@ class_name = "RoomDurableObject"
 tag = "v1"
 new_sqlite_classes = ["RoomDurableObject"]
 
-# [[kv_namespaces]]
-# binding = "DAILY_SCORES"
-# id = "把 wrangler kv namespace create 输出的 id 填这里"
+# 榜单存储：KV 里的 key 是 lb:<日期> 与 all:top，规则见 functions/api/_lib/leaderboard.js
+[[kv_namespaces]]
+binding = "DAILY_SCORES"
+id = "d9eeb3ef5c284114bca6dd457bd225c8"

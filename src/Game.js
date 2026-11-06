@@ -262,6 +262,13 @@ export class Game {
         return;
       }
 
+      // F3：联机诊断信息（快照速率 / 抖动 / 停顿）。卡顿时先看这个。
+      if (e.key === 'F3') {
+        this._toggleNetDebug();
+        e.preventDefault();
+        return;
+      }
+
       // 组队模式：整个世界交给 CoopMode 驱动，这里只留 Esc 收面板
       if (this.mode === 'coop') {
         if (e.key === 'Escape') {
@@ -1459,8 +1466,60 @@ export class Game {
   }
 
   // ------------------------------------------------------------------
+  /**
+   * F3 联机诊断面板。
+   *
+   * 卡顿的原因可能在三处：服务端发慢了、网络抖了、本机掉帧了。
+   * 光看画面分不出来，所以把三组数字直接摆出来：
+   *   snap 快照速率（期望 15Hz）、gap 平均间隔、stall 超过 200ms 的停顿
+   *   ping 往返、fps 本机帧率
+   */
+  _toggleNetDebug() {
+    this._netDebug = !this._netDebug;
+    if (!this._netDebug) {
+      this._dbgEl?.remove();
+      this._dbgEl = null;
+      return;
+    }
+    if (!this._dbgEl) {
+      const el = document.createElement('div');
+      el.id = 'net-debug';
+      el.style.cssText = 'position:fixed;right:10px;top:10px;z-index:9999;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;'
+        + 'color:#b8f0c8;background:rgba(8,14,10,.82);border:1px solid rgba(120,220,150,.35);'
+        + 'border-radius:6px;padding:8px 10px;pointer-events:none;white-space:pre';
+      document.body.appendChild(el);
+      this._dbgEl = el;
+    }
+    this.hud.showMessage('网络诊断 开（F3 关闭）', 1.2);
+  }
+
+  _updateNetDebug(dt) {
+    if (!this._dbgEl) return;
+    // 每秒刷新一次，避免自己拖慢渲染
+    this._dbgAcc = (this._dbgAcc || 0) + dt;
+    this._dbgFrames = (this._dbgFrames || 0) + 1;
+    if (this._dbgAcc < 0.5) return;
+
+    const fps = this._dbgFrames / this._dbgAcc;
+    this._dbgAcc = 0;
+    this._dbgFrames = 0;
+
+    const s = this.net?.netstat || {};
+    const rtt = this.net?.rtt || 0;
+    const hz = s.hz || 0;
+    // 低于 12Hz 就标红：15Hz 掉了两成说明服务端或链路在拖
+    const warn = hz && hz < 12 ? ' ⚠' : '';
+    this._dbgEl.textContent = [
+      `snap  ${hz.toFixed(1)} Hz${warn}   平均间隔 ${(s.gapMs || 0).toFixed(0)}ms`,
+      `最大间隔 ${(s.gapMax || 0).toFixed(0)}ms   停顿 ${s.stalls || 0} 次`,
+      `ping  ${rtt}ms   fps  ${fps.toFixed(0)}`,
+      `模式  ${this.mode}   房间 ${this.net?.room || '-'}`,
+    ].join('\n');
+  }
+
   update(dt) {
     this.hud.update(dt);
+    this._updateNetDebug(dt);
 
     // 组队模式下，整个世界由服务端驱动，这里只画
     if (this.mode === 'coop') {

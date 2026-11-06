@@ -36,6 +36,12 @@ export class NetClient {
     this.lastSnap = null;
     this.prevSnap = null;
 
+    // 网络质量统计：卡顿时先看这里，别猜。
+    // gapMs 是快照平均到达间隔（理论上 1000/SNAPSHOT_RATE），
+    // stalls 记录超过 200ms 的停顿次数——它能区分"服务端发慢了"和"网络卡住"。
+    this.netstat = { count: 0, gapMs: 0, gapMax: 0, stalls: 0, hz: 0 };
+    this._lastSnapAt = 0;
+
     // 服务端最后一次拒绝的原因（{reason,text}）。用来区分"被拒绝"和"连不上"：
     // 两者都会触发 close，但给用户的提示完全不同。
     this.lastDeny = null;
@@ -119,6 +125,7 @@ export class NetClient {
           // 保留上一帧用于插值
           this.prevSnap = this.lastSnap;
           this.lastSnap = { ...snap, at: performance.now() };
+          this._noteSnap(this.lastSnap.at);
           this.state = snap.state === 'over' ? 'over' : 'playing';
           this._emit('snap', this.lastSnap);
           break;
@@ -156,6 +163,21 @@ export class NetClient {
       this._emit('close', {});
     };
     ws.onerror = () => { /* onclose 会处理 */ };
+  }
+
+  /** 记录快照到达节奏。只做滑动统计，不影响任何游戏逻辑。 */
+  _noteSnap(at) {
+    const s = this.netstat;
+    const gap = this._lastSnapAt ? at - this._lastSnapAt : 0;
+    this._lastSnapAt = at;
+    s.count += 1;
+    if (!gap) return;
+
+    // 指数滑动平均，起步阶段直接采用首个样本
+    s.gapMs = s.gapMs ? s.gapMs * 0.9 + gap * 0.1 : gap;
+    if (gap > s.gapMax) s.gapMax = gap;
+    if (gap > 200) s.stalls += 1;
+    s.hz = s.gapMs > 0 ? 1000 / s.gapMs : 0;
   }
 
   /** 每帧调用：发输入 + 心跳 */

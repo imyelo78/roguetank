@@ -19,6 +19,9 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), {
   headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
 });
 
+/** 房间调度的 DO 实例名。所有房间共用，见 worker/room-do.js */
+const SHARD_KEY = 'rooms-v1';
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -51,7 +54,10 @@ async function routeRoom(request, env, url) {
 }
 
 function forwardToRoom(request, env, url, code, create) {
-  const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+  // 所有房间共用一个 DO 实例（原因见 worker/room-do.js 顶部说明）：
+  // 单实例持有一张房间表，只需一条 alarm 就能同时驱动所有房间，
+  // 避免"一个房间一条 alarm"在边缘节点互相挤、把 66ms 的快照拖成 100ms+。
+  const stub = env.ROOMS.get(env.ROOMS.idFromName(SHARD_KEY));
   const target = new URL(request.url);
   target.searchParams.set('code', code);
   if (create) target.searchParams.set('create', '1');
