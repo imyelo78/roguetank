@@ -10,9 +10,12 @@ import { WEAPONS, resolveWeapon } from './weapons.js';
 import { CHASSIS } from './chassis.js';
 import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
-import { todayKey, seedFromKey, mulberry32, loadCallsign, submitScore, flushPending } from './daily.js';
+import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
+import { R, randomSeed } from './rng.js';
 import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
+import { CoopMode } from './coop.js';
+import { NetClient } from './net.js';
 
 const TMP = new THREE.Vector3();
 const TMP2 = new THREE.Vector3();
@@ -103,8 +106,21 @@ export class Game {
     this.heat = 0;
     this.overheated = false;
     this.best = loadBest();
+    // ---- 组队联机 ----
+    this.net = new NetClient();
+    this.coop = null;          // 进房后实例化为 CoopMode
+    this.mode = 'solo';        // solo | coop
+    this._booted = false;
 
     this.hud = new HUD();
+
+    // 团队邀请链接里带 ?room=XXXX：打开后自动填好人呼号就能一键进房。
+    // 只做"预填"，不自动连——朋友可能想先换车体。
+    const inviteRoom = new URLSearchParams(location.search).get('room');
+    if (inviteRoom && /^[A-Za-z0-9]{4}$/.test(inviteRoom)) {
+      this.inviteRoom = inviteRoom.toUpperCase();
+      this.hud.inviteRoom = this.inviteRoom;
+    }
 
     this._initRenderer();
     this._initScene();
@@ -114,11 +130,19 @@ export class Game {
 
   // ------------------------------------------------------------------
   _initRenderer() {
-    this.renderer = new THREE.WebGLRenderer({
-      canvas: this.canvas,
-      antialias: true,
-      powerPreference: 'high-performance',
-    });
+    try {
+      this.renderer = new THREE.WebGLRenderer({
+        canvas: this.canvas,
+        antialias: true,
+        powerPreference: 'high-performance',
+      });
+    } catch (e) {
+      // 没有 WebGL（老设备、远程桌面、自动化测试环境）时不要白屏：
+      // 降级成"仅界面"，菜单、榜单、组队房间都还能用。
+      this.noGL = true;
+      this.renderer = makeNullRenderer();
+      console.warn('WebGL 不可用，已进入仅界面模式：', e && e.message);
+    }
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -221,10 +245,30 @@ export class Game {
     };
 
     window.addEventListener('keydown', (e) => {
+      // Esc 始终表示"退出当前这一层"。必须放在打字判断之前：
+      // 房间码输入框有焦点时，下面的分支会直接 return，Esc 就完全没反应了。
+      if (e.key === 'Escape' && this.hud.lobby && !this.hud.lobby.classList.contains('hidden')) {
+        // 已经连上房间就按"离开"处理，别把人留在房间里占位
+        if (this.net && this.net.state !== 'idle') this.hud._netLeave?.();
+        this.hud.closeLobby();
+        e.preventDefault();
+        return;
+      }
+
       if (isTyping(e) || e.isComposing) {
         // 顺便清掉可能残留的移动状态，避免输入时坦克还在跑
         this.keys.clear();
         this.firing = false;
+        return;
+      }
+
+      // 组队模式：整个世界交给 CoopMode 驱动，这里只留 Esc 收面板
+      if (this.mode === 'coop') {
+        if (e.key === 'Escape') {
+          if (this.hud.lobby && !this.hud.lobby.classList.contains('hidden')) this.hud.closeLobby();
+          else this.leaveCoop();
+          e.preventDefault();
+        }
         return;
       }
 
@@ -310,12 +354,21 @@ export class Game {
     window.addEventListener('resize', () => this.resize());
 
     this.hud.bind({
-      onStart: (id, opts) => this.start(id, opts || {}),
-      onDaily: (id, opts) => this.start(id, { daily: true, ...(opts || {}) }),
-      onRestart: () => this.restart(),
+      onStart: (id, opts) => {
+        this.mode = 'solo';
+        this.start(id, opts || {});
+      },
+      onCoop: (id, opts) => this.openCoop({ name: opts?.name, chassis: id }),
+      onRestart: () => {
+        this.mode = 'solo';
+        this.restart();
+      },
       onPick: (id) => this.pickUpgrade(id),
       onWeapon: (id) => this.pickWeapon(id),
     });
+
+    // 进大厅前把网络回调接好（点「组队」时才真正连）
+    this.hud.onCoopRequest = (opts) => this.openCoop(opts);
   }
 
   resize() {
@@ -391,15 +444,17 @@ export class Game {
     this.hud.setBest(this.best);
   }
 
-  /** 每日挑战：全局安装确定性随机（种子=当日日期），普通模式还原 */
-  _setSeedMode(on) {
-    if (on && !this._origRandom) {
-      this._origRandom = Math.random;
-      Math.random = mulberry32(seedFromKey(todayKey()));
-    } else if (!on && this._origRandom) {
-      Math.random = this._origRandom;
-      this._origRandom = null;
-    }
+  /**
+   * 播种本局随机流。
+   *
+   * 不再改写全局 Math.random —— 那会让「玩家开火」和「刷怪」共用一条序列，
+   * 谁先开枪，后面的刷怪位置就变了，"同一局"根本无从谈起；
+   * 一个进程里多开房间时也会互相踩踏。现在改为命名流，见 src/rng.js。
+   */
+  _applySeed(seed) {
+    this.seed = seed >>> 0;
+    R.setSeed(this.seed);
+    return this.seed;
   }
 
   start(chassisId, opts = {}) {
@@ -410,9 +465,11 @@ export class Game {
     this.keys.clear();
     this.firing = false;
     if (chassisId && CHASSIS[chassisId]) this.chassisId = chassisId;
-    this.daily = !!opts.daily;
     if (opts.name) this.callsign = opts.name;
-    this._setSeedMode(this.daily);
+
+    // 普通模式：每局随机（同一天不再固定，玩法本来就允许挑图）
+    const seed = opts.seed != null ? opts.seed >>> 0 : randomSeed();
+    this._applySeed(seed);
     this.sound.unlock();
     this._clearField();
     this._resetRun();
@@ -444,9 +501,8 @@ export class Game {
   }
 
   restart() {
-    const opts = { name: this.callsign };
-    if (this.daily) opts.daily = true;
-    this.start(this.chassisId, opts);
+    // 重开换一张图，保持新鲜感
+    this.start(this.chassisId, { name: this.callsign });
   }
 
   startWave(n) {
@@ -586,8 +642,8 @@ export class Game {
     let fallback = null;
 
     for (let attempt = 0; attempt < 70; attempt++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = minR + Math.random() * (maxR - minR);
+      const a = R.spawn() * Math.PI * 2;
+      const r = minR + R.spawn() * (maxR - minR);
       const x = THREE.MathUtils.clamp(p.x + Math.sin(a) * r, -half + 5, half - 5);
       const z = THREE.MathUtils.clamp(p.z + Math.cos(a) * r, -half + 5, half - 5);
 
@@ -611,8 +667,8 @@ export class Game {
       if (d > bestD) { bestD = d; best = sp; }
     }
     for (let attempt = 0; attempt < 30; attempt++) {
-      const x = THREE.MathUtils.clamp(best.x + (Math.random() - 0.5) * 10, -half + 5, half - 5);
-      const z = THREE.MathUtils.clamp(best.z + (Math.random() - 0.5) * 10, -half + 5, half - 5);
+      const x = THREE.MathUtils.clamp(best.x + (R.spawn() - 0.5) * 10, -half + 5, half - 5);
+      const z = THREE.MathUtils.clamp(best.z + (R.spawn() - 0.5) * 10, -half + 5, half - 5);
       if (this.world.blocked(x, z, 2.2)) continue;
       if (Math.hypot(x - p.x, z - p.z) < 20) continue;
       return { x, z };
@@ -739,8 +795,8 @@ export class Game {
   /** 炮击压制：18 秒后每 7 秒锁定玩家附近，1.6 秒预警 */
   _startStrike() {
     const p = this.player.group.position;
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.random() * 4;
+    const a = R.spawn() * Math.PI * 2;
+    const r = R.spawn() * 4;
     const x = p.x + Math.sin(a) * r;
     const z = p.z + Math.cos(a) * r;
     const radius = 5;
@@ -765,8 +821,8 @@ export class Game {
     const p = this.player.group.position;
     const half = this.world.half;
     for (let i = 0; i < count; i++) {
-      const a = Math.random() * Math.PI * 2 + (i / count) * Math.PI * 2;
-      const r = 1.5 + Math.random() * 7;
+      const a = R.spawn() * Math.PI * 2 + (i / count) * Math.PI * 2;
+      const r = 1.5 + R.spawn() * 7;
       const x = THREE.MathUtils.clamp(p.x + Math.sin(a) * r, -half + 4, half - 4);
       const z = THREE.MathUtils.clamp(p.z + Math.cos(a) * r, -half + 4, half - 4);
       const radius = 4.2;
@@ -878,7 +934,7 @@ export class Game {
     // 多联装：左右对称散布；速射机炮额外随机散布
     const spread = 0.055;
     for (let i = 0; i < n; i++) {
-      const jitter = w.spread ? (Math.random() - 0.5) * w.spread * 2 : 0;
+      const jitter = w.spread ? (R.combat() - 0.5) * w.spread * 2 : 0;
       const a = base + (i - (n - 1) / 2) * spread + jitter;
       const d = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
       this.fire(this.player, d, w.damage, 'player', {
@@ -1327,11 +1383,14 @@ export class Game {
 
   /** 每日挑战结算：上传成绩并拉取今日榜 + 历史总榜 */
   /**
-   * 结算上报：daily（每日挑战）/ normal（训练模式）各自独立榜单。
+   * 结算上报：所有战斗计入同一榜单，附带人数标记。
    * 上传结果（成功 / 失败原因）会显示在结算页，避免"打了却没上榜"无从判断。
    */
-  async _submitRun(base, mode) {
+  async _submitRun(base, mode = 'solo', teamSize = 1) {
     const name = this.callsign || loadCallsign() || '指挥官';
+    const isCoop = mode === 'coop';
+    const chassis = isCoop ? (this.coop?.me?.chassis || this.chassisId) : this.chassisId;
+
     let res;
     try {
       res = await submitScore({
@@ -1340,17 +1399,25 @@ export class Game {
         wave: base.wave,
         kills: base.kills,
         score: base.score,
-        mode,
+        timeMs: Math.round((isCoop ? (this.coop?.runTime || 0) : this.runTime) * 1000),
+        chassis,
+        weapon: isCoop ? 'assault' : (this.stats.weaponId || ''),
+        // 人数：让榜单能看出这一局是单人还是 4 人合作
+        players: Math.max(1, Math.min(4, isCoop ? teamSize : 1)),
+        mode: 'solo',
       });
     } catch {
       res = { list: [], all: [], remote: false, reason: 'error' };
     }
+
+    const syncReason = res.reason;
     this.hud.showGameOver({
       ...base,
-      daily: mode === 'daily',
-      mode,
+      mode: isCoop ? 'coop' : 'solo',
+      teamSize,
+      teamScore: base.teamScore || 0,
       synced: res.remote,
-      syncReason: res.reason,
+      syncReason,
       myName: name,
       leaderboard: (res.list || []).slice(0, 5),
       overall: (res.all || []).slice(0, 5),
@@ -1368,9 +1435,9 @@ export class Game {
 
     if (this.shake > 0) {
       const s = this.shake;
-      this.camera.position.x += (Math.random() - 0.5) * s;
-      this.camera.position.y += (Math.random() - 0.5) * s;
-      this.camera.position.z += (Math.random() - 0.5) * s;
+      this.camera.position.x += (R.fx() - 0.5) * s;
+      this.camera.position.y += (R.fx() - 0.5) * s;
+      this.camera.position.z += (R.fx() - 0.5) * s;
       this.shake = Math.max(0, this.shake - dt * 1.6);
     }
   }
@@ -1394,6 +1461,13 @@ export class Game {
   // ------------------------------------------------------------------
   update(dt) {
     this.hud.update(dt);
+
+    // 组队模式下，整个世界由服务端驱动，这里只画
+    if (this.mode === 'coop') {
+      this.coop?.update(dt);
+      return;
+    }
+
     this._updateMinimap(dt);
 
     if (this.state === 'playing') {
@@ -1431,7 +1505,7 @@ export class Game {
             isNew,
           };
           // 每日挑战与训练模式都上传（各自独立榜单），训练模式分数不可比但可围观
-          this._submitRun(base, this.daily ? 'daily' : 'normal');
+          this._submitRun(base, 'solo', 1);
         }
       }
     }
@@ -1440,6 +1514,190 @@ export class Game {
     this._updateCamera(dt);
     this.effects.update(dt);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // ================= 组队联机 =================
+
+  /**
+   * 进入组队：把网络层的回调接到大厅与战场上。
+   * 大厅只负责"选房 / 报数"，真正开局由服务端的 welcome 消息触发。
+   */
+  openCoop({ name, chassis }) {
+    const hud = this.hud;
+
+    // 大厅里点"创建 / 加入"时走这里。
+    // 参数顺序容易踩坑：HUD 在 openLobby 时才知道呼号与车体，网络动作只接房间码，
+    // 所以 name/chassis 必须在这里闭包住，不能进 _netAction 里再读。
+    this._coopName = name || this.callsign || loadCallsign() || '指挥官';
+    this._coopChassis = chassis || this.chassisId;
+
+    hud._netAction = (code) => {
+      if (hud._joining) return;      // 防连点：一次只连一个房间
+      hud._joining = true;
+      hud.setLobbyError('');
+      hud.lobbyStatus.textContent = code ? `正在加入 ${code}…` : '正在创建房间…';
+      this.net.connect({ code: code || '', name: this._coopName, chassis: this._coopChassis });
+      // 回调注册是幂等的；这里再确保一次，防止早退分支导致"_netAction 是 undefined"
+      this._bindNet();
+      // 兜底：10 秒还没连上就告诉用户，别让"连接中…"一直转
+      clearTimeout(this._joinTimer);
+      this._joinTimer = setTimeout(() => {
+        if (this.net.state === 'connecting') {
+          hud._joining = false;
+          this.net.close();
+          hud.setLobbyError('连接超时：检查一下服务端是否在运行（npm start）');
+        }
+      }, 10000);
+    };
+    hud._netStart = () => this.net.start();
+    hud._netLeave = () => {
+      this.leaveCoop();
+      this.net.close();
+    };
+    hud._lobbyNet = this.net;
+    hud._reopenLobby = () => {
+      if (this.mode !== 'coop') return;
+      hud.showRoom(this.net.room, this.net.players, this.net.you, true, this.net.host);
+      hud.lobby.classList.remove('hidden');
+    };
+    hud.chassis = chassis;
+
+    this._bindNet();
+  }
+
+  /** 网络回调只注册一次（重复注册会导致快照事件被处理两遍） */
+  _bindNet() {
+    if (this._netBound) return;
+    this._netBound = true;
+    const hud = this.hud;
+
+    this.net.on('welcome', (w) => {
+      // 先更新房间浮层再开局：开局会关掉大厅，这时房间码只剩浮层这一个入口
+      const code = w.code || this.net.room;
+      clearTimeout(this._joinTimer);
+      this.hud._joining = false;
+      this.hud.showRoomChip(code, (w.players || []).length);
+      this.hud.roomCode = code;
+      this.hud._lastRoom = code;
+      this.hud.roomCodeShow.textContent = code;
+      if (!this.coop) this.coop = new CoopMode(this);
+      this.mode = 'coop';
+      this.state = 'coop';
+      this.hud.closeLobby();
+      try {
+        this.coop.enter(w);
+      } catch (err) {
+        // 进战场失败（极端情况：模型资源异常）也要保证能退回主菜单，而不是卡在黑屏
+        console.error('[coop] enter failed', err);
+        this.leaveCoop();
+        this.hud.showMessage('进入战场失败，请重试', 3);
+      }
+    });
+
+    this.net.on('roster', (m) => {
+      // 已在局内：不弹大厅，只更新左下的房间浮层
+      if (this.mode === 'coop') {
+        this.hud.showRoomChip(this.net.room, m.players.length);
+        return;
+      }
+      hud.showRoom(
+        this.net.room || hud.room,
+        m.players,
+        this.net.you,
+        !!(m.started ?? this.net.state === 'playing'),
+        this.net.host,
+      );
+    });
+
+    this.net.on('event', (list) => this.coop?.onEvents(list));
+
+    this.net.on('deny', (m) => {
+      const text = m.text || '连接被拒绝';
+      if (this.mode === 'coop') {
+        // 已在局内被拒（房间已散），直接回主菜单并说明原因
+        this.leaveCoop();
+        this.hud.showMessage(`连接被拒绝：${text}`, 3);
+        return;
+      }
+      hud.setLobbyError(text);
+      hud.lobbyChoose.classList.remove('hidden');
+      hud.lobbyWait.classList.add('hidden');
+      hud.lobby.classList.remove('hidden');
+    });
+
+    this.net.on('end', (m) => this._endCoop(m));
+
+    this.net.on('close', () => {
+      this.hud._joining = false;
+      clearTimeout(this._joinTimer);
+      if (this.mode === 'coop') {
+        // 服务端先发 end 再断开，这种情况已经结算过了
+        if (this.hud.gameover && !this.hud.gameover.classList.contains('hidden')) return;
+        this.hud.showMessage('与服务器断开 · 按 Esc 返回主菜单', 4);
+        this.leaveCoop();
+      }
+    });
+  }
+
+  /** 主动退出组队，回到主菜单 */
+  leaveCoop() {
+    if (this.mode !== 'coop') {
+      this.hud.closeLobby();
+      return;
+    }
+    // 先切模式再断线：net 的 close 回调看到 mode==='solo' 就不会再弹"与服务器断开"
+    this.mode = 'solo';
+    this.state = 'menu';
+    this.coop?.exit();
+    // 必须真的断开。早期只切了本地状态，人还留在房间里：
+    // 队友那边会一直看到一台"幽灵坦克"，本机也会继续收快照与事件。
+    if (this.net && this.net.state !== 'idle') this.net.close();
+    this.hud.closeLobby();
+    this.hud.hideRoomChip?.();
+    this.hud.hideBossBar?.();
+    this.hud.setModifier(null);
+    // 回到主菜单：显示开局面板，收起 HUD
+    this.hud.overlay?.classList.remove('hidden');
+    this.hud.hud?.classList.add('hidden');
+    this.hud.crosshair?.classList.add('hidden');
+    this.hud.gameover?.classList.add('hidden');
+    this.hud.app?.classList.remove('playing');
+    this.keys.clear();
+    this.firing = false;
+  }
+
+  /** 本局结束：展示结算并上传成绩（人数计入榜单） */
+  async _endCoop(msg) {
+    const me = this.coop?.me;
+    if (!me) return;
+    const myId = this.coop.myId;
+    const runTime = this.coop.runTime;
+    const waveNow = this.coop.wave;
+    const teamScore = this.coop.teamScore;
+    if (this.mode === 'coop') {
+      this.mode = 'solo';
+      this.state = 'over';
+      this.coop.exit();
+    }
+    this.hud.hideBossBar?.();
+    this.hud.setModifier(null);
+
+    const row = (msg.results || []).find((r) => r.id === myId) || { kills: 0, score: 0 };
+    const teamSize = (this.net.players || []).length || 1;
+
+    const base = {
+      wave: msg.wave || waveNow || 1,
+      kills: row.kills || 0,
+      score: row.score || 0,
+      time: formatTime(runTime || 0),
+      // 组队不计个人最佳（最佳是单人榜口径），传 null 让界面隐藏这一行
+      best: null,
+      isNew: false,
+      teamScore,
+    };
+    await this._submitRun(base, 'coop', teamSize);
+    this.hud.closeLobby();
+    this.net.close();
   }
 
   mount() {
@@ -1455,4 +1713,27 @@ export class Game {
     };
     requestAnimationFrame(loop);
   }
+}
+
+/**
+ * 无 WebGL 时的兜底渲染器。
+ * 只实现被调用到的几个方法，让 UI 层能照常工作，并在画布上给一句提示。
+ */
+function makeNullRenderer() {
+  const noop = () => {};
+  return {
+    domElement: document.getElementById('scene'),
+    shadowMap: { enabled: false },
+    setPixelRatio: noop,
+    setSize: noop,
+    render: () => {
+      const c = document.getElementById('scene');
+      if (!c || c.dataset.notice) return;
+      c.dataset.notice = '1';
+      const tip = document.createElement('div');
+      tip.className = 'gl-fallback';
+      tip.innerHTML = '<b>这台设备没能启动 3D 画面</b><span>请用支持 WebGL 的浏览器打开，或关闭省电模式后刷新。</span>';
+      c.parentElement?.appendChild(tip);
+    },
+  };
 }

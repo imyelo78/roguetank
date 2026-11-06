@@ -1,17 +1,25 @@
-// 排行榜：每日挑战 + 训练模式
-// 日期种子确定性随机（每日挑战）、成绩上传 / 排行榜（远端 KV 失败时回退 localStorage）
+// 榜单与身份
+//
+// 只有一条榜：所有战斗（单人或 2~4 人合作）都计入。两个视图：
+//   今日  / 总榜
+//
+// 三条原则：
+//   1. 本地永远先写（断网、KV 未绑定也不丢战绩），远端失败进补传队列。
+//   2. 去重身份优先用 pid（改名后仍是同一个人），与服务端保持一致。
+//   3. 榜单条目带人数与车体，读者自己判断可比性。
 
-const LB_KEY = 'tank3d.lb.v3';          // { days, trDays, all, trAll }
-const LB_KEY_V2 = 'tank3d.daily.lb.v2'; // 旧结构，读到时自动迁移
+const LB_KEY = 'tank3d.lb.v4';
+const LB_KEY_V3 = 'tank3d.lb.v3';
+const LB_KEY_V2 = 'tank3d.daily.lb.v2';
 const NAME_KEY = 'tank3d.name.v1';
 const PID_KEY = 'tank3d.pid.v1';
 const PENDING_KEY = 'tank3d.pending.v1'; // 上传失败的成绩，下次启动补传
 
-const EMPTY = () => ({ days: {}, trDays: {}, all: [], trAll: [] });
+const EMPTY = () => ({ days: {}, all: [] });
 
 /**
  * 当日日期键 YYYY-MM-DD，固定用 UTC+8，
- * 与后端 functions/api/scores.js 保持一致（避免时区导致跨日对不上榜）。
+ * 与后端保持一致（避免时区导致跨日对不上榜）。
  */
 export function todayKey(offsetDays = 0) {
   const t = Date.now() + 8 * 3600 * 1000 + offsetDays * 86400000;
@@ -28,15 +36,7 @@ export function seedFromKey(str) {
   return h >>> 0;
 }
 
-/** 确定性随机数生成器（与 level.js 同款） */
-export function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+export { mulberry32 } from './rng.js';
 
 export function loadCallsign() {
   try { return localStorage.getItem(NAME_KEY) || ''; } catch { return ''; }
@@ -64,9 +64,7 @@ function normalize(v) {
   const out = EMPTY();
   if (!v || typeof v !== 'object') return out;
   if (v.days && typeof v.days === 'object') out.days = v.days;
-  if (v.trDays && typeof v.trDays === 'object') out.trDays = v.trDays;
   if (Array.isArray(v.all)) out.all = v.all;
-  if (Array.isArray(v.trAll)) out.trAll = v.trAll;
   return out;
 }
 
@@ -74,8 +72,10 @@ function readLocal() {
   try {
     const raw = localStorage.getItem(LB_KEY);
     if (raw) return normalize(JSON.parse(raw));
-    // 旧版本数据一次性迁移
-    const old = localStorage.getItem(LB_KEY_V2);
+
+    // 旧版本数据一次性迁移（v3 → v4 只是多了挑战榜，结构兼容）
+    // 老版本可能存了「训练榜 / 挑战榜」，这里只保留统一榜需要的部分
+    const old = localStorage.getItem(LB_KEY_V3) || localStorage.getItem(LB_KEY_V2);
     if (old) {
       const o = JSON.parse(old);
       const data = normalize({ days: o.days, all: o.all });
@@ -90,23 +90,27 @@ function writeLocal(data) {
   try { localStorage.setItem(LB_KEY, JSON.stringify(data)); } catch { /* 忽略 */ }
 }
 
-const sortDesc = (a, b) => b.score - a.score || b.wave - a.wave || (a.t || 0) - (b.t || 0);
+const sortDesc = (a, b) => (b.score || 0) - (a.score || 0)
+  || (b.wave || 0) - (a.wave || 0)
+  || (a.t || 0) - (b.t || 0);
 
-const identOf = (e) => e.id || e.name;
+/** 去重身份：与 Service Worker 端一致，优先 pid */
+const identOf = (e) => e.pid || e.id || e.name;
 
-/** 同身份（name#pid）只保留最高分，返回 Top50 */
+const TOP_N = 100;
+
+/** 同身份只保留最高分，返回 Top100 */
 export function mergeEntry(list, entry) {
   const key = identOf(entry);
   const prev = list.find((e) => identOf(e) === key);
-  // 已有更高分（或同分但更靠前）则保留原成绩
-  if (prev && (prev.score > entry.score ||
-      (prev.score === entry.score && (prev.wave || 0) >= (entry.wave || 0)))) {
+  if (prev && (prev.score > entry.score
+      || (prev.score === entry.score && (prev.wave || 0) >= (entry.wave || 0)))) {
     return list;
   }
   const rest = list.filter((e) => identOf(e) !== key);
   rest.push(entry);
   rest.sort(sortDesc);
-  return rest.slice(0, 50);
+  return rest.slice(0, TOP_N);
 }
 
 /**
@@ -119,35 +123,45 @@ export function mergeLists(remote = [], local = []) {
     if (!e || !e.name || typeof e.score !== 'number') continue;
     out = mergeEntry(out, e);
   }
-  return out.sort(sortDesc).slice(0, 50);
+  return out.sort(sortDesc).slice(0, TOP_N);
 }
 
-const dayBucket = (data, mode) => (mode === 'normal' ? data.trDays : data.days);
-const allBucket = (data, mode) => (mode === 'normal' ? data.trAll : data.all);
-const dayKeyOf = (mode) => (mode === 'normal' ? 'trDays' : 'days');
-const allKeyOf = (mode) => (mode === 'normal' ? 'trAll' : 'all');
+const makeEntry = (run) => {
+  const e = {
+    name: run.name,
+    wave: run.wave,
+    kills: run.kills,
+    score: run.score,
+    players: Math.max(1, Math.min(4, run.players || 1)),
+    t: Date.now(),
+  };
+  if (run.pid) { e.pid = run.pid; e.id = `${run.name}#${run.pid}`; }
+  if (run.timeMs) e.timeMs = run.timeMs;
+  if (run.chassis) e.chassis = run.chassis;
+  if (run.weapon) e.weapon = run.weapon;
+  if (run.mods) e.mods = run.mods;
+  return e;
+};
 
-function localSubmit({ date, name, wave, kills, score, mode = 'daily', pid = '' }) {
+function localSubmit(run) {
   const data = readLocal();
-  const entry = { name, wave, kills, score, t: Date.now() };
-  if (pid) entry.id = `${name}#${pid}`;
+  const entry = makeEntry(run);
+  const date = run.date || todayKey();
 
-  const dk = dayKeyOf(mode);
-  const ak = allKeyOf(mode);
-  data[dk][date] = mergeEntry(data[dk][date] || [], entry);
-  data[ak] = mergeEntry(data[ak], entry);
+  data.days[date] = mergeEntry(data.days[date] || [], entry);
+  data.all = mergeEntry(data.all, entry);
 
-  // 每个桶只保留最近 120 天
-  const keys = Object.keys(data[dk]).sort().reverse().slice(0, 120);
+  // 只保留最近 120 天
+  const keys = Object.keys(data.days).sort().reverse().slice(0, 120);
   const trimmed = {};
-  for (const k of keys) trimmed[k] = data[dk][k];
-  data[dk] = trimmed;
+  for (const k of keys) trimmed[k] = data.days[k];
+  data.days = trimmed;
 
   writeLocal(data);
   return data;
 }
 
-const localDays = (data, mode) => Object.keys(dayBucket(data, mode) || {}).sort().reverse();
+const localDays = (data) => Object.keys(data.days || {}).sort().reverse();
 
 // ---------------- 上传失败队列 ----------------
 
@@ -163,8 +177,8 @@ function writePending(list) {
 }
 
 function pushPending(item) {
-  const list = readPending().filter((x) => !(x.date === item.date && x.name === item.name &&
-    x.mode === item.mode && x.score === item.score && x.wave === item.wave));
+  const list = readPending().filter((x) => !(x.date === item.date && x.name === item.name
+    && x.score === item.score && x.wave === item.wave));
   list.push(item);
   writePending(list);
 }
@@ -202,31 +216,45 @@ async function postScore(payload) {
 // ---------------- 对外接口 ----------------
 
 /**
- * 提交成绩。本地始终写入，再尝试远端；远端失败则进补传队列。
- * @returns {{ list, all, days, remote, reason? }}
+ * 提交成绩。本地先写，再尝试远端；失败进补传队列。
+ * @param {{date?, name, wave, kills, score, timeMs?, chassis?, weapon?, mods?, players?}} run
  */
-export async function submitScore({ date, name, wave, kills, score, mode = 'daily' }) {
+export async function submitScore(run) {
   const pid = getPid();
-  const local = localSubmit({ date, name, wave, kills, score, mode, pid });
-  const localList = dayBucket(local, mode)[date] || [];
+  const payload = {
+    date: run.date || todayKey(),
+    name: run.name,
+    wave: run.wave,
+    kills: run.kills,
+    score: run.score,
+    players: Math.max(1, Math.min(4, run.players || 1)),
+    timeMs: run.timeMs || 0,
+    chassis: run.chassis || '',
+    weapon: run.weapon || '',
+    mods: Array.isArray(run.mods) ? run.mods : [],
+    pid,
+  };
 
-  const res = await postScore({ date, name, wave, kills, score, mode, pid });
+  const local = localSubmit(payload);
+  const localList = local.days[payload.date] || [];
+
+  const res = await postScore(payload);
   if (res.ok) {
     const d = res.data;
     return {
       // 远端可能只含云端的成绩，与本机记录合并，确保自己的这局一定在榜上
       list: mergeLists(d.list || [], localList),
-      all: mergeLists(d.all || [], allBucket(local, mode)),
-      days: mergeDays(d.days || [], localDays(local, mode)),
+      all: mergeLists(d.all || [], local.all),
+      days: mergeDays(d.days || [], localDays(local)),
       remote: true,
     };
   }
 
-  pushPending({ date, name, wave, kills, score, mode, pid, t: Date.now() });
+  pushPending({ ...payload, t: Date.now() });
   return {
     list: localList,
-    all: allBucket(local, mode),
-    days: localDays(local, mode),
+    all: local.all,
+    days: localDays(local),
     remote: false,
     reason: res.reason,
   };
@@ -240,12 +268,12 @@ export function mergeDays(a = [], b = []) {
     .slice(0, 120);
 }
 
-/** 拉取某天战绩（远端 + 本地合并，远端缺失时也不丢本机记录） */
-export async function fetchDay(date, mode = 'daily') {
+/** 拉取今日榜（远端 + 本地合并） */
+export async function fetchDay(date = todayKey()) {
   const local = readLocal();
-  const localList = dayBucket(local, mode)[date] || [];
+  const localList = local.days[date] || [];
   try {
-    const r = await fetch(`/api/scores?date=${encodeURIComponent(date)}&mode=${mode}`);
+    const r = await fetch(`/api/scores?date=${encodeURIComponent(date)}`);
     if (r.ok) {
       const data = await r.json();
       if (data.ok && Array.isArray(data.list)) {
@@ -256,26 +284,22 @@ export async function fetchDay(date, mode = 'daily') {
   return { list: localList, remote: false };
 }
 
-/** 拉取总榜 + 已有战绩的日期列表（同样与本地合并） */
-export async function fetchSummary(mode = 'daily') {
+/** 拉取总榜（远端 + 本地合并） */
+export async function fetchAll() {
   const local = readLocal();
   try {
-    const r = await fetch(`/api/scores?view=all&mode=${mode}`);
+    const r = await fetch('/api/scores?view=all');
     if (r.ok) {
       const data = await r.json();
       if (data.ok) {
-        return {
-          all: mergeLists(Array.isArray(data.all) ? data.all : [], allBucket(local, mode)),
-          days: mergeDays(Array.isArray(data.days) ? data.days : [], localDays(local, mode)),
-          remote: true,
-        };
+        return { all: mergeLists(Array.isArray(data.all) ? data.all : [], local.all), remote: true };
       }
     }
   } catch { /* 回退 */ }
-  return { all: allBucket(local, mode), days: localDays(local, mode), remote: false };
+  return { all: local.all, remote: false };
 }
 
-/** 服务端诊断：各榜条数与最后写入时间（用于确认写入是否真的生效） */
+/** 服务端诊断：榜条数与最后写入时间 */
 export async function fetchStats() {
   try {
     const r = await fetch('/api/scores?view=stats');
@@ -287,4 +311,4 @@ export async function fetchStats() {
   return null;
 }
 
-export { sortDesc };
+export { sortDesc, identOf };

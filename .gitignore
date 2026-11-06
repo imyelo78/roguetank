@@ -7,6 +7,9 @@ node_modules/
 .dev.vars
 *.log
 
+# 本地榜单数据（node server.mjs 写这里）
+.data/
+
 # 系统文件
 .DS_Store
 Thumbs.db

@@ -1,5 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 import { Tank } from './Tank.js';
+import { R } from './rng.js';
 
 const BAR_W = 2.24;
 const LOS_INTERVAL = 0.2;
@@ -79,7 +80,7 @@ export class Enemy {
       speed: speed * speedMul,
       x,
       z,
-      rotY: Math.random() * Math.PI * 2,
+      rotY: R.combat() * Math.PI * 2,
     });
     this.tank.group.scale.setScalar(scale);
     this.tank.radius = boss ? (bossInfo.kind === 'breaker' ? 2.5 : 2.1)
@@ -142,7 +143,7 @@ export class Enemy {
     this.castKind = null;
     this.burst = 0;
     this.burstT = 0;
-    this.coreT = Math.random() * 6;
+    this.coreT = R.combat() * 6;
 
     if (boss) {
       this.core = new THREE.Mesh(CORE_GEO, CORE_MATS[bossInfo.kind]);
@@ -153,23 +154,23 @@ export class Enemy {
 
     this.state = 'patrol';
     this.target = null;
-    this.fireCd = 1.2 + Math.random() * 1.6;
+    this.fireCd = 1.2 + R.combat() * 1.6;
     this.spawnShield = 0.9;   // 出场保护，避免刚出生就被秒
     this.stuckT = 0;          // 卡住计时
     this.avoidT = 0;          // 脱困方向剩余时间
     this.avoidDir = new THREE.Vector3(0, 0, 1);
-    this.strafe = Math.random() > 0.5 ? 1 : -1;
+    this.strafe = R.combat() > 0.5 ? 1 : -1;
 
     // 视线：每 0.2s 采样一次，避免每帧做线段检测
     this.los = false;
-    this.losTimer = Math.random() * LOS_INTERVAL;
+    this.losTimer = R.combat() * LOS_INTERVAL;
     this.noLosT = 0;
 
     // 寻路
     this.path = [];
     this.pathGoal = new THREE.Vector3(Infinity, 0, Infinity);
-    this.repathT = Math.random() * 0.5;
-    this.flankSide = Math.random() > 0.5 ? 1 : -1;
+    this.repathT = R.combat() * 0.5;
+    this.flankSide = R.combat() > 0.5 ? 1 : -1;
     this.flankGoal = null;
     this.flankT = 0;
     this.directGoal = false;
@@ -193,10 +194,10 @@ export class Enemy {
   /** 在玩家周围找一个“能看见玩家”的侧翼/后方点位 */
   _pickFlankGoal(world, player, playerYaw) {
     const p = this.position;
-    const base = playerYaw + Math.PI + this.flankSide * (0.55 + Math.random() * 0.6);
+    const base = playerYaw + Math.PI + this.flankSide * (0.55 + R.combat() * 0.6);
     for (let i = 0; i < 9; i++) {
       const a = base + (i % 2 === 0 ? 1 : -1) * Math.ceil(i / 2) * 0.42;
-      const r = 11 + Math.random() * 6;
+      const r = 11 + R.combat() * 6;
       const x = THREE.MathUtils.clamp(player.x + Math.sin(a) * r, -world.half + 5, world.half - 5);
       const z = THREE.MathUtils.clamp(player.z + Math.cos(a) * r, -world.half + 5, world.half - 5);
       if (world.blocked(x, z, 2.0)) continue;
@@ -208,8 +209,8 @@ export class Enemy {
 
     // 找不到理想侧翼：退化为玩家附近
     for (let i = 0; i < 8; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 10 + Math.random() * 5;
+      const a = R.combat() * Math.PI * 2;
+      const r = 10 + R.combat() * 5;
       const x = THREE.MathUtils.clamp(player.x + Math.sin(a) * r, -world.half + 5, world.half - 5);
       const z = THREE.MathUtils.clamp(player.z + Math.cos(a) * r, -world.half + 5, world.half - 5);
       if (!world.blocked(x, z, 2.0)) {
@@ -237,7 +238,7 @@ export class Enemy {
       Math.hypot(tx - this.pathGoal.x, tz - this.pathGoal.z) > 4;
 
     if (this.repathT <= 0 || goalMoved) {
-      this.repathT = 0.8 + Math.random() * 0.4;
+      this.repathT = 0.8 + R.combat() * 0.4;
       this.pathGoal.set(tx, 0, tz);
       if (nav && !nav.clearWalk(p.x, p.z, tx, tz, this.tank.radius)) {
         this.path = nav.findPath(p.x, p.z, tx, tz);
@@ -283,7 +284,7 @@ export class Enemy {
       this.pathGoal.set(Infinity, 0, Infinity);
       this.repathT = 0;
       this.avoidT = 0.8;
-      const side = Math.random() > 0.5 ? 1 : -1;
+      const side = R.combat() > 0.5 ? 1 : -1;
       const a = Math.atan2(tx - p.x, tz - p.z) + side * Math.PI / 2;
       this.avoidDir.set(Math.sin(a), 0, Math.cos(a));
     }
@@ -352,8 +353,8 @@ export class Enemy {
     let aimYaw = Math.atan2(dx, dz);
     if (this.state === 'patrol') {
       if (!this.target || Math.hypot(this.target.x - p.x, this.target.z - p.z) < 3) {
-        const a = aimYaw + (Math.random() - 0.5) * 1.1;
-        const r = 10 + Math.random() * 16;
+        const a = aimYaw + (R.combat() - 0.5) * 1.1;
+        const r = 10 + R.combat() * 16;
         this.target = new THREE.Vector3(
           THREE.MathUtils.clamp(p.x + Math.sin(a) * r, -world.half + 6, world.half - 6),
           0,
@@ -375,7 +376,7 @@ export class Enemy {
       // ---- 绕后：走向玩家视野侧后方，走出掩体重新获得视线 ----
       if (!this.flankGoal || this.flankT <= 0 ||
           Math.hypot(this.flankGoal.x - player.x, this.flankGoal.z - player.z) > 14) {
-        this.flankT = 1.8 + Math.random() * 1.2;
+        this.flankT = 1.8 + R.combat() * 1.2;
         this.flankGoal = this._pickFlankGoal(world, player, ctx.player.turretYaw).clone();
       }
       this._navigate(dt, ctx, this.flankGoal.x, this.flankGoal.z, 1);
@@ -400,11 +401,11 @@ export class Enemy {
     if (this.state === 'attack' && this.los && this.fireCd <= 0 &&
         this.spawnShield <= 0 && aimErr < 0.16) {
       this.fireCd = this.isElite
-        ? 1.35 + Math.random() * 0.7
-        : 1.8 + Math.random() * 1.1;
+        ? 1.35 + R.combat() * 0.7
+        : 1.8 + R.combat() * 1.1;
       const dir = new THREE.Vector3(dx, 0, dz).normalize();
-      dir.x += (Math.random() - 0.5) * 0.13;
-      dir.z += (Math.random() - 0.5) * 0.13;
+      dir.x += (R.combat() - 0.5) * 0.13;
+      dir.z += (R.combat() - 0.5) * 0.13;
       dir.normalize();
       ctx.fire(tank, dir, this.damage, 'enemy');
     }
@@ -460,7 +461,7 @@ export class Enemy {
     }
 
     if (this.los && dist < 38 && this.fireCd <= 0 && this.spawnShield <= 0 && aimErr < 0.2) {
-      this.fireCd = 2.6 + Math.random() * 0.8;
+      this.fireCd = 2.6 + R.combat() * 0.8;
       ctx.fire(tank, new THREE.Vector3(dx, 0, dz).normalize(), this.damage, 'enemy', {
         speed: 46, color: 0xffe2a0, glow: 0xff8a2a, scale: 1.6,
       });
@@ -493,9 +494,9 @@ export class Enemy {
       if (!this.target || Math.hypot(this.target.x - p.x, this.target.z - p.z) < 3) {
         const half = ctx.world.half;
         this.target = new THREE.Vector3(
-          THREE.MathUtils.clamp(p.x + (Math.random() - 0.5) * 20, -half + 6, half - 6),
+          THREE.MathUtils.clamp(p.x + (R.combat() - 0.5) * 20, -half + 6, half - 6),
           0,
-          THREE.MathUtils.clamp(p.z + (Math.random() - 0.5) * 20, -half + 6, half - 6)
+          THREE.MathUtils.clamp(p.z + (R.combat() - 0.5) * 20, -half + 6, half - 6)
         );
       }
       this._navigate(dt, ctx, this.target.x, this.target.z, 0.5);
@@ -577,7 +578,7 @@ export class Enemy {
         this.burstT = 0.1;
         this.burst -= 1;
         const base = Math.atan2(dx, dz);
-        const a = base + (Math.random() - 0.5) * 0.05;
+        const a = base + (R.combat() - 0.5) * 0.05;
         ctx.fire(tank, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), this.damage, 'enemy', {
           speed: 66, color: 0x9ff4ff, glow: 0x38d8ff, scale: 0.85,
         });
@@ -611,7 +612,7 @@ export class Enemy {
     if (breaker) {
       ctx.bossStrike(this, count);
     } else {
-      const base = Math.random() * Math.PI * 2;
+      const base = R.combat() * Math.PI * 2;
       const dmg = Math.max(7, this.damage);
       for (let i = 0; i < count; i++) {
         const a = base + (i / count) * Math.PI * 2;
@@ -631,8 +632,8 @@ export class Enemy {
     const world = ctx.world;
     const p = this.position;
     for (let i = 0; i < 24; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 17 + Math.random() * 7;
+      const a = R.combat() * Math.PI * 2;
+      const r = 17 + R.combat() * 7;
       const x = THREE.MathUtils.clamp(player.x + Math.sin(a) * r, -world.half + 6, world.half - 6);
       const z = THREE.MathUtils.clamp(player.z + Math.cos(a) * r, -world.half + 6, world.half - 6);
       if (world.blocked(x, z, 2.4)) continue;

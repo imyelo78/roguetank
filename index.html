@@ -104,8 +104,8 @@
       </div>
 
       <div class="start-btns">
-        <button id="start-btn">开始战斗</button>
-        <button id="daily-btn">每日挑战</button>
+        <button id="start-btn">单人出击</button>
+        <button id="coop-btn" class="coop">组队（最多 4 人）</button>
       </div>
       <p class="tip">
         <a id="lb-open" class="link">查看排行榜</a> · 每清完一波选择强化；每 3 波军械补给，每 5 波 Boss
@@ -126,6 +126,40 @@
     </div>
   </div>
 
+  <!-- ================= 组队房间 ================= -->
+  <div id="lobby" class="overlay hidden">
+    <div class="panel lobby-panel">
+      <h2>组队出击</h2>
+      <p class="lb-sub">最多 4 人合作，共享波次。血量为 0 会倒地，队友靠近 3 秒可拉起。</p>
+
+      <div id="lobby-choose">
+        <button id="lobby-create" class="primary">创建房间</button>
+        <div class="lobby-join">
+          <input id="room-code" maxlength="4" placeholder="房间码" autocomplete="off" spellcheck="false" />
+          <button id="lobby-join-btn" class="ghost-btn">加入</button>
+        </div>
+      </div>
+
+      <div id="lobby-wait" class="hidden">
+        <div class="room-head">
+          <span>房间码</span>
+          <b id="room-code-show">—</b>
+          <button id="room-copy" class="mini-btn">复制</button>
+        </div>
+        <ul id="room-players" class="room-players"></ul>
+        <p id="lobby-status" class="lobby-status">等待队友… 3 秒后自动开始</p>
+        <div class="lobby-actions">
+          <button id="lobby-start" class="primary">开始战斗</button>
+          <button id="lobby-fold" class="ghost-btn">收起</button>
+          <button id="lobby-leave" class="ghost-btn">离开</button>
+        </div>
+      </div>
+
+      <p id="lobby-err" class="callsign-err hidden"></p>
+      <button id="lobby-close" class="ghost-btn">返回</button>
+    </div>
+  </div>
+
   <!-- ================= 排行榜 ================= -->
   <div id="lb-panel" class="overlay hidden">
     <div class="panel lb-panel">
@@ -133,16 +167,12 @@
       <p class="lb-sub">
         <span id="lb-sub">—</span> · <span id="lb-source" class="lb-source">—</span>
       </p>
-      <p class="lb-note">「每日挑战」全员同种子，成绩可比；「训练」记录普通战斗，地图随机，仅供参考。</p>
-      <div class="lb-modes">
-        <button class="lb-mode sel" data-mode="daily">每日挑战</button>
-        <button class="lb-mode" data-mode="normal">训练</button>
-      </div>
+      <p class="lb-note">所有战斗（单人或组队）都计入同一榜单，多人局的条目会标注人数。地图随机，分数仅供横向参考。</p>
       <div class="lb-tabs">
         <button class="lb-tab sel" data-view="day">今日</button>
         <button class="lb-tab" data-view="all">总榜</button>
-        <button class="lb-tab" data-view="history">历史每日</button>
       </div>
+      <p id="lb-me" class="lb-me hidden"></p>
       <ol id="lb-body" class="lb-list"></ol>
       <button id="lb-close" class="ghost-btn">关闭</button>
     </div>
@@ -164,6 +194,15 @@
       <div id="lb" class="lb hidden">
         <p id="lb-title" class="lb-title">今日排行榜</p>
         <ol id="lb-list"></ol>
+      </div>
+
+      <div id="share-box" class="ch-share hidden">
+        <div class="ch-share-head">
+          <span>邀请好友一起打</span>
+          <b id="share-code">—</b>
+        </div>
+        <p id="share-tip" class="ch-share-tip">把链接发给朋友，他打开就能进同一个房间，最多 4 人。</p>
+        <button id="share-btn" class="ghost-btn">复制邀请链接</button>
       </div>
 
       <button id="again-btn">再来一局</button>

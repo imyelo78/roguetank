@@ -1,8 +1,50 @@
 import { RARITY } from './upgrades.js';
 import { CHASSIS_LIST } from './chassis.js';
-import { loadCallsign, saveCallsign, todayKey, fetchSummary, fetchDay } from './daily.js';
+import { loadCallsign, saveCallsign, todayKey, fetchAll, fetchDay, getPid } from './daily.js';
+import { CHASSIS } from './chassis.js';
 
 const $ = (id) => document.getElementById(id);
+
+const fmtTime = (ms) => {
+  const s = Math.max(0, Math.floor((ms || 0) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+/** 复制到剪贴板，带老浏览器降级 */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+}
+
+/** 邀请链接：当前页面地址 + 房间码参数，打开就能自动填好房号 */
+function buildInviteLink(room) {
+  try {
+    const u = new URL(location.href);
+    u.search = '';
+    u.hash = '';
+    if (room) u.searchParams.set('room', room);
+    return u.toString();
+  } catch {
+    return location.href;
+  }
+}
+
+const esc = (str) => String(str == null ? '' : str)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
 
 export class HUD {
   constructor() {
@@ -68,6 +110,22 @@ export class HUD {
     this.lbBody = $('lb-body');
     this.lbSub = $('lb-sub');
     this.lbSource = $('lb-source');
+    this.lbMe = $('lb-me');
+    this.shareBox = $('share-box');
+    this.shareCodeEl = $('share-code');
+    this.shareBtn = $('share-btn');
+    this.shareTip = $('share-tip');
+
+    // ---- 组队 ----
+    this.lobby = $('lobby');
+    this.lobbyChoose = $('lobby-choose');
+    this.lobbyWait = $('lobby-wait');
+    this.lobbyErr = $('lobby-err');
+    this.lobbyStatus = $('lobby-status');
+    this.lobbyStart = $('lobby-start');
+    this.roomCodeInput = $('room-code');
+    this.roomCodeShow = $('room-code-show');
+    this.roomPlayers = $('room-players');
     this.lbTabButtons = Array.from(document.querySelectorAll('.lb-tab[data-view]'));
     this.lbModeButtons = Array.from(document.querySelectorAll('.lb-mode[data-mode]'));
     this._lbView = 'day';
@@ -75,6 +133,9 @@ export class HUD {
     this._lbDate = '';
     this._lbAll = [];
     this._lbDays = [];
+    // 邀请链接带来的房间码（由 Game 从 ?room= 解析后挂上来）
+    this.inviteRoom = '';
+    this.roomCode = '';
 
     this.msgTimer = 0;
     this._pickHandler = null;
@@ -130,20 +191,14 @@ export class HUD {
 
   // ---------------- 排行榜面板 ----------------
 
-  /** 打开排行榜：默认今日，可切总榜 / 历史每日 */
+  /** 打开排行榜：今日 / 总榜 */
   async openLeaderboard() {
     if (!this.lbPanel) return;
     this.lbPanel.classList.remove('hidden');
     this._lbView = 'day';
-    this._lbDate = todayKey();
     this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
-    this.lbSub.textContent = `${this._lbDate} · ${this._lbMode === 'normal' ? '训练' : '每日挑战'}`;
     this.lbBody.innerHTML = '<li class="lb-empty">读取中…</li>';
-
-    const [summary] = await Promise.all([fetchSummary(this._lbMode)]);
-    this._lbDays = summary.days || [];
-    this.lbSource.textContent = summary.remote ? '全服' : '本机（云端不可用）';
-    this.renderDayBoard();
+    await this.renderDayBoard();
   }
 
   closeLeaderboard() {
@@ -151,56 +206,162 @@ export class HUD {
   }
 
   async renderDayBoard() {
-    if (!this._lbDate) return;
-    this.lbSub.textContent = `${this._lbDate} · ${this._lbMode === 'normal' ? '训练' : '每日挑战'}`;
-    const { list, remote } = await fetchDay(this._lbDate, this._lbMode);
+    this.lbSub.textContent = `${todayKey()} · 今日`;
+    const { list, remote } = await fetchDay(todayKey());
     this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
-    this.renderBoardList(list || [], `${this._lbDate} 战绩`);
+    this.renderBoardList(list || [], '今日榜');
   }
 
-  renderSummaryBoard() {
+  async renderAllBoard() {
     this.lbSub.textContent = '全部历史';
-    this.renderBoardList(this._lbAll || [], '历史总榜', true);
+    const { all, remote } = await fetchAll();
+    this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
+    this.renderBoardList(all || [], '总榜');
   }
 
-  renderHistoryBoard() {
-    const days = this._lbDays || [];
-    this.lbSub.textContent = `${days.length} 天有战绩`;
-    this.lbBody.innerHTML = '';
-    if (days.length === 0) {
-      this.lbBody.innerHTML = '<li class="lb-empty">还没有任何战绩</li>';
-      return;
-    }
-    days.forEach((d, i) => {
-      const li = document.createElement('li');
-      li.className = 'lb-day';
-      li.innerHTML = `<i>${i + 1}</i><b>${d}</b><span>查看当日战绩</span>`;
-      li.addEventListener('click', () => {
-        this._lbDate = d;
-        this._lbView = 'day';
-        this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
-        this.renderDayBoard();
-      });
-      this.lbBody.appendChild(li);
-    });
+  /** 判断某条成绩是不是自己：优先 pid，兼容没有 pid 的旧数据 */
+  static isMe(e, myPid, myName) {
+    if (!e) return false;
+    if (myPid && (e.pid === myPid || (typeof e.id === 'string' && e.id.endsWith(`#${myPid}`)))) return true;
+    return !!(myName && e.name === myName);
   }
 
-  renderBoardList(list, title = '', overall = false) {
+  renderBoardList(list, title = '') {
     this.lbBody.innerHTML = '';
+    const myPid = getPid();
+    const myName = (loadCallsign() || '').trim();
+
     if (!list || list.length === 0) {
       this.lbBody.innerHTML = `<li class="lb-empty">${title}暂无记录</li>`;
+      this.lbMe?.classList.add('hidden');
       return;
     }
-    const me = (loadCallsign() || '').trim();
+
+    const myIdx = list.findIndex((e) => HUD.isMe(e, myPid, myName));
+
     list.slice(0, 20).forEach((e, i) => {
       const li = document.createElement('li');
-      if (me && e.name === me) li.className = 'me';
-      li.innerHTML = `<i>${i + 1}</i><b>${e.name}</b><span>第 ${e.wave} 波</span><em>${e.score}</em>`;
+      if (HUD.isMe(e, myPid, myName)) li.className = 'me';
+      const c = e.chassis ? CHASSIS[e.chassis] : null;
+      const badge = c ? `<span class="chd c-${e.chassis}">${c.name.slice(0, 1)}</span>` : '';
+      const t = e.timeMs ? ` · ${fmtTime(e.timeMs)}` : '';
+      // 只有多人局才标人数：单人占了绝大多数，逐条写"单人"只是噪音
+      const team = (e.players || 1) > 1 ? `<span class="lb-team">${e.players} 人</span>` : '';
+      li.innerHTML = `<i>${i + 1}</i><b>${badge}${esc(e.name)}${team}</b>`
+        + `<span>第 ${e.wave} 波<small>${e.kills || 0} 杀${t}</small></span>`
+        + `<em>${(e.score || 0).toLocaleString()}</em>`;
       this.lbBody.appendChild(li);
     });
+
+    // 我的名次：前 20 之外也给个交代，避免"我明明打了却没有我"
+    if (!this.lbMe) return;
+    this.lbMe.classList.remove('hidden');
+    if (myIdx >= 0) {
+      this.lbMe.classList.remove('miss');
+      this.lbMe.innerHTML = `<span>你的名次 <b>第 ${myIdx + 1} 名</b></span>`
+        + `<span>共 ${list.length} 人上榜</span>`;
+    } else {
+      this.lbMe.classList.add('miss');
+      this.lbMe.innerHTML = `<span>${title}里没有你</span>`
+        + `<span>共 ${list.length} 人上榜${list.length >= 100 ? '（仅显示前 100）' : ''}</span>`;
+    }
   }
 
-  bind({ onStart, onDaily, onRestart, onPick, onWeapon }) {
+  // ---------------- 组队大厅 ----------------
+
+  /**
+   * 打开组队大厅。
+   * 大厅本身不碰网络，网络交给外部传入的 net 对象（这里只负责界面）。
+   */
+  openLobby({ name, chassis, onStart }) {
+    if (!this.lobby) return;
+    this._lobbyCtx = { name, chassis };
+    this._lobbyStart = onStart;
+    this._roomShown = '';
+    this.lobby.classList.remove('hidden');
+    this.lobbyChoose.classList.remove('hidden');
+    this.lobbyWait.classList.add('hidden');
+    this.setLobbyError('');
+    // 邀请链接带来的房间码：直接填好，朋友少输四个字符
+    const pre = this.inviteRoom || '';
+    $('room-code').value = pre;
+    $('room-code').focus();
+  }
+
+  closeLobby() {
+    this.lobby?.classList.add('hidden');
+  }
+
+  setLobbyError(msg) {
+    if (!this.lobbyErr) return;
+    this.lobbyErr.textContent = msg || '';
+    this.lobbyErr.classList.toggle('hidden', !msg);
+  }
+
+  /** 进入房间后的界面（等待 / 已在局内都复用） */
+  showRoom(code, players = [], myId, started, hostId, statusText) {
+    this.lobbyChoose.classList.add('hidden');
+    this.lobbyWait.classList.remove('hidden');
+    // 只有 4 位真房间码才更新显示。
+    // 连接握手期间服务端会先推一次 roster，这时客户端还没拿到 code，
+    // 早期版本在这里无条件赋值，结果房间码被瞬间刷成 '——' 并且再也回不来。
+    if (/^[A-Z0-9]{4}$/.test(String(code || ''))) this.roomCodeShow.textContent = code;
+
+    this.roomPlayers.innerHTML = '';
+    const max = 4;
+    for (let i = 0; i < max; i++) {
+      const p = players[i];
+      const li = document.createElement('li');
+      if (!p) {
+        li.className = 'empty';
+        li.textContent = '等待队友…';
+      } else {
+        if (p.id === myId) li.className = 'me';
+        const c = CHASSIS[p.chassis];
+        const crown = hostId && p.id === hostId ? '<span class="room-host" title="房主">房主</span>' : '';
+        li.innerHTML = `<span class="chd c-${p.chassis}">${(c ? c.name : '?').slice(0, 1)}</span>`
+          + `<b>${esc(p.name)}</b>${crown}<span class="room-tag">${c ? c.name : ''}</span>`;
+      }
+      this.roomPlayers.appendChild(li);
+    }
+
+    const isHost = !hostId || hostId === myId;
+    if (this.lobbyStatus) {
+      this.lobbyStatus.textContent = statusText
+        || (started
+          ? '战斗进行中'
+          : isHost
+            ? `${players.length}/4 人 · 3 秒后自动开始（也可以按「开始战斗」）`
+            : `${players.length}/4 人 · 等房主开始（最多 4 人）`);
+    }
+    if (this.lobbyStart) {
+      this.lobbyStart.disabled = started || !!statusText;
+      this.lobbyStart.textContent = isHost ? '开始战斗' : '等房主开局';
+    }
+  }
+
+  /** 战斗中的房间浮层：房间码 + 人数，方便喊朋友进来 */
+  showRoomChip(code, count) {
+    if (!this.roomChip) {
+      const el = document.createElement('div');
+      el.id = 'room-chip';
+      el.className = 'room-chip';
+      (this.hud || this.app)?.appendChild(el);
+      this.roomChip = el;
+    }
+    this.roomChip.innerHTML = `<span>房间</span><b>${esc(code)}</b><i>${count}/4</i>`;
+    this.roomChip.classList.remove('hidden');
+  }
+
+  hideRoomChip() {
+    this.roomChip?.classList.add('hidden');
+  }
+
+  hideLobby() {
+    this.lobby?.classList.add('hidden');
+  }
+
+  bind({ onStart, onRestart, onPick, onWeapon, onCoop }) {
     // 开局强制填写呼号：空值就地提示，不弹窗打断
     const ensureName = () => {
       const name = (this.callsignEl?.value || '').trim();
@@ -220,12 +381,22 @@ export class HUD {
       const name = ensureName();
       if (name) onStart(this.selectedChassis, { name });
     });
-    if ($('daily-btn')) {
-      $('daily-btn').addEventListener('click', () => {
-        const name = ensureName();
-        if (name) onStart(this.selectedChassis, { daily: true, name });
-      });
-    }
+    // ---- 组队：进大厅前也要先有呼号 ----
+    $('coop-btn')?.addEventListener('click', () => {
+      const name = ensureName();
+      if (name) {
+        const nameSnapshot = name;
+        const chassisSnapshot = this.selectedChassis;
+        // 先请求 Game 接好网络回调（openCoop），再打开大厅：
+        // 否则会在大厅出现后再补回调，早期的顺序问题正是"点「创建房间」没反应"的根源。
+        onCoop?.(chassisSnapshot, { name: nameSnapshot });
+        this.openLobby({
+          name,
+          chassis: chassisSnapshot,
+          onStart: () => onCoop?.(chassisSnapshot, { name: nameSnapshot }),
+        });
+      }
+    });
     if (this.callsignEl) {
       this.callsignEl.addEventListener('change', () => {
         const v = this.callsignEl.value.trim();
@@ -242,41 +413,73 @@ export class HUD {
         }
       });
     }
+    // ---- 大厅按钮 ----
+    $('lobby-close')?.addEventListener('click', () => {
+      // 只关面板不关连接：服务端还留着你的席位，点「开始战斗」能回来
+      this.closeLobby();
+    });
+    $('room-code')?.addEventListener('input', (e) => {
+      e.target.value = e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 4);
+      this.setLobbyError('');
+    });
+    $('room-code')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') $('lobby-join-btn')?.click();
+    });
+    $('lobby-create')?.addEventListener('click', () => {
+      this.setLobbyError('');
+      this._netAction?.(null);
+    });
+    $('lobby-join-btn')?.addEventListener('click', () => {
+      const code = ($('room-code').value || '').trim().toUpperCase();
+      if (code.length !== 4) {
+        this.setLobbyError('房间码是 4 位字母或数字');
+        return;
+      }
+      this.setLobbyError('');
+      this._netAction?.(code);
+    });
+    $('lobby-start')?.addEventListener('click', () => this._netStart?.());
+    $('lobby-leave')?.addEventListener('click', () => {
+      this._netLeave?.();
+      this.closeLobby();
+    });
+    // 战斗中把大厅收起来：席位还在，点左下角的房间浮层可以再打开
+    $('lobby-fold')?.addEventListener('click', () => this.closeLobby());
+    document.addEventListener('click', (e) => {
+      // 浮层的重开逻辑由 Game 注入（_reopenLobby），没有就直接忽略
+      if (!e.target.closest('#room-chip')) return;
+      if (typeof this._reopenLobby === 'function') this._reopenLobby();
+    }, true);
+    $('room-copy')?.addEventListener('click', async () => {
+      const code = this.roomCodeShow?.textContent || '';
+      const ok2 = await copyText(code);
+      $('room-copy').textContent = ok2 ? '已复制' : '复制失败';
+      setTimeout(() => { $('room-copy').textContent = '复制'; }, 1600);
+    });
+
     $('lb-open')?.addEventListener('click', () => this.openLeaderboard());
     $('lb-close')?.addEventListener('click', () => this.closeLeaderboard());
-    this.lbModeButtons.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this._lbMode = btn.dataset.mode === 'normal' ? 'normal' : 'daily';
-        this.lbModeButtons.forEach((b) => b.classList.toggle('sel', b === btn));
-        // 切榜后回到「今日」，避免停在另一个模式的日期上造成误解
-        this._lbView = 'day';
-        this._lbDate = todayKey();
-        this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
-        this.openLeaderboard();
-      });
-    });
     this.lbTabButtons.forEach((btn) => {
       btn.addEventListener('click', async () => {
         this.lbTabButtons.forEach((b) => b.classList.toggle('sel', b === btn));
-        const view = btn.dataset.view;
-        if (view === 'day') {
-          this._lbDate = todayKey();
-          this.renderDayBoard();
-        } else if (view === 'all') {
-          const s = await fetchSummary(this._lbMode);
-          this._lbAll = s.all || [];
-          this._lbDays = s.days || [];
-          this.lbSource.textContent = s.remote ? '全服' : '本机（云端不可用）';
-          this.renderSummaryBoard();
-        } else {
-          const s = await fetchSummary(this._lbMode);
-          this._lbAll = s.all || [];
-          this._lbDays = s.days || this._lbDays;
-          this.lbSource.textContent = s.remote ? '全服' : '本机（云端不可用）';
-          this.renderHistoryBoard();
-        }
+        if (btn.dataset.view === 'all') await this.renderAllBoard();
+        else await this.renderDayBoard();
       });
     });
+
+    // ---- 结算页：邀请好友 ----
+    this.shareBtn?.addEventListener('click', async () => {
+      const url = this._inviteLink;
+      if (!url) return;
+      const text = this._lastRoom
+        ? `来《钢铁突击》跟我一起打，房间码 ${this._lastRoom}（最多 4 人）：${url}`
+        : `来《钢铁突击》跟我一起打，最多 4 人合作：${url}`;
+      const done = await copyText(text);
+      const old = this.shareBtn.textContent;
+      this.shareBtn.textContent = done ? '已复制，发给他吧' : '复制失败，请手动复制';
+      setTimeout(() => { this.shareBtn.textContent = old; }, 2000);
+    });
+
     $('again-btn').addEventListener('click', onRestart);
     this._pickHandler = onPick;
     this._weaponHandler = onWeapon;
@@ -363,32 +566,55 @@ export class HUD {
     this.app.classList.add('playing');
   }
 
-  showGameOver({ wave, kills, score, time, best, isNew, daily, mode, synced, syncReason, myName, leaderboard, overall }) {
-    const md = mode || (daily ? 'daily' : 'normal');
+  showGameOver({ wave, kills, score, time, best, isNew, mode, synced, syncReason, myName, leaderboard, overall, teamSize, teamScore }) {
     this.finalWave.textContent = String(wave);
     this.finalKills.textContent = String(kills);
     this.finalScore.textContent = String(score);
     this.finalTime.textContent = time;
     this.newRecord.classList.toggle('hidden', !isNew);
-    this.bestLine.textContent = `第 ${best.wave} 波 · ${best.score} 分`;
+    // 组队不记录个人最佳，此时 best 传 null：整行隐藏，别显示"第 0 波 · 0 分"
+    const bestWrap = this.bestLine?.parentElement;
+    if (best && (best.wave || best.score)) {
+      this.bestLine.textContent = `第 ${best.wave || 0} 波 · ${best.score || 0} 分`;
+      bestWrap?.classList.remove('hidden');
+    } else {
+      bestWrap?.classList.add('hidden');
+    }
 
     // 说清楚成绩去哪了：上没上榜、云端有没有同步成功
     if (this.goNote) {
       let note;
+      const modeText = mode === 'coop' ? `${teamSize || 1} 人合作` : '单人';
+      const teamText = mode === 'coop' && teamScore > 0 ? ` · 队伍合计 ${Number(teamScore).toLocaleString()} 分` : '';
       if (synced === false) {
         const why = syncReason === 'offline' ? '网络不可用'
           : syncReason === 'kv-unbound' ? '服务端未绑定 KV'
           : syncReason === 'stale-date' ? '日期校验未通过'
           : syncReason ? `服务端返回 ${syncReason}` : '未知原因';
-        note = `${md === 'daily' ? '每日挑战' : '训练模式'}成绩已存本机，云端同步失败（${why}）· 下次进入游戏会自动补传`;
+        note = `${modeText}成绩已存本机，云端同步失败（${why}）· 下次进入游戏会自动补传`;
       } else {
-        note = md === 'daily'
-          ? '已上传全服 · 计入今日「每日挑战」榜与历史总榜'
-          : '已上传全服 · 计入今日「训练」榜（随机地图，分数仅供参考）';
+        note = `已上传全服 · ${modeText}${teamText} · 计入今日榜与总榜`;
       }
       this.goNote.textContent = note;
       this.goNote.classList.toggle('hidden', !note);
       this.goNote.classList.toggle('warn', synced === false);
+    }
+
+    // 邀请好友：带上房间码，朋友打开就自动填好
+    const inviteLink = buildInviteLink(this._lastRoom || this.inviteRoom || '');
+    this._inviteLink = inviteLink;
+    this.shareBox?.classList.toggle('hidden', !inviteLink);
+    if (this.shareCodeEl && inviteLink) {
+      this.shareCodeEl.textContent = this._lastRoom || location.host;
+    }
+    if (this.shareTip) {
+      this.shareTip.textContent = this._lastRoom
+        ? `把链接发给朋友，他打开就会自动带上房间码 ${this._lastRoom}（最多 4 人）`
+        : '把链接发给朋友，一起组队打（最多 4 人）';
+    }
+    if (this.shareBtn) {
+      this.shareBtn.classList.remove('hidden');
+      this.shareBtn.textContent = this._lastRoom ? '复制邀请链接' : '复制游戏链接';
     }
 
     // 今日 Top5 + 历史总榜
@@ -398,7 +624,7 @@ export class HUD {
       this.lb.classList.toggle('hidden', !(hasDay || hasAll));
       this.lbList.innerHTML = '';
       if (hasDay || hasAll) {
-        this.lbTitle.textContent = md === 'daily' ? '今日排行榜' : '训练榜';
+        this.lbTitle.textContent = '今日排行榜';
         const render = (list, label) => {
           if (!list || !list.length) return;
           const head = document.createElement('li');
@@ -407,8 +633,8 @@ export class HUD {
           this.lbList.appendChild(head);
           list.slice(0, 5).forEach((e, i) => {
             const li = document.createElement('li');
-            if (myName && e.name === myName) li.className = 'me';
-            li.innerHTML = `<i>${i + 1}</i><b>${e.name}</b><span>第 ${e.wave} 波</span><em>${e.score}</em>`;
+            if (HUD.isMe(e, getPid(), myName)) li.className = 'me';
+            li.innerHTML = `<i>${i + 1}</i><b>${esc(e.name)}</b><span>第 ${e.wave} 波</span><em>${(e.score || 0).toLocaleString()}</em>`;
             this.lbList.appendChild(li);
           });
         };

@@ -169,3 +169,35 @@ Cloudflare Pages 项目 → **Custom domains** → 绑定自己的域名（域�
 - 游戏用 `localStorage` 保存最佳记录，换域名/清缓存会丢。
 - 免费额度足够朋友游玩：每月 500 次构建、无限静态请求、100 GB 流量。
 - 如果改了资源路径，记得同步 `build.mjs` 的 `ITEMS` 列表和 `dist/_headers` 缓存规则。
+
+## 多人合作需要房间服务
+
+`functions/` 只有榜单接口（KV），**跑不了 WebSocket**。所以：
+
+| 部署形态 | 单人 + 榜单 | 4 人合作 |
+| --- | --- | --- |
+| 纯 Cloudflare Pages（静态 + Functions） | ✅ | ❌ |
+| 任意支持 WebSocket 的 Node 主机（本仓库 `server.mjs`） | ✅（榜单需另配） | ✅ |
+| Pages + 一台小主机只跑 `server.mjs` | ✅ | ✅ |
+
+第三种是推荐形态：页面照旧上 Pages，房间里跑 `node server.mjs`，玩家从
+`https://你的域名/?ws=房间服务器地址:端口` 进入即可（`?ws=` 会覆盖 WebSocket 目标，见 `src/net.js`）。
+
+最小 Node 主机（1 核 1G 足够，每个房间约 1~2ms/帧）：
+
+```bash
+git clone <repo> && cd roguetank
+npm install --omit=dev
+PORT=8080 node server.mjs      # 建议放 systemd / pm2 后面，前面挂 Nginx 转发 /ws
+```
+
+Nginx 反代要带上 WebSocket 升级头：
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```

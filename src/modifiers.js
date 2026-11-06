@@ -1,3 +1,5 @@
+import { R } from './rng.js';
+
 // 挑战词条：每局开局随机一条全局规则，改变整局节奏并给予得分补偿。
 // 数值类词条在 start() 时注入 stats（如射速），节奏类通过 Game.mods 查询。
 
@@ -59,9 +61,14 @@ export const MODIFIER_DEFAULTS = {
   armoryEvery: 3,
 };
 
-/** 随机抽一条词条，返回合并默认值后的对象（含 id/name/icon/desc） */
-export function rollModifier(rng = Math.random) {
+/**
+ * 随机抽一条词条，返回合并默认值后的对象（含 id/name/icon/desc）。
+ * 默认走 spawn 流：词条决定「这一局长什么样」，必须与玩家的战斗行为无关，
+ * 否则同一个挑战码在不同人手里会抽出不同词条。
+ */
+export function rollModifier(rng) {
+  const r = rng || (() => R.spawn());
   const list = Object.values(MODIFIERS);
-  const def = list[(rng() * list.length) | 0];
+  const def = list[(r() * list.length) | 0];
   return { ...MODIFIER_DEFAULTS, ...def };
 }
