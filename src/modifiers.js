@@ -2,17 +2,9 @@ import { R } from './rng.js';
 
 // 挑战词条：每局开局随机一条全局规则，改变整局节奏并给予得分补偿。
 // 数值类词条在 start() 时注入 stats（如射速），节奏类通过 Game.mods 查询。
+// 注：原"钢铁风暴"（炮击间隔缩短）随炮击系统一起移除，词条池剩 4 条。
 
 export const MODIFIERS = {
-  storm: {
-    id: 'storm',
-    name: '钢铁风暴',
-    icon: '🌩',
-    desc: '炮击间隔缩短 · 得分 ×1.3',
-    strikeInterval: 4.5,
-    killScoreMul: 1.3,
-    waveBonusMul: 1.3,
-  },
   ammo: {
     id: 'ammo',
     name: '弹药告急',
@@ -49,7 +41,6 @@ export const MODIFIERS = {
 };
 
 export const MODIFIER_DEFAULTS = {
-  strikeInterval: 7,
   killScoreMul: 1,
   waveBonusMul: 1,
   fireRateMul: 1,

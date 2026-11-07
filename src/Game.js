@@ -76,12 +76,10 @@ export class Game {
     this.enemies = [];
     this.pending = [];
     this.warnings = [];
-    this.strikes = [];
     this.wave = 0;
     this.waveActive = false;
     this.waveTimer = 0;
     this.waveTime = 0;
-    this.strikeT = 18;
     this.score = 0;
     this.kills = 0;
     this.runTime = 0;
@@ -89,11 +87,6 @@ export class Game {
     this.shake = 0;
     this.overTimer = 0;
     this.clearedTimer = 0;
-
-    // 反龟缩：连续静止检测与惩罚等级
-    this.campT = 0;
-    this.campLevel = 0;
-    this.campPos = null;
 
     this.stats = createStats();
     this.chassisId = 'balanced';
@@ -393,11 +386,6 @@ export class Game {
       w.mesh.material.dispose();
     }
     this.warnings = [];
-    for (const s of this.strikes) {
-      this.scene.remove(s.mesh);
-      s.mesh.material.dispose();
-    }
-    this.strikes = [];
   }
 
   _clearField() {
@@ -428,11 +416,7 @@ export class Game {
     this.waveActive = false;
     this.waveTimer = 0;
     this.waveTime = 0;
-    this.strikeT = 18;
     this.clearedTimer = 0;
-    this.campT = 0;
-    this.campLevel = 0;
-    this.campPos = null;
     this.playerCd = 0;
     this.overTimer = 0;
     this.shake = 0;
@@ -524,10 +508,6 @@ export class Game {
 
     this.waveActive = true;
     this.waveTime = 0;
-    this.strikeT = 18;   // 每波前 18 秒喘息，之后按词条间隔炮击
-    this.campT = 0;
-    this.campLevel = 0;
-    this.campPos = null;
     this.pending = [];
     this.playerCd = 0;
     this.heat = 0;
@@ -762,122 +742,6 @@ export class Game {
         w.mesh.material.dispose();
         this.warnings.splice(i, 1);
         this._spawnEnemyAt(w.hp, w.speed, w.x, w.z, w.type);
-      }
-    }
-  }
-
-  /**
-   * 反龟缩：玩家在波次进行中持续不动（<30% 正常移速）累计 3.2 秒即惩罚升级——
-   * 立即一轮压制炮击、缩短后续炮击间隔，2 级起刷冲锋兵，最高 3 级。移动即快速回落。
-   */
-  _updateCamp(dt) {
-    const p = this.player.group.position;
-    if (!this.campPos) this.campPos = p.clone();
-    const moved = Math.hypot(p.x - this.campPos.x, p.z - this.campPos.z);
-    this.campPos.copy(p);
-
-    const idle = this.waveActive && this.enemies.length > 0 &&
-      moved < this.player.speed * dt * 0.3;
-    if (idle) this.campT += dt;
-    else this.campT = Math.max(0, this.campT - dt * 2.5);
-
-    if (this.campT > 3.2) {
-      this.campT = 0;
-      this.campLevel = Math.min(3, this.campLevel + 1);
-      this.strikeT = Math.min(this.strikeT, 3.2 - this.campLevel * 0.7);
-      this._startStrike();
-
-      if (this.campLevel >= 2) {
-        const n = this.campLevel >= 3 ? 2 : 1;
-        const hp = Math.max(30, Math.round((55 + this.wave * 14) * 0.5));
-        const speed = 8.5 + Math.min(4.5, this.wave * 0.6);
-        for (let i = 0; i < n; i++) {
-          this._beginSpawn(hp, speed * 1.05, 'charger', 0.9);
-        }
-      }
-      this.hud.showMessage(`检测到龟缩 · 压制火力升级 ×${this.campLevel}`, 1.2);
-    }
-  }
-
-  /** 炮击压制：18 秒后每 7 秒锁定玩家附近，1.6 秒预警 */
-  _startStrike() {
-    const p = this.player.group.position;
-    const a = R.spawn() * Math.PI * 2;
-    const r = R.spawn() * 4;
-    const x = p.x + Math.sin(a) * r;
-    const z = p.z + Math.cos(a) * r;
-    const radius = 5;
-    const mesh = new THREE.Mesh(WARN_GEO, new THREE.MeshBasicMaterial({
-      color: 0xff3322,
-      transparent: true,
-      opacity: 0.72,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }));
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(x, 0.075, z);
-    mesh.scale.setScalar(radius / 1.85);
-    this.scene.add(mesh);
-    this.strikes.push({ x, z, t: 1.6, dur: 1.6, radius, mesh });
-    this.sound.warn();
-    this.hud.showMessage('炮击锁定 · 立刻转移', 0.9);
-  }
-
-  /** Boss 破城者：围绕玩家落下一组炮击 */
-  bossStrike(enemy, count = 3) {
-    const p = this.player.group.position;
-    const half = this.world.half;
-    for (let i = 0; i < count; i++) {
-      const a = R.spawn() * Math.PI * 2 + (i / count) * Math.PI * 2;
-      const r = 1.5 + R.spawn() * 7;
-      const x = THREE.MathUtils.clamp(p.x + Math.sin(a) * r, -half + 4, half - 4);
-      const z = THREE.MathUtils.clamp(p.z + Math.cos(a) * r, -half + 4, half - 4);
-      const radius = 4.2;
-      const mesh = new THREE.Mesh(WARN_GEO, new THREE.MeshBasicMaterial({
-        color: 0xff2a1a,
-        transparent: true,
-        opacity: 0.75,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      }));
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.position.set(x, 0.078, z);
-      mesh.scale.setScalar(radius / 1.85);
-      this.scene.add(mesh);
-      this.strikes.push({ x, z, t: 1.25, dur: 1.25, radius, damage: 18, mesh });
-    }
-    this.sound.warn();
-    this.hud.showMessage('攻城炮击 · 离开红圈', 1.1);
-  }
-
-  _updateStrikes(dt) {
-    for (let i = this.strikes.length - 1; i >= 0; i--) {
-      const s = this.strikes[i];
-      s.t -= dt;
-      const k = 1 - Math.max(0, s.t) / s.dur;
-      s.mesh.material.opacity = 0.4 + 0.4 * Math.abs(Math.sin(k * Math.PI * 4));
-      s.mesh.scale.setScalar((s.radius / 1.85) * (0.9 + 0.1 * k));
-
-      if (s.t > 0) continue;
-
-      this.scene.remove(s.mesh);
-      s.mesh.material.dispose();
-      this.strikes.splice(i, 1);
-
-      const hit = new THREE.Vector3(s.x, 1.2, s.z);
-      this.effects.explosion(hit, 0xffb040, 34, 1.5);
-      this.sound.explosion(1.4);
-      this.shake = Math.max(this.shake, 0.55);
-
-      const p = this.player.group.position;
-      if (this.player.alive && Math.hypot(p.x - s.x, p.z - s.z) < s.radius) {
-        const died = this.player.takeDamage(
-          Math.max(1, Math.round((s.damage ?? 22) * (this.stats.damageTakenMul ?? 1)))
-        );
-        this.hud.hurt();
-        this.sound.hurt();
-        this.hud.setHealth(this.player.hp, this.player.maxHp);
-        if (died) this._onPlayerDeath();
       }
     }
   }
@@ -1350,12 +1214,6 @@ export class Game {
 
   _updateWaves(dt) {
     this.waveTime += dt;
-    this.strikeT -= dt;
-    if (this.wave >= 2 && this.strikeT <= 0) {
-      this.strikeT = this.mods.strikeInterval;
-      this._startStrike();
-    }
-    this._updateCamp(dt);
 
     for (let i = this.pending.length - 1; i >= 0; i--) {
       this.pending[i].t -= dt;
@@ -1367,7 +1225,6 @@ export class Game {
     }
 
     this._updateWarnings(dt);
-    this._updateStrikes(dt);
 
     this.hud.setLeft(this.enemies.length + this.pending.length + this.warnings.length);
 
@@ -1460,7 +1317,6 @@ export class Game {
     this.minimap.update({
       player: p ? { x: p.x, z: p.z, rot: this.player.group.rotation.y } : null,
       enemies: this.enemies,
-      strikes: this.strikes,
       warnings: this.warnings,
     });
   }

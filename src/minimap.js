@@ -89,27 +89,14 @@ export class Minimap {
    * @param {object} view
    * @param {{x:number,z:number,rot:number}} view.player
    * @param {Array} view.enemies  [{position:{x,z}, type, isBoss}]
-   * @param {Array} view.strikes  [{x,z,radius}]
    * @param {Array} view.warnings [{x,z,type}]
    */
-  update({ player, enemies = [], strikes = [], warnings = [] }) {
+  update({ player, enemies = [], warnings = [] }) {
     const g = this.ctx;
     const s = this.size;
 
     g.clearRect(0, 0, s, s);
     g.drawImage(this.static, 0, 0, s, s);
-
-    // 压制炮击预警圈
-    for (const st of strikes) {
-      const r = Math.max(2.5, (st.radius / (this.half * 2)) * s);
-      g.beginPath();
-      g.arc(this._px(st.x), this._px(st.z), r, 0, Math.PI * 2);
-      g.fillStyle = 'rgba(255,84,52,0.22)';
-      g.fill();
-      g.strokeStyle = 'rgba(255,110,70,0.85)';
-      g.lineWidth = 1;
-      g.stroke();
-    }
 
     // 刷怪落点预警
     for (const w of warnings) {

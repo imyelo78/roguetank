@@ -585,16 +585,17 @@ export class Enemy {
       }
     }
 
-    // 技能计时
+    // 技能计时。
+    // 破城者的"攻城炮击锁定"已随反龟缩压制一起移除：难度改由敌人构成与
+    // 地形承担，不再用"必须不停跑位"的强制位移考验玩家。破城者只保留主炮。
     this.abilityT -= dt;
     if (this.abilityT <= 0) {
-      this.abilityT = breaker ? (this.enraged ? 7.5 : 10.5) : (this.enraged ? 6.5 : 9);
-      this.castKind = breaker ? 'strike' : 'ring';
-      this.castT = breaker ? 1.2 : 0.95;
-      ctx.hud.showMessage(
-        breaker ? `${this.bossName} · 攻城炮击锁定` : `${this.bossName} · 折射风暴`,
-        1.15
-      );
+      this.abilityT = this.enraged ? 6.5 : 9;
+      if (!breaker) {
+        this.castKind = 'ring';
+        this.castT = 0.95;
+        ctx.hud.showMessage(`${this.bossName} · 折射风暴`, 1.15);
+      }
     } else if (!breaker && this.blinkT > 0) {
       this.blinkT -= dt;
       if (this.blinkT <= 0) {
@@ -607,21 +608,17 @@ export class Enemy {
   }
 
   _finishCast(ctx) {
-    const breaker = this.bossKind === 'breaker';
-    const count = breaker ? (this.enraged ? 4 : 3) : (this.enraged ? 16 : 12);
-    if (breaker) {
-      ctx.bossStrike(this, count);
-    } else {
-      const base = R.combat() * Math.PI * 2;
-      const dmg = Math.max(7, this.damage);
-      for (let i = 0; i < count; i++) {
-        const a = base + (i / count) * Math.PI * 2;
-        ctx.fire(this.tank, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), dmg, 'enemy', {
-          speed: 50, color: 0xbff6ff, glow: 0x38d8ff, scale: 1.05,
-        });
-      }
-      ctx.shake = Math.max(ctx.shake, 0.2);
+    // 只剩棱镜的折射风暴：全向弹幕
+    const count = this.enraged ? 16 : 12;
+    const base = R.combat() * Math.PI * 2;
+    const dmg = Math.max(7, this.damage);
+    for (let i = 0; i < count; i++) {
+      const a = base + (i / count) * Math.PI * 2;
+      ctx.fire(this.tank, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), dmg, 'enemy', {
+        speed: 50, color: 0xbff6ff, glow: 0x38d8ff, scale: 1.05,
+      });
     }
+    ctx.shake = Math.max(ctx.shake, 0.2);
     this.castKind = null;
     this.castT = 0;
   }
