@@ -20,7 +20,7 @@ class Member {
     this.socket = socket;
     this.name = name;
     this.chassis = chassis;
-    this.input = { forward: 0, turn: 0, aimX: 0, aimZ: 0, fire: false, seq: 0 };
+    this.input = { mx: 0, mz: 0, aimX: 0, aimZ: 0, fire: false, seq: 0 };
     this.lastSeq = -1;
     this.ready = false;
     this.disconnectedAt = 0;
@@ -274,8 +274,11 @@ export class Room {
     if (typeof inp.seq === 'number' && inp.seq <= m.lastSeq) return;
     m.lastSeq = typeof inp.seq === 'number' ? inp.seq : m.lastSeq;
     m.input = {
-      forward: clampDir(inp.f),
-      turn: clampDir(inp.t),
+      // 八方向平移，与单机 Game.js 的 WASD 完全同构。
+      // 服务端不认"方向盘"：老字段 f/t 即使收到也会被当成 0，
+      // 所以协议版本升到 2，旧页面在握手阶段就被拦下。
+      mx: clampDir(inp.mx),
+      mz: clampDir(inp.mz),
       aimX: Number(inp.ax) || 0,
       aimZ: Number(inp.az) || 0,
       fire: !!inp.fire,

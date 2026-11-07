@@ -3,7 +3,10 @@
 // 客户端与服务端共享这一份定义。改协议必须同时改 PROTOCOL_VERSION，
 // 握手时校验，避免老客户端连上来制造一堆灵异 bug。
 
-export const PROTOCOL_VERSION = 1;
+// 版本 2：输入从"油门 + 方向盘"（f/t）改为八方向平移（mx/mz），与单机操作一致。
+// 必须升版本：老页面留在缓存里会继续发 f/t，服务端按 mx/mz 解出来全是 0，
+// 表现就是"进房间后车完全不动"——比报错难查得多。
+export const PROTOCOL_VERSION = 2;
 export const TICK_RATE = 30;
 // 快照率用 20Hz（原来 15Hz）。
 //
@@ -22,7 +25,7 @@ export const MAX_PLAYERS = 4;
 /** 客户端 → 服务端 */
 export const C2S = {
   HELLO: 'hello',       // { v, name, chassis, code? }   code 为空表示建房
-  INPUT: 'in',          // { seq, f, t, ax, az, fire }   紧凑字段名，省带宽
+  INPUT: 'in',          // { seq, mx, mz, ax, az, fire }   紧凑字段名，省带宽
   PING: 'ping',         // { t }
   READY: 'ready',       // {}
   LEAVE: 'leave',

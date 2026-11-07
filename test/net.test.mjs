@@ -116,7 +116,7 @@ assert.ok(p0, '快照里应当有自己的坦克');
 
 let seq = 1;
 const timer = setInterval(() => {
-  a.send({ k: C2S.INPUT, seq: seq++, f: 1, t: 0, ax: 0, az: -50, fire: true });
+  a.send({ k: C2S.INPUT, seq: seq++, mx: 0, mz: 1, ax: 0, az: -50, fire: true });
 }, 33);
 await sleep(1500);
 clearInterval(timer);

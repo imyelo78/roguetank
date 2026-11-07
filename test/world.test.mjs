@@ -14,7 +14,7 @@ import { encodeSnapshot, decodeSnapshot, quantPos, dequantPos } from '../src/cor
 let pass = 0;
 const ok = (n) => { pass++; console.log(`  ✓ ${n}`); };
 
-/** 简单机器人：炮塔锁最近敌人，车体保持距离（不要乱转向，否则炮塔跟不上） */
+/** 简单机器人：炮塔锁最近敌人，车体走位保持距离（与人类玩家一样的八方向输入） */
 function botInput(w, me) {
   let target = null;
   let best = Infinity;
@@ -23,14 +23,17 @@ function botInput(w, me) {
     const d = Math.hypot(e.x - me.x, e.z - me.z);
     if (d < best) { best = d; target = e; }
   }
-  if (!target) return { forward: 0, turn: 0.4, aimX: me.x, aimZ: me.z - 10, fire: false };
-  // 朝向目标的车体角度，只在明显偏了才转
-  const want = Math.atan2(target.x - me.x, target.z - me.z);
-  let d = want - me.yaw;
-  d = Math.atan2(Math.sin(d), Math.cos(d));
+  if (!target) return { mx: 0, mz: 0, aimX: me.x, aimZ: me.z - 10, fire: false };
+
+  const d = best || 1;
+  const dx = (target.x - me.x) / d;
+  const dz = (target.z - me.z) / d;
+  // 太远就压上、太近就后撤、中距离绕圈；侧向分量保证不是一条直线对射
+  const radial = best > 26 ? 1 : best < 12 ? -1 : 0;
+  const side = best >= 12 && best <= 26 ? 1 : 0.35;
   return {
-    forward: best > 26 ? 0.7 : best < 12 ? -0.6 : 0.15,
-    turn: Math.abs(d) > 0.5 ? Math.sign(d) : 0,
+    mx: dx * radial - dz * side,
+    mz: dz * radial + dx * side,
     aimX: target.x,
     aimZ: target.z,
     fire: true,
@@ -45,14 +48,17 @@ function runGame(n, seconds, seed = 11) {
 
   const log = { downs: 0, revives: 0, kills: 0, maxWave: 0, cleared: 0 };
 
-  // 脱困记忆：机器人原本只会直线追人，撞上墙角会一直顶着墙（真人会倒车转向）。
-  // 每 1 秒检查一次位移，几乎没动就倒车 + 固定方向转一会儿。
+  // 脱困记忆：机器人原本只会直线冲，撞上墙角会一直顶着墙（真人会绕）。
+  // 每 1 秒检查一次位移，几乎没动就换一个固定方向侧移一会儿。
   const mem = new Map();
-  const stuckInput = (p, turn) => ({ forward: -0.7, turn, aimX: p.x, aimZ: p.z - 10, fire: false });
+  const stuckInput = (p, dir) => ({
+    mx: Math.cos(dir * 1.2), mz: Math.sin(dir * 1.2),
+    aimX: p.x, aimZ: p.z - 10, fire: false,
+  });
 
   for (let t = 0; t < seconds * 30; t++) {
     for (const p of w.players) {
-      if (!p.alive || p.down) { w.setInput(p.id, { forward: 0, turn: 0, aimX: p.x, aimZ: p.z, fire: false }); continue; }
+      if (!p.alive || p.down) { w.setInput(p.id, { mx: 0, mz: 0, aimX: p.x, aimZ: p.z, fire: false }); continue; }
 
       let m = mem.get(p.id);
       if (!m) { m = { x: p.x, z: p.z, escape: 0, dir: 1 }; mem.set(p.id, m); }

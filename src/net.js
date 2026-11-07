@@ -202,7 +202,7 @@ export class NetClient {
   tick(input, force = false) {
     if (!this.ws || this.ws.readyState !== 1) return;
     const now = performance.now();
-    const sig = `${input.forward}|${input.turn}|${input.fire ? 1 : 0}`;
+    const sig = `${input.mx}|${input.mz}|${input.fire ? 1 : 0}`;
     const changed = sig !== this._lastSig;
     if (!force && !changed && now - (this._lastInputAt || 0) < INPUT_MS) {
       this._pingIfDue(now);
@@ -215,8 +215,8 @@ export class NetClient {
     this.ws.send(JSON.stringify({
       k: C2S.INPUT,
       seq: this.seq,
-      f: input.forward,
-      t: input.turn,
+      mx: input.mx,
+      mz: input.mz,
       ax: Math.round(input.aimX * 10) / 10,
       az: Math.round(input.aimZ * 10) / 10,
       fire: !!input.fire,

@@ -20,33 +20,56 @@ export const clampDir = (v) => {
 /** 车体半径：碰撞判定用的外接圆 */
 export const BODY_RADIUS = 1.9;
 
-/** 撞墙后速度保留比例：只乘一次，不能两轴各乘一次（0.09 会把车钉死在原地） */
-const WALL_KEEP = 0.9;
-
-/** 速度趋近目标值的快慢（每秒） */
-const ACCEL = 8;
+/**
+ * 车体追移动方向的角速度（rad/s）。
+ *
+ * 必须与单机 src/Tank.js 的 `turnTo(..., dt * 8)` 保持一致：
+ * 单机是"八方向平移 + 车头平滑跟上"，联机如果换成坦克式（A/D 原地转），
+ * 同一个玩家进房后手感会突然变成另一种车——这是线上真实投诉。
+ */
+export const TURN_TO_RATE = 8;
 
 /**
  * 走一步车体运动。
  *
- * @param {object} body  { x, z, yaw, speed, speedBase, turnBase }
- * @param {object} input { forward, turn }
+ * 模型与单机完全一致（见 Game.js `_updatePlayer` + Tank.move）：
+ *   - 输入是世界坐标的八方向单位向量（mx, mz），不是"油门 + 方向盘"
+ *   - 按下即全速、松开即停，没有加减速斜坡
+ *   - 车体朝向以 8 rad/s 平滑追随移动方向（履带车掉头要时间，但位移不等人）
+ *   - 撞墙只做轴向分离（贴墙滑行），不衰减速度
+ *
+ * @param {object} body  { x, z, yaw, speed, speedBase }
+ * @param {object} input { mx, mz }
  * @param {number} dt
  * @param {object} col   碰撞源：{ blocked(x, z, r) => boolean }，可省略（只算位移）
  * @param {number} half  地图半边长（贴边钳制用）
  */
 export function stepBody(body, input, dt, col, half) {
-  const turn = clampDir(input?.turn);
-  if (turn !== 0) body.yaw += turn * (body.turnBase || 3.0) * dt;
+  const mx = clampDir(input?.mx);
+  const mz = clampDir(input?.mz);
+  const len = Math.hypot(mx, mz);
 
-  const throttle = clampDir(input?.forward);
-  const target = (body.speedBase || 15) * throttle;
-  body.speed += (target - body.speed) * Math.min(1, dt * ACCEL);
+  if (len < 0.001) {
+    body.speed = 0;
+    return;
+  }
 
-  if (Math.abs(body.speed) <= 0.05) return;
+  const ux = mx / len;
+  const uz = mz / len;
 
-  const stepX = dirX(body.yaw) * body.speed * dt;
-  const stepZ = dirZ(body.yaw) * body.speed * dt;
+  // 恒速：不插值、不趋近。原来用 dt*8 的速度斜坡，松键后还会滑 0.2~0.3 秒，
+  // 叠加网络延迟与预测校正，体感就是"按了没反应、松了还在动"。
+  body.speed = body.speedBase || 15;
+
+  // 车头追移动方向。位移是立即生效的，所以方向感不受转速影响。
+  const want = Math.atan2(ux, uz);
+  const diff = angleDiff(want, body.yaw);
+  const maxStep = TURN_TO_RATE * dt;
+  if (Math.abs(diff) <= maxStep) body.yaw = want;
+  else body.yaw += Math.sign(diff) * maxStep;
+
+  const stepX = ux * body.speed * dt;
+  const stepZ = uz * body.speed * dt;
 
   if (!col) {
     // 没有碰撞源：纯运动（单测 / 无墙场景）
@@ -56,15 +79,13 @@ export function stepBody(body, input, dt, col, half) {
   }
 
   const r = BODY_RADIUS;
-  // 先钳边界、再判箱体：贴边不该算撞墙，否则车会一直"顶着"边线掉速
+  // 先钳边界、再判箱体：贴边不该算撞墙
   const nx = Math.max(-half + r, Math.min(half - r, body.x + stepX));
   const nz = Math.max(-half + r, Math.min(half - r, body.z + stepZ));
 
-  // 轴向分离：贴墙时还能沿墙滑行
-  let hit = false;
-  if (!col.blocked(nx, body.z, r)) body.x = nx; else hit = true;
-  if (!col.blocked(body.x, nz, r)) body.z = nz; else hit = true;
-  if (hit) body.speed *= WALL_KEEP;
+  // 轴向分离：正面顶墙时还能沿墙滑行，不会两个轴一起被判定为"撞"
+  if (!col.blocked(nx, body.z, r)) body.x = nx;
+  if (!col.blocked(body.x, nz, r)) body.z = nz;
 }
 
 /** 炮塔朝世界坐标转（有限转速，避免瞬狙） */

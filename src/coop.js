@@ -4,8 +4,9 @@
 // 所有判定（谁中弹、谁倒地）都以服务端快照为准。
 //
 // 三个关键约定：
-//   1. 与服务端一致：前进方向 = (sin yaw, cos yaw)，A/D 让 yaw 增大/减小。
-//      这样预测不会和服务端"打架"，否则会表现成原地抖动。
+//   1. 与服务端一致：WASD 是八方向平移（世界坐标 mx/mz），车体以 8 rad/s 追移动方向。
+//      与单机 Game.js + Tank.move 同一套模型——单机是横移，联机就不能是方向盘，
+//      否则同一个玩家进房后会觉得"左右键坏了、车开不动"。
 //   2. 服务端的子弹有 id：新 id 建实体、消失即回收，不重复建。
 //   3. 自己倒地时仍要渲染（躺倒的样子），但不再读输入。
 
@@ -334,9 +335,17 @@ export class CoopMode {
     const k = this.keys;
     const canDrive = this.me.alive && !this.me.down;
 
-    const fwd = canDrive ? (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0) : 0;
-    // 与服务端同向：A → 左转（yaw 增大），D → 右转
-    const turn = canDrive ? (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0) - (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) : 0;
+    // 与单机 Game.js 完全一致：WASD / 方向键是"八方向平移"，不是方向盘。
+    // 之前这里映射成 forward + turn，按 A/D 只会原地打转，用户进房第一反应
+    // 就是"左右键没用、车开不动"。单机是横移，联机必须也是横移。
+    let mx = 0;
+    let mz = 0;
+    if (canDrive) {
+      if (k.has('KeyW') || k.has('ArrowUp')) mz -= 1;
+      if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
+      if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
+      if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
+    }
 
     // 鼠标 → 世界瞄准点（相机是固定的俯视角，地面平面 y=0）
     this.aimRay.setFromCamera(this.mouseNDC, this.camera);
@@ -348,8 +357,8 @@ export class CoopMode {
     }
 
     return {
-      forward: fwd,
-      turn,
+      mx,
+      mz,
       aimX: hasAim ? this.aimPoint.x : this.me.x,
       aimZ: hasAim ? this.aimPoint.z : this.me.z - 10,
       fire: canDrive && (this.firing || k.has('Space')),
@@ -516,16 +525,16 @@ export class CoopMode {
     // 位置：不硬拽，交给 _absorbResidual 慢慢消化
     this._absorbResidual(dt, p);
 
-    // 朝向校正：偏差超过 0.35 弧度（约 20°）才拉，且每秒最多追 3 弧度。
-    // 本地预测出来的 yaw 只要没被墙挡，通常和服务端只差几个 tick 的量，
-    // 完全不需要校正；一旦真的偏了（比如被人顶开），再慢慢对上去。
+    // 朝向校正：车头现在是"移动方向的跟随量"，不参与位移计算（位移用的是 mx/mz），
+    // 所以小偏差纯属观感问题，不需要每帧去拽——拽了反而在转向过程中一顿一顿。
+    // 只有分叉超过 70° 才慢慢对，超过 126° 说明是复活/传送，直接归位。
     const yawErr = angleDiff(p.yaw, this.me.yaw);
     if (Math.abs(yawErr) > 2.2) {
       // 兜底：差得多半是复活 / 重生传送，直接对齐，不然会永远朝着老方向跑
       this.me.yaw = p.yaw;
       this.me.speed = 0;
-    } else if (Math.abs(yawErr) > 0.35) {
-      this.me.yaw += yawErr * (1 - Math.exp(-3 * dt));
+    } else if (Math.abs(yawErr) > 1.2) {
+      this.me.yaw += yawErr * (1 - Math.exp(-4 * dt));
     }
 
     // 画出来的位置：在"上一 tick"和"这一 tick"之间按剩余时间插值。
