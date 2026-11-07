@@ -170,7 +170,12 @@ export class Game {
     this.scene.add(sun);
     this.scene.add(sun.target);
 
-    this.world = createLevel(this.scene);
+    // 单机版没有服务端下发，允许用 URL 参数试地形（?terrain=gentle / 1 / 1.5）。
+    // 联机不要这么干：四个人必须用同一个强度，那边由服务端统一下发。
+    const tq = new URLSearchParams(location.search).get('terrain');
+    const TERRAIN_PRESETS = { flat: 0, gentle: 0.45, standard: 1, rugged: 1.5 };
+    const terrainScale = tq == null ? 0 : (tq in TERRAIN_PRESETS ? TERRAIN_PRESETS[tq] : (Math.max(0, Number(tq) || 0)));
+    this.world = createLevel(this.scene, terrainScale);
     this.nav = createNav(this.world);
     this.effects = new Effects(this.scene);
 

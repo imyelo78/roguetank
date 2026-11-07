@@ -200,6 +200,9 @@ const server = createServer(async (req, res) => {
       uptime: Math.round(process.uptime()),
       rooms: s.rooms,
       players: s.players,
+      // 地形强度：不设 TERRAIN 就是全平。排查"为什么地面没起伏"先看这里，
+      // 省得怀疑代码没覆盖成功。
+      terrain: process.env.TERRAIN || '0',
       rssMB: Math.round(process.memoryUsage().rss / 1048576),
     }));
     return;

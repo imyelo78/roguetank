@@ -10,6 +10,10 @@
 export const dirX = (yaw) => Math.sin(yaw);
 export const dirZ = (yaw) => Math.cos(yaw);
 
+// 坡度对速度的影响。地形高度场与客户端渲染、服务端模拟共用同一份实现，
+// 所以这里直接 import，不另写一套公式。
+import { slopeFactor } from './terrain.js';
+
 /** 归一化到 [-1,1]，非数字一律当 0 */
 export const clampDir = (v) => {
   const n = Number(v);
@@ -64,7 +68,15 @@ export function stepBody(body, input, dt, col, half) {
 
   // 恒速：不插值、不趋近。原来用 dt*8 的速度斜坡，松键后还会滑 0.2~0.3 秒，
   // 叠加网络延迟与预测校正，体感就是"按了没反应、松了还在动"。
-  body.speed = body.speedBase || 15;
+  //
+  // 地形：只有"目标速度"乘坡度系数，位移仍是一步到位。
+  // 不能让位移本身依赖坡度积分——两端浮点差会随帧累积成可见漂移。
+  // col.terrainScale 为 0（旧地图 / 没开地形的房间）时完全走原路径。
+  const baseSpeed = body.speedBase || 15;
+  const ts = col?.terrainScale || 0;
+  body.speed = ts > 0
+    ? baseSpeed * slopeFactor(body.x, body.z, ux, uz, ts)
+    : baseSpeed;
 
   // 车头追移动方向。位移是立即生效的，所以方向感不受转速影响。
   const want = Math.atan2(ux, uz);

@@ -12,6 +12,8 @@ import { HALF, generateBoxes, resolveMultiSpawns } from './levelgen.js';
 import { stepBody, aimTurret, angleDiff } from './motion.js';
 // 圆-矩形碰撞：与客户端 level.js、地图生成共用，避免三处判定各写一套
 import { deepestHit, hitsAny, slideCircle, pushOut } from './collide.js';
+// 地形高度场：两端同源的坡度函数（scale=0 时完全退化成平地）
+import { slopeFactor } from './terrain.js';
 import {
   createPlayer, updateRevive, scaleForPlayers,
   emptyInput, DOWN_TIME, RESPAWN_DELAY,
@@ -68,7 +70,7 @@ export const PLAYER_WEAPON = {
 };
 
 /** 障碍物：服务端也必须有静态碰撞表，否则敌人会穿墙 */
-export function buildStaticWorld() {
+export function buildStaticWorld(terrainScale = 0) {
   // 地图数据只在 core/levelgen.js 生成一次，客户端建 mesh、这里建碰撞表。
   //
   // 为什么不再手抄一份：线上出过事故——两边各写一套生成循环，客户端为了建
@@ -81,6 +83,8 @@ export function buildStaticWorld() {
   return {
     half: HALF,
     boxes,
+    // 地形强度。stepBody 用它决定要不要按坡度改速度；为 0 时完全走旧路径。
+    terrainScale,
     /**
      * 圆形与箱体的碰撞。
      * 真实圆-矩形判定（角上是圆弧）。原来把半径直接加到矩形两边，
@@ -147,13 +151,15 @@ const nextId = () => NEXT_ID++;
  * 规则本身（波次公式、敌人类型、伤害数值）与单机一致。
  */
 export class World {
-  constructor({ code, seed = 1, maxPlayers = 4 } = {}) {
+  constructor({ code, seed = 1, maxPlayers = 4, terrainScale = 0 } = {}) {
     this.code = code || 'LOCAL';
     this.seed = seed >>> 0;
     this.maxPlayers = Math.max(1, Math.min(4, maxPlayers));
+    // 地形强度由房间配置决定，随 WELCOME 下发给客户端，保证四个人看到的是同一张地。
+    this.terrainScale = Math.max(0, Number(terrainScale) || 0);
 
     this.rng = new Rng(this.seed);
-    this.static = buildStaticWorld();
+    this.static = buildStaticWorld(this.terrainScale);
 
     this.players = [];
     this.enemies = [];
@@ -398,7 +404,9 @@ export class World {
         const len = Math.hypot(e._mx, e._mz) || 1;
         const ux = e._mx / len;
         const uz = e._mz / len;
-        const step = e.speed * dt;
+        // 敌人也吃坡度：不然玩家上坡被减速、敌人不受影响，等于电脑开挂。
+        // 注意 _checkStuck 里仍用未减速的期望步长，避免上坡被误判成卡住。
+        const step = e.speed * dt * slopeFactor(e.x, e.z, ux, uz, this.terrainScale);
         const nx = e.x + ux * step;
         const nz = e.z + uz * step;
         const ox = e.x;
@@ -847,6 +855,9 @@ export class World {
       wave: this.wave,
       state: this.state,
       tick: this.tick,
+      // 地形强度必须随全量状态下发：客户端要靠它把车贴到正确的坡面上。
+      // 交给 URL 参数或本地配置就会四人不同步——一个人看着在上坡、另一个是平地。
+      terrain: this.terrainScale,
     };
   }
 }

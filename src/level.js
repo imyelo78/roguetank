@@ -1,6 +1,7 @@
 import * as THREE from '../vendor/three.module.js';
 import { HALF, PLAYER_START, generateBoxes } from './core/levelgen.js';
 import { hitsAny, deepestHit } from './core/collide.js';
+import { heightAt } from './core/terrain.js';
 
 // 地图数据统一由 core/levelgen.js 生成：这里只建 mesh，服务端只建碰撞表。
 // 两端共用一份数据，才能保证"你看得见的墙"和"服务端判定的墙"是同一堵。
@@ -43,20 +44,33 @@ function groundTexture() {
   return tex;
 }
 
-function addBox(scene, obstacles, x, z, w, h, d, color, matCache) {
+// 楼体统一往下埋 4.5 米当地基。
+//
+// 为什么这么深：实测山地档（rugged）下建筑落点的坡度最大 41%。
+// 一栋 14 米宽的楼站在 41% 的坡上，两端高差 5.7 米——地基浅了就会在坡下侧
+// 露出楼底，看起来像楼浮在半空。
+//
+// 平地时这 4.5 米完全在地面以下，看不见，也不影响任何 2D 碰撞判定。
+// 统一给所有楼同样的深度（而不是按实际坡度算）是为了让运行时切换地形
+// 只需要改 position.y，不用重建几何体。
+const FOUNDATION_SINK = 4.5;
+
+function addBox(scene, obstacles, x, z, w, h, d, color, matCache, groundY = 0) {
   let mat = matCache.get(color);
   if (!mat) {
     mat = new THREE.MeshStandardMaterial({ color, roughness: 0.92, metalness: 0.06 });
     matCache.set(color, mat);
   }
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  mesh.position.set(x, h / 2, z);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h + FOUNDATION_SINK, d), mat);
+  mesh.position.set(x, groundY + h / 2 - FOUNDATION_SINK / 2, z);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   scene.add(mesh);
 
   const box = new THREE.Box3().setFromObject(mesh);
-  obstacles.push({ mesh, box });
+  // x/z/h 留着给 setTerrain 用：地形强度是连上服务器才知道的，
+  // 那时候楼已经建好了，只能改高度不能重建。
+  obstacles.push({ mesh, box, x, z, h });
   return mesh;
 }
 
@@ -74,21 +88,47 @@ function addVisual(scene, x, z, w, h, d, color, matCache) {
   return mesh;
 }
 
-export function createLevel(scene) {
+export function createLevel(scene, terrainScale = 0) {
   const obstacles = [];
   const matCache = new Map();
+  // 地形强度是"可变"的：联机时进房前不知道房间开没开地形，
+  // 要等 WELCOME 才拿到，所以这里留了 setTerrain() 做热重建。
+  let ts = Math.max(0, Number(terrainScale) || 0);
 
-  // ---- 地面 ----
-  const groundGeo = new THREE.PlaneGeometry(HALF * 2 + 20, HALF * 2 + 20);
+  const SIZE = HALF * 2 + 20;
   const groundMat = new THREE.MeshStandardMaterial({
     map: groundTexture(),
     roughness: 1,
     metalness: 0,
   });
-  const ground = new THREE.Mesh(groundGeo, groundMat);
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  scene.add(ground);
+  let ground = null;
+
+  // ---- 地面 ----
+  // 地形起伏：平面按 heightAt 位移顶点。分段数只在有地形时提高，
+  // 全平地图仍然是一张 1×1 的平面，顶点数和以前完全一样（零回归）。
+  const buildGround = () => {
+    if (ground) {
+      scene.remove(ground);
+      ground.geometry.dispose();
+    }
+    const seg = ts > 0 ? 96 : 1;
+    const geo = new THREE.PlaneGeometry(SIZE, SIZE, seg, seg);
+    if (ts > 0) {
+      const pos = geo.attributes.position;
+      // rotation.x = -90° 之后：本地 (x, y, z) → 世界 (x, z, -y)。
+      // 所以世界高度要按 (localX, -localY) 采样，写到本地 z 上。
+      for (let i = 0; i < pos.count; i++) {
+        pos.setZ(i, heightAt(pos.getX(i), -pos.getY(i), ts));
+      }
+      pos.needsUpdate = true;
+      geo.computeVertexNormals(); // 不重算法线，光照会是一片死黑
+    }
+    ground = new THREE.Mesh(geo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+  };
+  buildGround();
 
   // ---- 远景底板：铺到雾里，低视角时不会看到地图"断崖"（去掉高墙后的必要补丁） ----
   const farGround = new THREE.Mesh(
@@ -96,7 +136,8 @@ export function createLevel(scene) {
     new THREE.MeshStandardMaterial({ color: 0x3b4534, roughness: 1, metalness: 0 })
   );
   farGround.rotation.x = -Math.PI / 2;
-  farGround.position.y = -0.08;
+  // 有地形时压到最低谷以下，否则会在山脚"切"出一条硬边
+  farGround.position.y = ts > 0 ? -14 : -0.08;
   scene.add(farGround);
 
   // ---- 外围边界：低矮界桩（0.8m，不遮挡视线；也不进碰撞表，边界由坐标钳制） ----
@@ -120,25 +161,49 @@ export function createLevel(scene) {
   const allBoxes = generateBoxes();
   const boxes = allBoxes.map((b) => [b.x, b.z, b.w, b.d]);
   for (const b of allBoxes) {
-    addBox(scene, obstacles, b.x, b.z, b.w, b.h, b.d, b.color, matCache);
+    addBox(scene, obstacles, b.x, b.z, b.w, b.h, b.d, b.color, matCache, heightAt(b.x, b.z, ts));
   }
 
   // ---- 出生点 ----
-  const spawnPoints = [
-    new THREE.Vector3(-82, 0, -82),
-    new THREE.Vector3(82, 0, -82),
-    new THREE.Vector3(-82, 0, 82),
-    new THREE.Vector3(82, 0, 82),
-    new THREE.Vector3(0, 0, -88),
-    new THREE.Vector3(-88, 0, 0),
-    new THREE.Vector3(88, 0, 0),
-    new THREE.Vector3(0, 0, 88),
-  ];
+  // 出生点的数组引用要稳定（Game.js 会持有它），所以原地更新而不是重新赋值
+  const spawnPoints = [];
+  const refillSpawns = () => {
+    const pts = [
+      [-82, -82], [82, -82], [-82, 82], [82, 82],
+      [0, -88], [-88, 0], [88, 0], [0, 88],
+    ].map(([sx, sz]) => new THREE.Vector3(sx, heightAt(sx, sz, ts), sz));
+    spawnPoints.length = 0;
+    spawnPoints.push(...pts);
+  };
+  refillSpawns();
 
   return {
     obstacles,
     spawnPoints,
     half: HALF,
+    get terrainScale() { return ts; },
+    /** 地表高度，渲染层贴地用（服务端不走这里，只走 core/terrain.js） */
+    heightAt: (x, z) => heightAt(x, z, ts),
+
+    /**
+     * 运行时切换地形强度（联机时 WELCOME 到达后才调）。
+     * 只重建地面几何体、抬高建筑和出生点，碰撞表（2D 的 x/z）完全不动——
+     * 所以切换地形不会让任何单位穿墙或卡住。
+     * @returns {boolean} 是否真的变了
+     */
+    setTerrain(next) {
+      const v = Math.max(0, Number(next) || 0);
+      if (Math.abs(v - ts) < 1e-6) return false;
+      ts = v;
+      buildGround();
+      farGround.position.y = ts > 0 ? -14 : -0.08;
+      for (const o of obstacles) {
+        o.mesh.position.y = heightAt(o.x, o.z, ts) + o.h / 2 - FOUNDATION_SINK / 2;
+        o.box.setFromObject(o.mesh); // hitSolid 用到 y，必须同步
+      }
+      refillSpawns();
+      return true;
+    },
 
     /**
      * 圆形碰撞体是否与任意障碍物或边界重叠。

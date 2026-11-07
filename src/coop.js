@@ -22,6 +22,7 @@ import { createStats } from './upgrades.js';
 import { ENEMY_TYPES } from './core/world.js';
 import { aimTurret, angleDiff, lerpAngle } from './core/motion.js';
 import { NetClient, predict, TICK_RATE } from './net.js';
+import { heightAt } from './core/terrain.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -174,7 +175,8 @@ export class CoopMode {
 
     // 地图与单机完全同一份（同一个种子、同一套碰撞表），
     // 否则会出现"服务端没墙、你被卡在墙里"的鬼故事。
-    this.world = createLevel(this.scene);
+    // 地形强度来自服务端（WELCOME / world.terrain），进房前不知道，所以只在此时建图。
+    this.world = createLevel(this.scene, this.net?.terrainScale || 0);
     this.effects = new Effects(this.scene);
 
     // 瞄准环
@@ -238,7 +240,11 @@ export class CoopMode {
       this._upsertEnemy(e.id, e.type, e.x, e.z, e.yaw);
     }
 
-    this.camera.position.set(this.me.x, CAM_HEIGHT, this.me.z + CAM_BACK);
+    this.camera.position.set(
+      this.me.x,
+      CAM_HEIGHT + this._gy(this.me.x, this.me.z),
+      this.me.z + CAM_BACK
+    );
     this.game.camLook?.set?.(this.me.x, 1, this.me.z);
 
     // 初始化渲染插值与残差状态，避免第一帧画在原点
@@ -457,7 +463,7 @@ export class CoopMode {
         if (!t) continue;
       }
       // 倒地：躺平 + 冒烟，比"突然消失"清楚得多
-      t.group.position.set(p.x, p.down ? 0.35 : 0, p.z);
+      t.group.position.set(p.x, this._gy(p.x, p.z) + (p.down ? 0.35 : 0), p.z);
       t.group.rotation.y = p.yaw;
       t.group.rotation.z = p.down ? 0.5 : 0;
       t.setAim(p.turretYaw);
@@ -480,7 +486,7 @@ export class CoopMode {
       alive.add(e.id);
       const t = this._upsertEnemy(e.id, CODE_TO_TYPE(e.typeCode), e.x, e.z, e.yaw);
       // 快照是 15Hz 插值出来的，位置已经平滑，直接贴
-      t.group.position.set(e.x, 0, e.z);
+      t.group.position.set(e.x, this._gy(e.x, e.z), e.z);
       t.group.rotation.y = e.yaw;
       t.setAim(e.turretYaw);
     }
@@ -500,7 +506,7 @@ export class CoopMode {
       if (!bullet) {
         const col = BULLET_COLOR[side];
         bullet = new Bullet(this.scene, {
-          pos: new THREE.Vector3(b.x, 1.15, b.z),
+          pos: new THREE.Vector3(b.x, this._gy(b.x, b.z) + 1.15, b.z),
           dir: new THREE.Vector3(Math.sin(b.yaw), 0, Math.cos(b.yaw)),
           team: side,
           speed: 0,
@@ -510,7 +516,8 @@ export class CoopMode {
         });
         this.bullets.set(b.id, bullet);
       }
-      bullet.pos.set(b.x, 1.15, b.z);
+      // 炮弹贴着地面高度飞：不改弹道，只是让低洼处的曳光不被地面切掉
+      bullet.pos.set(b.x, this._gy(b.x, b.z) + 1.15, b.z);
       bullet.mesh.position.copy(bullet.pos);
     }
     for (const [id, bullet] of this.bullets) {
@@ -581,7 +588,7 @@ export class CoopMode {
 
     const t = this.tanks.get(this.myId);
     if (t) {
-      t.group.position.set(rx, this.me.down ? 0.35 : 0, rz);
+      t.group.position.set(rx, this._gy(rx, rz) + (this.me.down ? 0.35 : 0), rz);
       t.group.rotation.y = ry;
       t.group.rotation.z = this.me.down ? 0.5 : 0;
       t.setAim(this.me.turretYaw);
@@ -669,6 +676,17 @@ export class CoopMode {
     this._shift.z -= uz * take;
   }
 
+  /** 当前地形强度（服务端在 WELCOME 里下发；为 0 时全部退化成平地） */
+  get terrainScale() {
+    return this.net?.terrainScale || 0;
+  }
+
+  /** 地表高度。渲染层所有"贴地"都走这里 */
+  _gy(x, z) {
+    const ts = this.terrainScale;
+    return ts ? heightAt(x, z, ts) : 0;
+  }
+
   _updateCamera(dt) {
     const cam = this.camera;
     // 相机跟手要"稳"而不是"快"：用固定时间常数做指数趋近，
@@ -679,7 +697,8 @@ export class CoopMode {
     // 跟随"画出来的位置"（_disp，已做 tick 插值），相机和车体才不会互相拉锯
     cam.position.x += (this._disp.x - cam.position.x) * k;
     cam.position.z += (this._disp.z + CAM_BACK - cam.position.z) * k;
-    cam.position.y = CAM_HEIGHT;
+    // 相机跟着地形抬高：上高地时如果还固定 26 米，视点会陷进山里
+    cam.position.y = CAM_HEIGHT + this._gy(this._disp.x, this._disp.z);
 
     // 开炮后座
     if (this._shake > 0) {
@@ -688,9 +707,13 @@ export class CoopMode {
       this._shake = Math.max(0, this._shake - dt * 1.2);
     }
 
-    this.game.camLook.set(this._disp.x, 1, this._disp.z);
+    this.game.camLook.set(this._disp.x, this._gy(this._disp.x, this._disp.z) + 1, this._disp.z);
     cam.lookAt(this.game.camLook);
-    this._aimMarker.position.set(this.aimPoint.x, 0.06, this.aimPoint.z);
+    this._aimMarker.position.set(
+      this.aimPoint.x,
+      this._gy(this.aimPoint.x, this.aimPoint.z) + 0.06,
+      this.aimPoint.z
+    );
   }
 
   /** BOSS 血条：服务端只给 hp 比例，名字按类型码认 */

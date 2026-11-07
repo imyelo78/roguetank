@@ -13,6 +13,25 @@ const TICK_MS = 1000 / TICK_RATE;
 const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const SNAP_MS = 1000 / SNAPSHOT_RATE;
 
+/**
+ * 地形强度：服务端环境变量统一控制，默认 0（全平，旧图完全不受影响）。
+ *
+ *   TERRAIN=0        全平
+ *   TERRAIN=gentle   ±2.7 米，最陡 10°，新手关用
+ *   TERRAIN=1        ±6 米，最陡 21°，标准
+ *   TERRAIN=1.5      ±9 米，最陡 30°，山地关用
+ *
+ * 为什么不给客户端传参：四个人的地形必须完全一致，否则一个人在上坡减了速、
+ * 另一个按平地算，残差会被反复校正，手感直接回到"拖拽"。
+ */
+const TERRAIN_PRESETS = { flat: 0, gentle: 0.45, standard: 1, rugged: 1.5 };
+function terrainScaleOf() {
+  const v = String(process.env.TERRAIN || '0').trim().toLowerCase();
+  if (v in TERRAIN_PRESETS) return TERRAIN_PRESETS[v];
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.min(2, n) : 0;
+}
+
 /** 一名玩家在房间里的连接状态 */
 class Member {
   constructor(id, socket, { name, chassis }) {
@@ -62,7 +81,14 @@ export class Room {
     this.members.set(id, m);
 
     if (!this.world) {
-      this.world = new World({ code: this.code, seed: seed || (Math.random() * 0xFFFFFFFF) | 0, maxPlayers: MAX_PLAYERS });
+      this.world = new World({
+        code: this.code,
+        seed: seed || (Math.random() * 0xFFFFFFFF) | 0,
+        maxPlayers: MAX_PLAYERS,
+        // 地形由服务端统一决定，房间内所有人看到的是同一张地。
+        // 不读客户端参数：一旦允许各自指定，就会出现"你看着在上坡、他是平地"的漂移。
+        terrainScale: terrainScaleOf(this.code),
+      });
     }
     this.world.addPlayer({ id, name, chassisId: chassis });
 
@@ -308,6 +334,8 @@ export class Room {
       host: this.hostId || null,
       world: w.fullState(),
       seed: w.seed,
+      // 顶层也放一份，客户端不用钻进 world 里翻
+      terrain: w.terrainScale,
     };
   }
 

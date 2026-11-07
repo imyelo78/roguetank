@@ -120,6 +120,9 @@ export class NetClient {
           msg.code = this.room;
           this.players = msg.players || [];
           this.host = msg.host || null;
+          // 地形强度由服务端下发，客户端不猜、也不读 URL 参数。
+          // 老服务端没有这个字段时按 0 处理（全平），行为与改造前一致。
+          this.terrainScale = Number(msg.terrain ?? msg.world?.terrain ?? 0) || 0;
           this.state = msg.started ? 'playing' : 'lobby';
           this.lastSnap = null;
           this.prevSnap = null;
