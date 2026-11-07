@@ -1,5 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 import { HALF, PLAYER_START, generateBoxes } from './core/levelgen.js';
+import { hitsAny, deepestHit } from './core/collide.js';
 
 // 地图数据统一由 core/levelgen.js 生成：这里只建 mesh，服务端只建碰撞表。
 // 两端共用一份数据，才能保证"你看得见的墙"和"服务端判定的墙"是同一堵。
@@ -115,7 +116,10 @@ export function createLevel(scene) {
   addVisual(scene, HALF + edgeT / 2, 0, edgeT * 0.6, bevelH, edgeLen, '#9a7f42', matCache);
 
   // ---- 掩体：数据来自 core/levelgen.js，与服务端碰撞表同源 ----
-  for (const b of generateBoxes()) {
+  // boxes 直接用生成数据（而不是从 mesh 反算 Box3），保证与服务端判定数值一致
+  const allBoxes = generateBoxes();
+  const boxes = allBoxes.map((b) => [b.x, b.z, b.w, b.d]);
+  for (const b of allBoxes) {
     addBox(scene, obstacles, b.x, b.z, b.w, b.h, b.d, b.color, matCache);
   }
 
@@ -136,14 +140,19 @@ export function createLevel(scene) {
     spawnPoints,
     half: HALF,
 
-    /** 圆形碰撞体是否与任意障碍物或边界重叠 */
+    /**
+     * 圆形碰撞体是否与任意障碍物或边界重叠。
+     * 箱体用真实圆-矩形判定（core/collide.js，与服务端/地图生成同一份），
+     * 角上是圆弧而不是直角——否则贴着建筑拐角会被多挡 0.79 米。
+     */
     blocked(x, z, r) {
       if (x < -HALF + r || x > HALF - r || z < -HALF + r || z > HALF - r) return true;
-      for (let i = 0; i < obstacles.length; i++) {
-        const b = obstacles[i].box;
-        if (x + r > b.min.x && x - r < b.max.x && z + r > b.min.z && z - r < b.max.z) return true;
-      }
-      return false;
+      return hitsAny(boxes, x, z, r);
+    },
+
+    /** 穿透最深的那一个：{ nx, nz, depth } 或 null（撞墙滑行/脱困用，与服务端同源） */
+    hit(x, z, r) {
+      return deepestHit(boxes, x, z, r);
     },
 
     /**

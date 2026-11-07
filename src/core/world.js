@@ -10,6 +10,8 @@
 import { HALF, generateBoxes, resolveMultiSpawns } from './levelgen.js';
 // 车体运动学（转向 / 加速 / 撞墙滑行）：与客户端预测共用同一份实现
 import { stepBody, aimTurret, angleDiff } from './motion.js';
+// 圆-矩形碰撞：与客户端 level.js、地图生成共用，避免三处判定各写一套
+import { deepestHit, hitsAny, slideCircle, pushOut } from './collide.js';
 import {
   createPlayer, updateRevive, scaleForPlayers,
   emptyInput, DOWN_TIME, RESPAWN_DELAY,
@@ -81,14 +83,20 @@ export function buildStaticWorld() {
     boxes,
     /**
      * 圆形与箱体的碰撞。
-     * 注意：这里不判边界——边界由各调用方 clamp 处理，保证"贴边能走"，
-     * 与客户端 Tank.move 的轴向分离手感一致。
+     * 真实圆-矩形判定（角上是圆弧）。原来把半径直接加到矩形两边，
+     * 等价于方形碰撞体，贴着建筑拐角走会被多挡 0.79 米，表现为"建筑卡坦克"。
+     * 注意：这里不判边界——边界由各调用方 clamp 处理，保证"贴边能走"。
      */
     blocked(x, z, r) {
-      for (const [bx, bz, bw, bd] of boxes) {
-        if (Math.abs(x - bx) < bw / 2 + r && Math.abs(z - bz) < bd / 2 + r) return true;
-      }
-      return false;
+      return hitsAny(boxes, x, z, r);
+    },
+    /** 穿透最深的那一个，{ nx, nz, depth } 或 null；撞墙滑行与脱困用 */
+    hit(x, z, r) {
+      return deepestHit(boxes, x, z, r);
+    },
+    /** 带滑行的位移，返回 { x, z, hit } */
+    slide(x, z, dx, dz, r) {
+      return slideCircle(boxes, x, z, dx, dz, r);
     },
     clamp(x, z, r) {
       return {
@@ -245,6 +253,7 @@ export class World {
       }
       this._updateWaves(dt);
       this._separate();
+      this._checkStuck(dt);
     }
 
     const ev = this.events;
@@ -358,6 +367,15 @@ export class World {
           mz = (dz / dist) * 1.0 + (dx / dist) * side * 0.45;
         }
 
+        // 上一 tick 净位移几乎为 0（被墙挡住、或被同伴挤住）：强制加一段侧向，
+        // 让它横向挪开再走。线上表现为"几辆坦克在建筑边上排成一列、互相顶死"，
+        // 每辆单独看都在"移动"，实际一帧没挪。
+        if ((e.blockedT || 0) > 0) {
+          const s = e.strafeSide || 1;
+          mx += (-dz / dist) * s * 1.2;
+          mz += (dx / dist) * s * 1.2;
+        }
+
         // 车头对齐不再影响速度，而是直接纠正朝向：
         //   - 有速度惩罚时，敌人一被玩家绕到侧面就只剩 45% 速度，看起来在磨蹭；
         //   - 而"侧移方向随 blockedT 每 0.6 秒翻转"叠加 3 rad/s 的转向，
@@ -383,25 +401,68 @@ export class World {
         const step = e.speed * dt;
         const nx = e.x + ux * step;
         const nz = e.z + uz * step;
+        const ox = e.x;
+        const oz = e.z;
 
-        if (e.type === 'drone' || !this.static.blocked(nx, nz, e.radius)) {
-          e.x = Math.max(-HALF + e.radius, Math.min(HALF - e.radius, nx));
-          e.z = Math.max(-HALF + e.radius, Math.min(HALF - e.radius, nz));
+        let mx2;
+        let mz2;
+        let gained;
+
+        if (e.type === 'drone') {
+          mx2 = Math.max(-HALF + e.radius, Math.min(HALF - e.radius, nx));
+          mz2 = Math.max(-HALF + e.radius, Math.min(HALF - e.radius, nz));
+          gained = Math.hypot(mx2 - ox, mz2 - oz);
+          e.x = mx2;
+          e.z = mz2;
           e.blockedT = 0;
         } else {
-          // 被挡住：沿墙滑行；连续卡住就换一侧绕
-          e.blockedT = (e.blockedT || 0) + dt;
-          if (e.blockedT > 0.6) { e.strafeSide = -(e.strafeSide || 1); e.blockedT = 0; }
-          const slideX = e.x + ux * step;
-          const slideZ = e.z + uz * step;
-          if (!this.static.blocked(slideX, e.z, e.radius)) e.x = slideX;
-          else if (!this.static.blocked(e.x, slideZ, e.radius)) e.z = slideZ;
+          // 撞墙沿切向滑行（与玩家同一套 core/collide.js）。
+          // 原来的"先试 x 再试 z、都失败就不动"在建筑拐角会把敌人钉死，
+          // 表现是一群坦克贴着楼边不动、或者绕着楼来回蹭。
+          const clampEX = (v) => Math.max(-HALF + e.radius, Math.min(HALF - e.radius, v));
+          const mv = this.static.slide(ox, oz, ux * step, uz * step, e.radius);
+          mx2 = clampEX(mv.x);
+          mz2 = clampEX(mv.z);
+          gained = Math.hypot(mx2 - ox, mz2 - oz);
+
+          // 正面顶住建筑时切向分量为 0，车会"一格都不动"。
+          // 线上实测：敌人能在一个楼角上静止 20 秒（玩家在 30 米外，
+          // 走的是"直冲"分支，strafeSide 根本没有参与方向计算）。
+          // 这里补一条绕过：贴着墙沿切线方向走，连续被挡再换另一侧。
+          if (gained < step * 0.3) {
+            const h = this.static.hit(ox + ux * step, oz + uz * step, e.radius);
+            if (h) {
+              // 墙面的两个切线方向里，先试与"想去的方向"夹角更小的那个；
+              // 贴着拐角时那一侧可能刚好走不动（切线是弦，会压进圆弧），
+              // 所以两侧都比一遍，谁走得远用谁。
+              const tx = -h.nz;
+              const tz = h.nx;
+              const along = tx * ux + tz * uz;
+              const first = Math.abs(along) > 1e-3 ? Math.sign(along) : (e.strafeSide || 1);
+              for (const s of [first, -first]) {
+                const mv2 = this.static.slide(ox, oz, tx * s * step, tz * s * step, e.radius);
+                const qx = clampEX(mv2.x);
+                const qz = clampEX(mv2.z);
+                const g2 = Math.hypot(qx - ox, qz - oz);
+                if (g2 > gained) {
+                  mx2 = qx; mz2 = qz; gained = g2;
+                }
+              }
+            }
+          }
+
+          e.x = mx2;
+          e.z = mz2;
+          // 卡住计时统一放在 _checkStuck（_separate 之后），
+          // 因为"被同伴挤回去"发生在这里之后，只有那时才能看到净位移。
         }
 
         // 车体朝实际行进方向（炮塔另算）。
         // 注意：必须朝"实际移动方向"转，而不是朝玩家转——原来朝玩家转，
         // 身体却在侧移，车头永远追不上，视觉上就是原地画圈。
-        const diff = angleDiff(Math.atan2(ux, uz), e.yaw);
+        // 沿墙绕行时实际方向和期望方向不同，车头也要跟着实际方向走。
+        const headYaw = gained > 1e-4 ? Math.atan2(mx2 - ox, mz2 - oz) : Math.atan2(ux, uz);
+        const diff = angleDiff(headYaw, e.yaw);
         e.yaw += Math.sign(diff) * Math.min(Math.abs(diff), TURN_RATE * dt);
       }
 
@@ -688,6 +749,38 @@ export class World {
     return best || { x: -82, z: -82 };
   }
 
+  // ---------------- 卡住检测 ----------------
+
+  /**
+   * 净位移检测：一帧下来几乎没挪地方，才算"卡住"。
+   *
+   * 为什么放在 _separate 之后：
+   *   - 只看移动结果会把"被同伴挤回去"当成正常前进，AI 永远不知道自己被堵住；
+   *   - 线上表现为几辆坦克在建筑边排成一列互相顶，每辆都在"走"，实际原地踏步。
+   * 卡住持续 0.5 秒就翻转绕行方向，配合 _updateEnemies 里的侧向偏置脱困。
+   */
+  _checkStuck(dt) {
+    for (const e of this.enemies) {
+      if (e.static || !e.speed) continue;
+      const step = e.speed * dt;
+      const moved = e._px === undefined
+        ? step
+        : Math.hypot(e.x - e._px, e.z - e._pz);
+      e._px = e.x;
+      e._pz = e.z;
+
+      if (moved < step * 0.35) {
+        e.blockedT = (e.blockedT || 0) + dt;
+        if (e.blockedT > 0.5) {
+          e.strafeSide = -(e.strafeSide || 1);
+          e.blockedT = 0;
+        }
+      } else {
+        e.blockedT = 0;
+      }
+    }
+  }
+
   // ---------------- 分离：避免敌人叠在一起 ----------------
 
   _separate() {
@@ -707,6 +800,18 @@ export class World {
         const uz = dz / d;
         if (!a.static) { a.x -= ux * push; a.z -= uz * push; }
         if (!b.static) { b.x += ux * push; b.z += uz * push; }
+      }
+    }
+
+    // 互相挤推会把人推进旁边的建筑里（最典型的是"一群坦克围着楼角挤成一团"），
+    // 一旦挤进去，AI 之后每个方向都被判撞墙，这颗坦克就永远卡在那里了。
+    // 所以分离之后统一做一次推出，保证没有任何单位停在箱体内部。
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      const p = pushOut(this.static.boxes, e.x, e.z, e.radius);
+      if (p.x !== e.x || p.z !== e.z) {
+        e.x = Math.max(-HALF + e.radius, Math.min(HALF - e.radius, p.x));
+        e.z = Math.max(-HALF + e.radius, Math.min(HALF - e.radius, p.z));
       }
     }
   }

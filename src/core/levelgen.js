@@ -9,6 +9,9 @@
 //
 // 现在两端都只调用 generateBoxes()，数据不可能再分叉。
 
+// 圆-矩形判定：此处只做"能不能放得下"的静态检查，算法与两端运行时完全一致
+import { boxHit } from './collide.js';
+
 export const HALF = 100;
 
 /** 单机出生点（也是相机初始看向的位置） */
@@ -104,11 +107,11 @@ export function generateBoxes() {
 
 /**
  * 圆形是否与任一箱体重叠（只判箱体，不含边界）。
- * 与 world.js / level.js 里的 blocked 用同一套算法，避免判定差异。
+ * 实现走 core/collide.js，与 world.static / level 完全同源。
  */
 export function blockedAt(boxes, x, z, r) {
   for (const b of boxes) {
-    if (Math.abs(x - b.x) < b.w / 2 + r && Math.abs(z - b.z) < b.d / 2 + r) return true;
+    if (boxHit(x, z, r, b.x, b.z, b.w / 2, b.d / 2)) return true;
   }
   return false;
 }

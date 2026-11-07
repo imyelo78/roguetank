@@ -17,7 +17,12 @@ export const clampDir = (v) => {
   return Math.max(-1, Math.min(1, n));
 };
 
-/** 车体半径：碰撞判定用的外接圆 */
+/**
+ * 车体半径：碰撞判定用的外接圆。
+ *
+ * 单机各车型是 1.32~1.62，联机统一 1.9（四人同场时留一点安全间距）。
+ * 注意这个值只影响"能不能挤过去"，不影响操作手感。
+ */
 export const BODY_RADIUS = 1.9;
 
 /**
@@ -79,9 +84,59 @@ export function stepBody(body, input, dt, col, half) {
   }
 
   const r = BODY_RADIUS;
-  // 先钳边界、再判箱体：贴边不该算撞墙
-  const nx = Math.max(-half + r, Math.min(half - r, body.x + stepX));
-  const nz = Math.max(-half + r, Math.min(half - r, body.z + stepZ));
+  const clampX = (v) => Math.max(-half + r, Math.min(half - r, v));
+  const clampZ = (v) => Math.max(-half + r, Math.min(half - r, v));
+
+  // 优先走新接口（真实圆判定 + 切向滑行）。空场景里的 mock col 只有 blocked，
+  // 保留旧分支只是为了单测方便，线上两端都实现了 hit。
+  if (typeof col.hit === "function") {
+    // 已经嵌在箱子里（单位挤推 / 出生偏移 / 网络校正）→ 先推出来。
+    // 不修这个，下面每个方向都会被判成撞墙，车就彻底卡死了。
+    const stuck = col.hit(body.x, body.z, r);
+    if (stuck) {
+      body.x = clampX(body.x + stuck.nx * (stuck.depth + 1e-3));
+      body.z = clampZ(body.z + stuck.nz * (stuck.depth + 1e-3));
+    }
+
+    // 先钳边界、再判箱体：贴边不该算撞墙
+    const nx = clampX(body.x + stepX);
+    const nz = clampZ(body.z + stepZ);
+
+    const h = col.hit(nx, nz, r);
+    if (!h) {
+      body.x = nx;
+      body.z = nz;
+      return;
+    }
+
+    // 斜着顶墙：把位移里指向墙内的分量减掉，只保留切向 → 沿墙滑行。
+    // 分轴判定（先试 x 再试 z）在 45° 顶住建筑拐角时两个轴同时被拒，
+    // 车一格都动不了，这就是"贴着楼边走会被黏住"的来源。
+    const vx = nx - body.x;
+    const vz = nz - body.z;
+    const dot = vx * h.nx + vz * h.nz;
+    const tx = vx - h.nx * dot;
+    const tz = vz - h.nz * dot;
+
+    if (tx * tx + tz * tz > 1e-8) {
+      const sx = clampX(body.x + tx);
+      const sz = clampZ(body.z + tz);
+      const h2 = col.hit(sx, sz, r);
+      if (!h2) {
+        body.x = sx;
+        body.z = sz;
+        return;
+      }
+      // 沿建筑拐角的圆弧滑行时，切向位移会让圆和角点"刚好相切"甚至压进去
+      // 几毫米，纯判定会把它当成撞墙而钉死。这里只允许把这种浅重叠推出去，
+      // 深了（>0.25 米，说明是另一个面）就直接停，避免被推出一个身位。
+      if (h2.depth < 0.25) {
+        body.x = clampX(sx + h2.nx * (h2.depth + 1e-4));
+        body.z = clampZ(sz + h2.nz * (h2.depth + 1e-4));
+      }
+    }
+    return;
+  }
 
   // 轴向分离：正面顶墙时还能沿墙滑行，不会两个轴一起被判定为"撞"
   if (!col.blocked(nx, body.z, r)) body.x = nx;
