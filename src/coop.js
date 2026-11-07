@@ -755,7 +755,7 @@ export class CoopMode {
           }
           break;
         case 'kill': {
-          this.effects.explosion(new THREE.Vector3(e.x, 1.1, e.z), e.boss ? 0xff8a3d : 0xffb06a, e.boss ? 46 : 14, e.boss ? 1.8 : 1);
+          this.effects.explosion(new THREE.Vector3(e.x, this._gy(e.x, e.z) + 1.1, e.z), e.boss ? 0xff8a3d : 0xffb06a, e.boss ? 46 : 14, e.boss ? 1.8 : 1);
           this.sound.explosion(e.boss ? 1.4 : 0.8);
           if (e.by === this.myId) this.kills += 1;
           break;
@@ -786,7 +786,7 @@ export class CoopMode {
           this.game.hud.showMessage(`第 ${e.wave} 波清除 · 全员补血`, 1.6);
           break;
         case 'boom':
-          this.effects.explosion(new THREE.Vector3(e.x, 1, e.z), 0xff5a2a, 18, 1);
+          this.effects.explosion(new THREE.Vector3(e.x, this._gy(e.x, e.z) + 1, e.z), 0xff5a2a, 18, 1);
           this.sound.explosion(1.2);
           break;
         case 'join':
