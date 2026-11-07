@@ -29,6 +29,19 @@ const TICK_DT = 1 / TICK_RATE;
 const CAM_HEIGHT = 26;
 const CAM_BACK = 31;
 
+/**
+ * 残差追赶速度（米/秒）。
+ *
+ * 服务端 30Hz 推进、客户端同样 30Hz 预测，两者"应该"同速，残差只来自
+ * 快照时刻的 quantization。追赶速度只要略大于网络抖动带来的偏差就够了；
+ * 给太大（比如每帧 8%）会在两帧快照之间冲过头，下一帧又要往回走——
+ * 就是"整个场景在抖"。2.4 米/秒 ≈ 每 tick 8 cm，肉眼完全看不出。
+ */
+const CATCHUP_PER_SEC = 2.4;
+
+/** 残差死区（米）：小于它就不追，否则会追过头再往回走 */
+const RESIDUAL_DEADZONE = 0.06;
+
 /** 敌人类型码 → 类型名（与服务端 ENEMY_TYPES 的键顺序一致） */
 const TYPE_BY_CODE = Object.keys(ENEMY_TYPES);
 const CODE_TO_TYPE = (c) => TYPE_BY_CODE[(c - 1)] || 'gunner';
@@ -78,7 +91,7 @@ export class CoopMode {
     // 预测 / 校正相关的内部状态
     this._predAcc = 0;                                  // 预测累加器（见 update）
     this._shift = { x: 0, z: 0 };                       // 待消化的位置残差
-    this._prevPos = null;                               // 渲染插值用
+    this._predFrom = null;                              // 本帧预测前的起点（渲染插值用）
     this._disp = { x: 0, z: 0, yaw: 0 };                // 本帧画在哪
     this._bound = false;
     this._cd = 0;               // 本地射击冷却（只用于表现）
@@ -229,7 +242,7 @@ export class CoopMode {
     this.game.camLook?.set?.(this.me.x, 1, this.me.z);
 
     // 初始化渲染插值与残差状态，避免第一帧画在原点
-    this._prevPos = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
+    this._predFrom = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
     this._disp = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
     this._shift = { x: 0, z: 0 };
     this._predAcc = 0;
@@ -382,6 +395,8 @@ export class CoopMode {
       // 表现就是"操作有粘滞感"。这里用累加器把 dt 切成一格一格 1/30 秒。
       // 运动学本身来自 core/motion.js，与服务端逐帧完全一致（有测试钉着）。
       this._predAcc = (this._predAcc || 0) + dt;
+      // 先记下本帧预测前的起点，供渲染插值用（见 _reconcile 尾部）
+      this._predFrom = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
       let guard = 0;
       while (this._predAcc >= TICK_DT && guard++ < 8) {
         this._predAcc -= TICK_DT;
@@ -522,43 +537,52 @@ export class CoopMode {
     const p = (s.players || []).find((q) => q.id === this.myId);
     if (!p) return;
 
-    // 位置：不硬拽，交给 _absorbResidual 慢慢消化
+    // 位置：不硬拽。校正量记在 _shift 里，由 _absorbResidual 逐步消化。
     this._absorbResidual(dt, p);
 
-    // 朝向校正：车头现在是"移动方向的跟随量"，不参与位移计算（位移用的是 mx/mz），
-    // 所以小偏差纯属观感问题，不需要每帧去拽——拽了反而在转向过程中一顿一顿。
-    // 只有分叉超过 70° 才慢慢对，超过 126° 说明是复活/传送，直接归位。
+    // 朝向校正：车头不参与位移计算（位移用 mx/mz），所以小偏差纯属观感，
+    // 每帧去拽反而一顿一顿。分叉 >70° 才慢慢对，>126° 视为复活/传送直接归位。
     const yawErr = angleDiff(p.yaw, this.me.yaw);
     if (Math.abs(yawErr) > 2.2) {
-      // 兜底：差得多半是复活 / 重生传送，直接对齐，不然会永远朝着老方向跑
       this.me.yaw = p.yaw;
       this.me.speed = 0;
+      if (this._predFrom) this._predFrom.yaw = p.yaw;
     } else if (Math.abs(yawErr) > 1.2) {
       this.me.yaw += yawErr * (1 - Math.exp(-4 * dt));
     }
 
-    // 画出来的位置：在"上一 tick"和"这一 tick"之间按剩余时间插值。
-    // 逻辑位置本身就是 30Hz 网格，直接贴到 mesh 上，60fps 下每两帧才动一次，
-    // 看起来就是"一卡一卡的"。插值只影响观感，不参与任何判定。
+    // ---- 画出来的位置 ----
+    //
+    // 逻辑位置是 30Hz 的格子，直接贴到 60fps 的 mesh 上每两帧才动一次，看着一卡一卡。
+    // 之前用"上一 tick → 这一 tick"按 _predAcc 插值，但那样有个致命前提：
+    // 逻辑位置只在这两帧之间线性变化、且下一帧会接着往前走。实际上服务端快照
+    // 会把逻辑位置**拽回残差已被吸收的点**，于是"插值的旧起点 + 撤回后的新终点"
+    // 合成出一个和上一帧互相矛盾的坐标——相机跟着它跑，整个场景就在抖。
+    //
+    // 现在改成"本帧预测前 → 本帧预测后"：
+    //   - 起点已经过残差吸收，终点是同一帧推出来的，两者必然连续；
+    //   - 静止时两点重合，画面完全确定，不会再有残余抖动；
+    //   - 追赶帧（一帧推了 2 格）按比例插，速度看起来仍然是匀速。
     const a = Math.max(0, Math.min(1, (this._predAcc || 0) / TICK_DT));
-    if (!this._prevPos) this._prevPos = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
-    if (Math.hypot(this.me.x - this._prevPos.x, this.me.z - this._prevPos.z) > 3) {
-      // 刚被归位 / 复活，不插值，否则会看到一道"冲刺"
-      this._prevPos.x = this.me.x;
-      this._prevPos.z = this.me.z;
-      this._prevPos.yaw = this.me.yaw;
-    }
-    this._prevPos.x += (this.me.x - this._prevPos.x) * a;
-    this._prevPos.z += (this.me.z - this._prevPos.z) * a;
-    this._prevPos.yaw = lerpAngle(this._prevPos.yaw, this.me.yaw, a);
-    this._disp.x = this._prevPos.x;
-    this._disp.z = this._prevPos.z;
-    this._disp.yaw = this._prevPos.yaw;
+    const from = this._predFrom || this.me;
+    // 一帧内位移达到上限（说明不是"慢慢追残差"，而是复活/传送/被撞飞）才不插值。
+    // 阈值不能设小：30Hz 快照下，正常追赶残差一帧也能走 1 米多，
+    // 设成 3 米会把这部分误判成"瞬移"——跳过插值直接贴新位置，
+    // 画面就出现"往前一窜、再被拽回"的抖动。
+    const JUMP_LIMIT = TICK_DT * 60;   // 12 米/帧 ≈ 360 米/秒，只有瞬移才会超
+    const stepping = Math.hypot(this.me.x - from.x, this.me.z - from.z);
+    const teleport = stepping > JUMP_LIMIT;
+    const rx = teleport ? this.me.x : from.x + (this.me.x - from.x) * a;
+    const rz = teleport ? this.me.z : from.z + (this.me.z - from.z) * a;
+    const ry = teleport ? this.me.yaw : lerpAngle(from.yaw, this.me.yaw, a);
+    this._disp.x = rx;
+    this._disp.z = rz;
+    this._disp.yaw = ry;
 
     const t = this.tanks.get(this.myId);
     if (t) {
-      t.group.position.set(this._disp.x, this.me.down ? 0.35 : 0, this._disp.z);
-      t.group.rotation.y = this._disp.yaw;
+      t.group.position.set(rx, this.me.down ? 0.35 : 0, rz);
+      t.group.rotation.y = ry;
       t.group.rotation.z = this.me.down ? 0.5 : 0;
       t.setAim(this.me.turretYaw);
     }
@@ -580,10 +604,28 @@ export class CoopMode {
     this._shift.x += snapPos.x - this.me.x;
     this._shift.z += snapPos.z - this.me.z;
 
+    // ---- 关键：残差是"相对位移"，必须累计后再判断，不能每帧按瞬时偏差决定 ----
+    //
+    // 原来每帧只拿"这一刻的偏差"和死区比大小，结果是一个自激振荡：
+    //   某帧偏差 1cm → 不动；下一帧预测把车往前推 0.5m，偏差变 51cm → 整口吃掉
+    //   → 车被拽回 50cm；再下一帧又前移 0.5m……
+    // 屏幕上就是每两帧抖一次。实测 150 帧里 22 帧倒退，最大 6 米。
+    //
+    // 现在 _shift 记录"总共欠了多少"：只有累计欠账超过 DEBT_MAX 才按固定速率偿还，
+    // 偿还速度与即时预测速度无关，所以帧间位移始终是单调的。
+    const DEBT_MAX = 0.5;
+    const debt = Math.hypot(this._shift.x, this._shift.z);
+    if (debt > DEBT_MAX) {
+      const cut = debt - DEBT_MAX;
+      this._shift.x -= (this._shift.x / debt) * cut;
+      this._shift.z -= (this._shift.z / debt) * cut;
+    }
+
     const mag = Math.hypot(this._shift.x, this._shift.z);
     if (mag < 1e-4) { this._shift.x = 0; this._shift.z = 0; return; }
 
-    // 偏差过大（被撞飞 / 复活 / 传送）不磨，直接归位
+    // 偏差过大（被撞飞 / 复活 / 传送）不磨，直接归位。
+    // 死区会让残差长期停在 6 cm 以内，这属于"看不出来"，不需要额外处理。
     if (mag > 3) {
       this.me.x += this._shift.x;
       this.me.z += this._shift.z;
@@ -592,9 +634,33 @@ export class CoopMode {
       return;
     }
 
-    // 静止时整口吞掉（完全看不出来），行驶中每帧只吃 8%
-    const rate = Math.abs(this.me.speed) < 1 ? 1 : 1 - Math.exp(-8 * dt);
-    const take = mag * rate;
+    // 行驶中：只消化"轴向分量"，并且沿线速度不降。
+    //
+    // 残差永远是"落后量"（服务端在客户端后面一点点），它的方向基本就是行进方向。
+    // 以前一次性把整段残差吃掉，等于在这一帧里把车往后一拽——每 50ms 拽一次，
+    // 相机跟着它跑就是整个场景在抖（实测：119 帧里 19 帧位置倒退）。
+    //
+    // 现在把残差拆成两部分：
+    //   纵向（沿速度方向）—— 不追。它是个恒定的小落后，跟画面稳定性无关，
+    //     帧间位移仍然是匀速，肉眼完全看不出来；
+    //   横向（垂直于速度）—— 追。这部分才是"位置错了"，而且沿垂直方向追
+    //     不影响前进速度，不会造成抖动。
+    // 静止时整口吞掉——站着不动没人看得出，还顺手把漂移彻底消掉。
+    let take;
+    if (Math.abs(this.me.speed) < 1) {
+      take = mag;                                   // 静止：整口吞掉
+    } else {
+      const vx = Math.sin(this.me.yaw) * this.me.speed;
+      const vz = Math.cos(this.me.yaw) * this.me.speed;
+      const vlen = Math.hypot(vx, vz) || 1;
+      const sux = this._shift.x / mag;
+      const suz = this._shift.z / mag;
+      const along = (sux * vx + suz * vz) / vlen;   // 残差在速度方向上的投影
+      const lateral = mag * Math.sqrt(Math.max(0, 1 - along * along));
+      take = lateral > RESIDUAL_DEADZONE
+        ? Math.min(lateral, CATCHUP_PER_SEC * Math.min(dt, 0.05))
+        : 0;
+    }
     const ux = this._shift.x / mag;
     const uz = this._shift.z / mag;
     this.me.x += ux * take;

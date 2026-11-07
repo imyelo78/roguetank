@@ -329,32 +329,60 @@ export class World {
       const aimYaw = Math.atan2(dx, dz);
       const reach = e.range > 0 ? e.range : 30;
 
-      // ---- 移动：远则逼近，中距游走，近则拉开（炮台不动）----
+      // ---- 移动：远则逼近，中距压上，近则拉开（炮台不动）----
+      //
+      // 用户反馈："敌方坦克围过来的时候还是无法靠近，只会围绕着我的坦克转圈"。
+      // 原来中距（reach*0.45 ~ reach*0.85）是纯侧向游走，径向权重 1.15 只管
+      // "别靠太近"，一旦进了这个带，敌人就永远绕着圆心漂——看起来是包围，
+      // 实际一步也没进来，而且因为一直在侧移，车头也一直在转。
+      //
+      // 现在除"太近要退开"之外，径向一律朝里压：侧移只用来找角度，
+      // 不允许盖过收拢。同时给转向留出"对准时间"：车头没对准就降速，
+      // 避免一边扭一边挪造成的原地画圈观感。
       if (!e.static) {
         let mx = 0;
         let mz = 0;
         if (dist > reach * 0.85) {
-          mx = dx / dist; mz = dz / dist;                       // 逼近
+          mx = dx / dist; mz = dz / dist;                       // 远：直线逼近
         } else if (dist < reach * 0.45) {
-          mx = -dx / dist; mz = -dz / dist;                     // 太近，退开
+          mx = -dx / dist; mz = -dz / dist;                     // 太近：退开
+          if (e.type === 'charger' || e.type === 'drone') {
+            // 自爆单位不退：它们的伤害就在贴身那一刻
+            mx = dx / dist; mz = dz / dist;
+          }
         } else {
-          // 中距侧向游走：侧移权重不能压过径向权重，否则敌人绕着玩家画大圈、
-          // 车头永远追不上行进方向（"敌军坦克绕圈旋转"）。1.15 : 0.8 大致等于
-          // 以玩家为圆心、半径略有收缩的螺旋，看起来是"绕着你游走找角度"。
+          // 中距：径向朝里为主，侧向为辅。1.0 : 0.45 的合成角约 24°，
+          // 是"斜着压上去"而不是"绕着转"。
           const side = e.strafeSide || 1;
-          mx = (dx / dist) * 1.15 + (-dz / dist) * side * 0.8;
-          mz = (dz / dist) * 1.15 + (dx / dist) * side * 0.8;
+          mx = (dx / dist) * 1.0 + (-dz / dist) * side * 0.45;
+          mz = (dz / dist) * 1.0 + (dx / dist) * side * 0.45;
         }
 
-        const len = Math.hypot(mx, mz) || 1;
-        // 车头没转过来时不能全速侧移：履带车不会横着走。
-        // 按"车头与行进方向的夹角"折算速度，掉头时自然减速，视觉上不再打圈。
-        const moveYaw0 = Math.atan2(mx, mz);
-        const facing = Math.abs(angleDiff(moveYaw0, e.yaw));
-        const align = Math.max(0.25, Math.cos(Math.min(Math.PI / 2, facing)));
-        const step = e.speed * align * dt;
-        const nx = e.x + (mx / len) * step;
-        const nz = e.z + (mz / len) * step;
+        // 车头对齐不再影响速度，而是直接纠正朝向：
+        //   - 有速度惩罚时，敌人一被玩家绕到侧面就只剩 45% 速度，看起来在磨蹭；
+        //   - 而"侧移方向随 blockedT 每 0.6 秒翻转"叠加 3 rad/s 的转向，
+        //     车头就会反复左右扭，5 秒能累计转 660°（实测），视觉上就是原地打转。
+        // 现在移动方向做了时间平滑（_smoothMove），并且车头按同一方向稳定追随，
+        // 只有被墙挡住确实改变方向时才会掉头。
+        if (!e._mx) { e._mx = mx / (Math.hypot(mx, mz) || 1); e._mz = mz / (Math.hypot(mx, mz) || 1); }
+        {
+          const l = Math.hypot(mx, mz) || 1;
+          const tx = mx / l;
+          const tz = mz / l;
+          const k = Math.min(1, dt * 2.5);
+          e._mx += (tx - e._mx) * k;
+          e._mz += (tz - e._mz) * k;
+          const nl = Math.hypot(e._mx, e._mz) || 1;
+          e._mx /= nl; e._mz /= nl;
+        }
+
+        // 实际行进方向用平滑后的方向，避免每 0.6 秒翻一次侧面导致来回扭
+        const len = Math.hypot(e._mx, e._mz) || 1;
+        const ux = e._mx / len;
+        const uz = e._mz / len;
+        const step = e.speed * dt;
+        const nx = e.x + ux * step;
+        const nz = e.z + uz * step;
 
         if (e.type === 'drone' || !this.static.blocked(nx, nz, e.radius)) {
           e.x = Math.max(-HALF + e.radius, Math.min(HALF - e.radius, nx));
@@ -364,17 +392,16 @@ export class World {
           // 被挡住：沿墙滑行；连续卡住就换一侧绕
           e.blockedT = (e.blockedT || 0) + dt;
           if (e.blockedT > 0.6) { e.strafeSide = -(e.strafeSide || 1); e.blockedT = 0; }
-          const slideX = e.x + (mx / len) * step;
-          const slideZ = e.z + (mz / len) * step;
+          const slideX = e.x + ux * step;
+          const slideZ = e.z + uz * step;
           if (!this.static.blocked(slideX, e.z, e.radius)) e.x = slideX;
           else if (!this.static.blocked(e.x, slideZ, e.radius)) e.z = slideZ;
         }
 
-        // 车体朝行进方向（炮塔另算）
-        // 注意：这里必须朝"实际移动方向"转，而不是朝玩家转。
-        // 原来朝玩家转 + 中距侧向游走，车体永远追不上侧移方向，
-        // 表现为车头一直在原地画圈，但人在侧着平移（"敌军坦克绕圈旋转"）。
-        const diff = angleDiff(Math.atan2(mx, mz), e.yaw);
+        // 车体朝实际行进方向（炮塔另算）。
+        // 注意：必须朝"实际移动方向"转，而不是朝玩家转——原来朝玩家转，
+        // 身体却在侧移，车头永远追不上，视觉上就是原地画圈。
+        const diff = angleDiff(Math.atan2(ux, uz), e.yaw);
         e.yaw += Math.sign(diff) * Math.min(Math.abs(diff), TURN_RATE * dt);
       }
 

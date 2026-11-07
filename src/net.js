@@ -21,8 +21,8 @@ import { stepBody } from './core/motion.js';
  * 一帧半是经验值：同城/同局域网完全够用，延迟高的玩家会略微"看到过去"，
  * 但操作是自己的预测，手感不受影响。
  */
-const interpMs = (hz) => Math.round(1500 / Math.max(1, hz));
-const INTERP_MS = interpMs(SNAPSHOT_RATE);
+// 两个 tick（67ms）：见 _renderTick 的说明
+const INTERP_MS = Math.round(2000 / TICK_RATE);
 
 /** 上行输入的最小间隔（毫秒）：与服务端 tick 同频，30Hz */
 const INPUT_MS = 1000 / 30;
@@ -45,7 +45,9 @@ export class NetClient {
     // 网络质量统计：卡顿时先看这里，别猜。
     // gapMs 是快照平均到达间隔（理论上 1000/SNAPSHOT_RATE），
     // stalls 记录超过 200ms 的停顿次数——它能区分"服务端发慢了"和"网络卡住"。
-    this.netstat = { count: 0, gapMs: 0, gapMax: 0, stalls: 0, hz: 0 };
+    // ticks 记录平均每个快照间隔推进几个 tick——它比 hz 更能说明插值是否平滑：
+    // 服务端 15Hz 发声、30Hz 推进，稳定的序列是 2,2,2,2…；出现 1 就说明发早了。
+    this.netstat = { count: 0, gapMs: 0, gapMax: 0, stalls: 0, hz: 0, ticks: 0 };
     this._lastSnapAt = 0;
 
     // 服务端最后一次拒绝的原因（{reason,text}）。用来区分"被拒绝"和"连不上"：
@@ -132,6 +134,8 @@ export class NetClient {
 
         case S2C.SNAP: {
           const snap = decodeSnapshot(msg);
+          const before = this.prevSnap;
+          this._snapBefore = before;
           // 保留上一帧用于插值
           this.prevSnap = this.lastSnap;
           this.lastSnap = { ...snap, at: performance.now() };
@@ -188,6 +192,10 @@ export class NetClient {
     if (gap > s.gapMax) s.gapMax = gap;
     if (gap > 200) s.stalls += 1;
     s.hz = s.gapMs > 0 ? 1000 / s.gapMs : 0;
+    if (this._snapBefore) {
+      const dt = this.lastSnap.tick - this._snapBefore.tick;
+      s.ticks = s.ticks ? s.ticks * 0.9 + dt * 0.1 : dt;
+    }
   }
 
   /**
@@ -255,21 +263,53 @@ export class NetClient {
 
   /**
    * 取"渲染时刻"的实体位置。
-   * 用两帧快照按时间线性插值，避免 20Hz 快照直接贴到 mesh 上导致的抖动。
+   *
+   * 常规做法是"按到达时间在两帧之间插值"，但这里不行：
+   *   - 到达时间取决于网络抖动，同一段匀速运动会被切成忽长忽短的片段；
+   *   - 目标时刻 line 是 now-150ms，而帧里只有到达时间，没有"这一帧代表哪个时刻"，
+   *     alpha 会经常撞到 1（直接贴最新帧）再跳回来。
+   * 两者叠加就是"整个场景在抖"，而自己的车因为优先级高、贴着屏幕中心，抖得最明显。
+   *
+   * 现在改成按**服务端的 tick 序号**插值：快照里本来就带 tick，
+   * 它严格单调、与实际模拟时刻线性对应，抖动源被彻底去掉。
    */
+  /**
+   * 本帧应该在服务端时间轴的哪个 tick 上渲染。
+   *
+   * 从"最新快照的 tick"往回退：退掉它到达后过去的时间，再退掉插值缓冲。
+   * 服务端 tick 严格单调、与模拟时刻线性对应，不受到达抖动影响。
+   *
+   * 缓冲别给太大：服务端是真实时间 50ms 发一次快照，而 tick 是 33.3ms 一格，
+   * 所以两帧之间 tick 增量在 1 和 2 之间跳（平均 1.5）。
+   * 缓冲 100ms 时有三分之一的帧落在"当前段之前"，只能 clamp 到段首，
+   * 插值进度就变成锯齿；按实测把它降到 2 个 tick（67ms），
+   * 既留了抗抖动余量，又基本不会越界。
+   */
+  _renderTick() {
+    const B = this.lastSnap;
+    if (!B) return 0;
+    const now = performance.now();
+    const sinceB = now - B.at;                    // 这条快照到达多久了
+    const offset = (sinceB + INTERP_MS) / (1000 / TICK_RATE);
+    // 不越过上一帧：越过时 alpha 会一直是 1（贴最新帧），反而更抖
+    const A = this.prevSnap;
+    const minTick = A ? A.tick : -Infinity;
+    return Math.max(minTick, B.tick - offset);
+  }
+
   sample() {
     const A = this.prevSnap;
     const B = this.lastSnap;
     if (!B) return null;
     if (!A) return { ...B, alpha: 1 };
 
-    const span = Math.max(1, B.at - A.at);
-    const target = B.at - INTERP_MS;
-    const alpha = Math.max(0, Math.min(1, (target - A.at) / span));
+    // 目标：现在应该在"服务端时间轴上"的哪个 tick。
+    // bias 是"本机看到的服务端时间"与本地时钟的差，随每个快照收敛更新。
+    const span = Math.max(1, B.tick - A.tick);
+    const targetTick = this._renderTick();
+    const alpha = Math.max(0, Math.min(1, (targetTick - A.tick) / span));
 
     const lerpMap = (arrA, arrB) => {
-      const map = new Map();
-      for (const b of arrB) map.set(b.id, b);
       const out = [];
       for (const b of arrB) {
         const a = arrA.find((it) => it.id === b.id);

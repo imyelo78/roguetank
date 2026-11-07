@@ -205,10 +205,20 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // 房间概览：自测和运维用
+  // 房间概览：自测和运维用。
+  // codes 用短横线连接而不是数组：屏幕上看得清，用来核对"朋友输的房间码"对不对。
+  // 典型误判：屋里有两三个旧房间（关掉页面没退出）时，自己看到的码可能不是
+  // 最新的那个，朋友按错的码进房就会提示"房间不存在"。
   if (url.pathname === '/api/rooms') {
+    const s = registry.stats();
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ ok: true, ...registry.stats(), codes: [...registry.rooms.keys()] }));
+    res.end(JSON.stringify({
+      ok: true,
+      rooms: s.rooms,
+      players: s.players,
+      codes: [...registry.rooms.keys()].join(' '),
+      sizes: [...registry.rooms.values()].map((r) => r.size).join(' '),
+    }));
     return;
   }
 
