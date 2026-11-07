@@ -44,9 +44,28 @@ function runGame(n, seconds, seed = 11) {
   w.start();
 
   const log = { downs: 0, revives: 0, kills: 0, maxWave: 0, cleared: 0 };
+
+  // 脱困记忆：机器人原本只会直线追人，撞上墙角会一直顶着墙（真人会倒车转向）。
+  // 每 1 秒检查一次位移，几乎没动就倒车 + 固定方向转一会儿。
+  const mem = new Map();
+  const stuckInput = (p, turn) => ({ forward: -0.7, turn, aimX: p.x, aimZ: p.z - 10, fire: false });
+
   for (let t = 0; t < seconds * 30; t++) {
     for (const p of w.players) {
       if (!p.alive || p.down) { w.setInput(p.id, { forward: 0, turn: 0, aimX: p.x, aimZ: p.z, fire: false }); continue; }
+
+      let m = mem.get(p.id);
+      if (!m) { m = { x: p.x, z: p.z, escape: 0, dir: 1 }; mem.set(p.id, m); }
+
+      if (t % 30 === 0) {
+        if (Math.hypot(p.x - m.x, p.z - m.z) < 1.2 && m.escape === 0) {
+          m.escape = 20;          // 约 0.66 秒
+          m.dir = -m.dir;
+        }
+        m.x = p.x; m.z = p.z;
+      }
+
+      if (m.escape > 0) { m.escape -= 1; w.setInput(p.id, stuckInput(p, m.dir)); continue; }
       w.setInput(p.id, botInput(w, p));
     }
     for (const ev of w.step(1 / 30)) {

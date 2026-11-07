@@ -5,15 +5,23 @@
 //   - 不碰 document / window / localStorage
 //   - 不读全局 Math.random（用注入的 rng，保证可复现、多房间互不干扰）
 
-// 常量内联：level.js 依赖 three，这里不能 import
-export const HALF = 100;
+// 地图数据与边界常量来自 levelgen（纯数据，不依赖 three）。
+// 客户端建 mesh、这里建碰撞表，都只读这一份，物理上不可能再分叉。
+import { HALF, generateBoxes, resolveMultiSpawns } from './levelgen.js';
+// 车体运动学（转向 / 加速 / 撞墙滑行）：与客户端预测共用同一份实现
+import { stepBody, aimTurret, angleDiff } from './motion.js';
 import {
   createPlayer, updateRevive, scaleForPlayers,
   emptyInput, DOWN_TIME, RESPAWN_DELAY,
 } from './players.js';
 import { R, Rng } from '../rng.js';
 
+export { HALF };
+
 // ---------------- 数值表（与单机保持一致） ----------------
+
+/** 敌人车体转向速率（rad/s）。给足 3.0，否则急转时车头追不上行进方向就一直原地打圈 */
+const TURN_RATE = 3.0;
 
 const CHASSIS_TABLE = {
   balanced: { hp: 120, speed: 15, turn: 3.0, dmgMul: 1, takenMul: 1 },
@@ -59,35 +67,23 @@ export const PLAYER_WEAPON = {
 
 /** 障碍物：服务端也必须有静态碰撞表，否则敌人会穿墙 */
 export function buildStaticWorld() {
-  // 与 level.js 的 fixed + 随机箱体完全一致（同一种子，端口化时保持一致）
-  const boxes = [
-    [-16, -2, 12, 7], [16, -2, 12, 7], [0, -20, 6, 8],
-    [-34, 24, 8, 8], [34, 24, 8, 8], [0, 44, 18, 4],
-    [-64, -36, 14, 6], [64, -36, 14, 6],
-    [-70, 52, 10, 10], [70, 52, 10, 10],
-    [0, -72, 22, 4], [-30, 78, 8, 8],
-    [30, -50, 6, 12], [-6, 62, 10, 8],
-  ];
-
-  const rnd = mulberry32Local(20261029);
-  const placed = [];
-  let guard = 0;
-  while (placed.length < 30 && guard++ < 700) {
-    const x = (rnd() * 2 - 1) * (HALF - 12);
-    const z = (rnd() * 2 - 1) * (HALF - 12);
-    if (Math.hypot(x, z - 26) < 16) continue;
-    if (Math.hypot(x, z) < 12) continue;
-    if (boxes.some(([fx, fz, fw, fd]) => Math.hypot(x - fx, z - fz) < Math.max(fw, fd) / 2 + 9)) continue;
-    if (placed.some(([px, pz]) => Math.hypot(x - px, z - pz) < 11)) continue;
-    const w = 3.5 + rnd() * 4;
-    const d = 3.5 + rnd() * 4;
-    boxes.push([x, z, w, d]);
-    placed.push([x, z, w, d]);
-  }
+  // 地图数据只在 core/levelgen.js 生成一次，客户端建 mesh、这里建碰撞表。
+  //
+  // 为什么不再手抄一份：线上出过事故——两边各写一套生成循环，客户端为了建
+  // 模型多算了一个高度 h 的随机数，服务端没有，从第二个随机箱子开始坐标整体
+  // 错位；固定掩体里还把渲染高度 h 当成深度 d 抄了过来。结果是"客户端有墙、
+  // 服务端没有"，玩家一进房就撞假墙，速度每帧乘 0.3 压到 0.8 米/秒，
+  // 表现就是油门踩到底车不动，同时服务端位置正常推进又被拽回去。
+  const boxes = generateBoxes().map((b) => [b.x, b.z, b.w, b.d]);
 
   return {
     half: HALF,
     boxes,
+    /**
+     * 圆形与箱体的碰撞。
+     * 注意：这里不判边界——边界由各调用方 clamp 处理，保证"贴边能走"，
+     * 与客户端 Tank.move 的轴向分离手感一致。
+     */
     blocked(x, z, r) {
       for (const [bx, bz, bw, bd] of boxes) {
         if (Math.abs(x - bx) < bw / 2 + r && Math.abs(z - bz) < bd / 2 + r) return true;
@@ -103,14 +99,6 @@ export function buildStaticWorld() {
   };
 }
 
-function mulberry32Local(a) {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 
 /**
@@ -137,10 +125,9 @@ function segCircle(ax, az, bx, bz, cx, cz, r) {
 }
 
 /** 出生点：四角 + 四边中点，多人时错开 */
-const SPAWNS = [
-  [-82, -82], [82, -82], [-82, 82], [82, 82],
-  [0, -88], [-88, 0], [88, 0], [0, 88],
-];
+
+/** 4 人出生点：生成地图后立刻校验，避免被固定掩体压住 */
+const MULTI_SPAWNS = resolveMultiSpawns(generateBoxes());
 
 let NEXT_ID = 1;
 const nextId = () => NEXT_ID++;
@@ -184,14 +171,15 @@ export class World {
     const c = CHASSIS_TABLE[chassisId] || CHASSIS_TABLE.balanced;
     const pid = id || `p${nextId()}`;
     const idx = this.players.length;
-    const [sx, sz] = SPAWNS[idx % SPAWNS.length];
+    // 出生点由 levelgen 校验过，保证不与掩体重叠（否则一落地就卡墙）
+    const [sx, sz] = MULTI_SPAWNS[idx % MULTI_SPAWNS.length];
 
     const p = createPlayer({
       id: pid,
       name,
       chassisId,
-      x: sx * 0.35,
-      z: sz * 0.35,
+      x: sx,
+      z: sz,
       hp: c.hp,
       maxHp: c.hp,
     });
@@ -271,51 +259,18 @@ export class World {
   // ---------------- 玩家 ----------------
 
   _updatePlayers(dt) {
-
     for (const p of this.players) {
       if (!p.alive || p.down) continue;
       const inp = p.input || emptyInput();
 
-      // 车体：前后推进 + 原地转向（与单机 W/S/A/D 手感一致）
-      const throttle = Math.max(-1, Math.min(1, inp.forward || 0));
-      const turn = Math.max(-1, Math.min(1, inp.turn || 0));
+      // 车体 + 撞墙滑行：实现只有一份，在 core/motion.js，
+      // 客户端预测调的是同一个函数（两端各写一套出过两次线上事故）。
+      p.turnBase = p.turnBase || 3.0;
+      p.speedBase = p.speedBase || 15;
+      stepBody(p, inp, dt, this.static, HALF);
 
-      if (turn !== 0) {
-        p.yaw += turn * p.turnBase * dt;
-      }
-
-      const dirX = Math.sin(p.yaw);
-      const dirZ = Math.cos(p.yaw);
-      const spd = p.speedBase * throttle;
-      p.speed += (spd - p.speed) * Math.min(1, dt * 8);
-
-      if (Math.abs(p.speed) > 0.05) {
-        const nx = p.x + dirX * p.speed * dt;
-        const nz = p.z + dirZ * p.speed * dt;
-        const r = 1.9;
-        // 轴向分离碰撞：贴墙时还能沿着墙滑行
-        if (!this.static.blocked(nx, p.z, r)) {
-          p.x = Math.max(-HALF + r, Math.min(HALF - r, nx));
-        } else {
-          p.speed *= 0.3;
-        }
-        if (!this.static.blocked(p.x, nz, r)) {
-          p.z = Math.max(-HALF + r, Math.min(HALF - r, nz));
-        } else {
-          p.speed *= 0.3;
-        }
-      }
-
-      // 炮塔：朝鼠标指向的世界坐标转（受限转速，避免瞬狙）
-      if (inp.aimX !== undefined) {
-        const want = Math.atan2(inp.aimX - p.x, inp.aimZ - p.z);
-        let diff = want - p.turretYaw;
-        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-        // 转速 10 rad/s：约 0.6 秒转 180°。原来 6 rad/s 在 30Hz 下追不上快速移动的目标，
-        // 表现就是"炮口对着敌人却打不中"。
-        const maxStep = 10 * dt;
-        p.turretYaw += Math.sign(diff) * Math.min(Math.abs(diff), maxStep);
-      }
+      // 炮塔：朝鼠标指向的世界坐标转（转速 10 rad/s ≈ 0.6 秒转 180°）
+      aimTurret(p, inp.aimX, inp.aimZ, dt, 10);
 
       // 开火
       p.fireCd = Math.max(0, p.fireCd - dt);
@@ -383,13 +338,21 @@ export class World {
         } else if (dist < reach * 0.45) {
           mx = -dx / dist; mz = -dz / dist;                     // 太近，退开
         } else {
-          const side = e.strafeSide || 1;                       // 中距侧向游走
-          mx = (dx / dist) * 0.35 + (-dz / dist) * side * 0.9;
-          mz = (dz / dist) * 0.35 + (dx / dist) * side * 0.9;
+          // 中距侧向游走：侧移权重不能压过径向权重，否则敌人绕着玩家画大圈、
+          // 车头永远追不上行进方向（"敌军坦克绕圈旋转"）。1.15 : 0.8 大致等于
+          // 以玩家为圆心、半径略有收缩的螺旋，看起来是"绕着你游走找角度"。
+          const side = e.strafeSide || 1;
+          mx = (dx / dist) * 1.15 + (-dz / dist) * side * 0.8;
+          mz = (dz / dist) * 1.15 + (dx / dist) * side * 0.8;
         }
 
         const len = Math.hypot(mx, mz) || 1;
-        const step = e.speed * dt;
+        // 车头没转过来时不能全速侧移：履带车不会横着走。
+        // 按"车头与行进方向的夹角"折算速度，掉头时自然减速，视觉上不再打圈。
+        const moveYaw0 = Math.atan2(mx, mz);
+        const facing = Math.abs(angleDiff(moveYaw0, e.yaw));
+        const align = Math.max(0.25, Math.cos(Math.min(Math.PI / 2, facing)));
+        const step = e.speed * align * dt;
         const nx = e.x + (mx / len) * step;
         const nz = e.z + (mz / len) * step;
 
@@ -408,14 +371,15 @@ export class World {
         }
 
         // 车体朝行进方向（炮塔另算）
-        let diff = aimYaw - e.yaw;
-        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-        e.yaw += Math.sign(diff) * Math.min(Math.abs(diff), 2.4 * dt);
+        // 注意：这里必须朝"实际移动方向"转，而不是朝玩家转。
+        // 原来朝玩家转 + 中距侧向游走，车体永远追不上侧移方向，
+        // 表现为车头一直在原地画圈，但人在侧着平移（"敌军坦克绕圈旋转"）。
+        const diff = angleDiff(Math.atan2(mx, mz), e.yaw);
+        e.yaw += Math.sign(diff) * Math.min(Math.abs(diff), TURN_RATE * dt);
       }
 
       // 炮塔跟随目标
-      let tdiff = aimYaw - e.turretYaw;
-      tdiff = Math.atan2(Math.sin(tdiff), Math.cos(tdiff));
+      const tdiff = angleDiff(aimYaw, e.turretYaw);
       e.turretYaw += Math.sign(tdiff) * Math.min(Math.abs(tdiff), 3.2 * dt);
 
       // 自爆兵贴近即引爆

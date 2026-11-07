@@ -12,14 +12,18 @@
 import * as THREE from '../vendor/three.module.js';
 import { Tank } from './Tank.js';
 import { Bullet } from './Bullet.js';
-import { createLevel, PLAYER_START } from './level.js';
+import { createLevel, PLAYER_START, HALF } from './level.js';
 import { Effects } from './Effects.js';
 import { Sound } from './sound.js';
 import { CHASSIS } from './chassis.js';
 import { WEAPONS } from './weapons.js';
 import { createStats } from './upgrades.js';
 import { ENEMY_TYPES } from './core/world.js';
-import { NetClient, predict } from './net.js';
+import { aimTurret, angleDiff, lerpAngle } from './core/motion.js';
+import { NetClient, predict, TICK_RATE } from './net.js';
+
+/** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
+const TICK_DT = 1 / TICK_RATE;
 
 const CAM_HEIGHT = 26;
 const CAM_BACK = 31;
@@ -69,6 +73,12 @@ export class CoopMode {
 
     this._shake = 0;
     this._aimMarker = null;
+
+    // 预测 / 校正相关的内部状态
+    this._predAcc = 0;                                  // 预测累加器（见 update）
+    this._shift = { x: 0, z: 0 };                       // 待消化的位置残差
+    this._prevPos = null;                               // 渲染插值用
+    this._disp = { x: 0, z: 0, yaw: 0 };                // 本帧画在哪
     this._bound = false;
     this._cd = 0;               // 本地射击冷却（只用于表现）
     this._bossId = null;
@@ -217,6 +227,12 @@ export class CoopMode {
     this.camera.position.set(this.me.x, CAM_HEIGHT, this.me.z + CAM_BACK);
     this.game.camLook?.set?.(this.me.x, 1, this.me.z);
 
+    // 初始化渲染插值与残差状态，避免第一帧画在原点
+    this._prevPos = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
+    this._disp = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
+    this._shift = { x: 0, z: 0 };
+    this._predAcc = 0;
+
     // 最后再切成"战斗中"：上面任何一步抛错都不该让房间码消失，
     // 而且这一步会隐藏大厅，必须放在稳定之后。
     this._ready = true;
@@ -351,24 +367,19 @@ export class CoopMode {
 
     // 本地预测自己的坦克（跟手的关键）
     if (this.me.alive && !this.me.down) {
-      const bx = this.me.x;
-      const bz = this.me.z;
-      predict(this.me, input, dt);
-      // 预测阶段只做"墙体阻挡 + 边界钳制"，真正的判定以服务端为准
-      const r = 1.9;
-      this.me.x = Math.max(-100 + r, Math.min(100 - r, this.me.x));
-      this.me.z = Math.max(-100 + r, Math.min(100 - r, this.me.z));
-      if (this.world.blocked(this.me.x, this.me.z, r)) {
-        // 单轴回退：贴墙还能滑行
-        if (!this.world.blocked(this.me.x, bz, r)) this.me.z = bz;
-        else if (!this.world.blocked(bx, this.me.z, r)) this.me.x = bx;
-        else { this.me.x = bx; this.me.z = bz; this.me.speed *= 0.3; }
+      // 预测必须按服务端 tick 走，不能按渲染帧走。
+      // 服务端固定 30Hz 推进，60fps 下如果每帧都 predict 一次，
+      // 本地就比权威模拟快一倍——车头会不断"跑过头"，被 _reconcile 拽回来，
+      // 表现就是"操作有粘滞感"。这里用累加器把 dt 切成一格一格 1/30 秒。
+      // 运动学本身来自 core/motion.js，与服务端逐帧完全一致（有测试钉着）。
+      this._predAcc = (this._predAcc || 0) + dt;
+      let guard = 0;
+      while (this._predAcc >= TICK_DT && guard++ < 8) {
+        this._predAcc -= TICK_DT;
+        predict(this.me, input, TICK_DT, this.world, HALF);
       }
       // 炮塔朝鼠标（本地只做表现，服务端有自己的转速限制）
-      const want = Math.atan2(input.aimX - this.me.x, input.aimZ - this.me.z);
-      let d = want - this.me.turretYaw;
-      d = Math.atan2(Math.sin(d), Math.cos(d));
-      this.me.turretYaw += Math.sign(d) * Math.min(Math.abs(d), 10 * dt);
+      aimTurret(this.me, input.aimX, input.aimZ, dt, 10);
     }
 
     // 服务端快照 → 队友 / 敌人 / 子弹
@@ -502,35 +513,97 @@ export class CoopMode {
     const p = (s.players || []).find((q) => q.id === this.myId);
     if (!p) return;
 
-    const dx = p.x - this.me.x;
-    const dz = p.z - this.me.z;
-    const dist = Math.hypot(dx, dz);
+    // 位置：不硬拽，交给 _absorbResidual 慢慢消化
+    this._absorbResidual(dt, p);
 
-    // 偏差小于 4 米时软拉回；超过（被撞 / 复活 / 传送）直接归位
-    if (dist > 4) {
-      this.me.x = p.x;
-      this.me.z = p.z;
+    // 朝向校正：偏差超过 0.35 弧度（约 20°）才拉，且每秒最多追 3 弧度。
+    // 本地预测出来的 yaw 只要没被墙挡，通常和服务端只差几个 tick 的量，
+    // 完全不需要校正；一旦真的偏了（比如被人顶开），再慢慢对上去。
+    const yawErr = angleDiff(p.yaw, this.me.yaw);
+    if (Math.abs(yawErr) > 2.2) {
+      // 兜底：差得多半是复活 / 重生传送，直接对齐，不然会永远朝着老方向跑
       this.me.yaw = p.yaw;
-    } else if (dist > 0.02) {
-      const k = Math.min(1, dt * 7);
-      this.me.x += dx * k;
-      this.me.z += dz * k;
+      this.me.speed = 0;
+    } else if (Math.abs(yawErr) > 0.35) {
+      this.me.yaw += yawErr * (1 - Math.exp(-3 * dt));
     }
+
+    // 画出来的位置：在"上一 tick"和"这一 tick"之间按剩余时间插值。
+    // 逻辑位置本身就是 30Hz 网格，直接贴到 mesh 上，60fps 下每两帧才动一次，
+    // 看起来就是"一卡一卡的"。插值只影响观感，不参与任何判定。
+    const a = Math.max(0, Math.min(1, (this._predAcc || 0) / TICK_DT));
+    if (!this._prevPos) this._prevPos = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
+    if (Math.hypot(this.me.x - this._prevPos.x, this.me.z - this._prevPos.z) > 3) {
+      // 刚被归位 / 复活，不插值，否则会看到一道"冲刺"
+      this._prevPos.x = this.me.x;
+      this._prevPos.z = this.me.z;
+      this._prevPos.yaw = this.me.yaw;
+    }
+    this._prevPos.x += (this.me.x - this._prevPos.x) * a;
+    this._prevPos.z += (this.me.z - this._prevPos.z) * a;
+    this._prevPos.yaw = lerpAngle(this._prevPos.yaw, this.me.yaw, a);
+    this._disp.x = this._prevPos.x;
+    this._disp.z = this._prevPos.z;
+    this._disp.yaw = this._prevPos.yaw;
 
     const t = this.tanks.get(this.myId);
     if (t) {
-      t.group.position.set(this.me.x, this.me.down ? 0.35 : 0, this.me.z);
-      t.group.rotation.y = this.me.yaw;
+      t.group.position.set(this._disp.x, this.me.down ? 0.35 : 0, this._disp.z);
+      t.group.rotation.y = this._disp.yaw;
       t.group.rotation.z = this.me.down ? 0.5 : 0;
       t.setAim(this.me.turretYaw);
     }
   }
 
+  /**
+   * 消化"权威位置 - 本地预测"的残差。
+   *
+   * 残差永远存在：服务端按 30Hz 网格推进，快照 20Hz 才发一次，
+   * 客户端必然领先 0~1.5 个 tick。以前的做法是在渲染帧里直接把位置往
+   * 权威值拽 7*dt，等于每帧都往后拽一点、下一帧又被预测推回来——
+   * 车看起来"一直在打滑"，也就是用户说的"迟钝"。
+   *
+   * 现在把残差记进 _shift，每帧只消化一小口，并且优先在"停车/撞墙"这类
+   * 没人会注意的时刻消化完；行驶中则只消化一半，剩下的靠预测自己收敛。
+   */
+  _absorbResidual(dt, snapPos) {
+    if (!snapPos) return;
+    this._shift.x += snapPos.x - this.me.x;
+    this._shift.z += snapPos.z - this.me.z;
+
+    const mag = Math.hypot(this._shift.x, this._shift.z);
+    if (mag < 1e-4) { this._shift.x = 0; this._shift.z = 0; return; }
+
+    // 偏差过大（被撞飞 / 复活 / 传送）不磨，直接归位
+    if (mag > 3) {
+      this.me.x += this._shift.x;
+      this.me.z += this._shift.z;
+      this._shift.x = 0;
+      this._shift.z = 0;
+      return;
+    }
+
+    // 静止时整口吞掉（完全看不出来），行驶中每帧只吃 8%
+    const rate = Math.abs(this.me.speed) < 1 ? 1 : 1 - Math.exp(-8 * dt);
+    const take = mag * rate;
+    const ux = this._shift.x / mag;
+    const uz = this._shift.z / mag;
+    this.me.x += ux * take;
+    this.me.z += uz * take;
+    this._shift.x -= ux * take;
+    this._shift.z -= uz * take;
+  }
+
   _updateCamera(dt) {
     const cam = this.camera;
-    const k = Math.min(1, dt * 6);
-    cam.position.x += (this.me.x - cam.position.x) * k;
-    cam.position.z += (this.me.z + CAM_BACK - cam.position.z) * k;
+    // 相机跟手要"稳"而不是"快"：用固定时间常数做指数趋近，
+    // 这样 30fps 和 120fps 的跟手感受一致。
+    // 原来写死 dt*6，等于每帧追 6*n 的比例——帧率一掉（三人同屏 + 阴影）
+    // 相机就明显落后，人会觉得"车动了但画面半天才跟上"，也就是"反应迟钝"。
+    const k = 1 - Math.exp(-7.5 * dt);
+    // 跟随"画出来的位置"（_disp，已做 tick 插值），相机和车体才不会互相拉锯
+    cam.position.x += (this._disp.x - cam.position.x) * k;
+    cam.position.z += (this._disp.z + CAM_BACK - cam.position.z) * k;
     cam.position.y = CAM_HEIGHT;
 
     // 开炮后座
@@ -540,7 +613,7 @@ export class CoopMode {
       this._shake = Math.max(0, this._shake - dt * 1.2);
     }
 
-    this.game.camLook.set(this.me.x, 1, this.me.z);
+    this.game.camLook.set(this._disp.x, 1, this._disp.z);
     cam.lookAt(this.game.camLook);
     this._aimMarker.position.set(this.aimPoint.x, 0.06, this.aimPoint.z);
   }

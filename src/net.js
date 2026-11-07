@@ -8,18 +8,24 @@
 // 这样即使延迟 100ms，操作手感依然是"跟手"的。
 
 import {
-  PROTOCOL_VERSION, C2S, S2C, TICK_RATE,
+  PROTOCOL_VERSION, C2S, S2C, TICK_RATE, SNAPSHOT_RATE,
   decodeSnapshot, normalizeRoomCode,
 } from './core/protocol.js';
+import { stepBody } from './core/motion.js';
 
 /**
  * 渲染落后服务端多少毫秒（插值缓冲）。
  *
- * 15Hz 快照间隔 66ms，缓冲必须不少于一帧，否则 alpha 会经常撞到 1（贴最新帧），
- * 抖动就回来了。100ms ≈ 1.5 帧，同城/同局域网完全够用；
- * 延迟更高的玩家会略微"看到过去"，但操作是自己的预测，手感不受影响。
+ * 快照间隔是 1000/SNAPSHOT_RATE（现在 20Hz → 50ms）。缓冲必须不少于一帧，
+ * 否则 alpha 会经常撞到 1（直接贴最新帧），抖动就回来了。
+ * 一帧半是经验值：同城/同局域网完全够用，延迟高的玩家会略微"看到过去"，
+ * 但操作是自己的预测，手感不受影响。
  */
-const INTERP_MS = 100;
+const interpMs = (hz) => Math.round(1500 / Math.max(1, hz));
+const INTERP_MS = interpMs(SNAPSHOT_RATE);
+
+/** 上行输入的最小间隔（毫秒）：与服务端 tick 同频，30Hz */
+const INPUT_MS = 1000 / 30;
 
 export class NetClient {
   constructor() {
@@ -51,6 +57,9 @@ export class NetClient {
     };
 
     this._pingT = 0;
+    // 输入合帧用的状态（见 tick）
+    this._lastSig = '';
+    this._lastInputAt = 0;
   }
 
   on(kind, fn) {
@@ -181,9 +190,27 @@ export class NetClient {
     s.hz = s.gapMs > 0 ? 1000 / s.gapMs : 0;
   }
 
-  /** 每帧调用：发输入 + 心跳 */
-  tick(input) {
+  /**
+   * 每帧调用：发输入 + 心跳。
+   *
+   * 输入按 30Hz 合帧发送：服务端就是 30Hz 跑的，一帧里发两条一模一样的输入
+   * 不会让车走得更远（后一条覆盖前一条，tick 照样只走一步），
+   * 反而在 120Hz 屏幕上把上行带宽和 JSON 序列化开销翻四倍——
+   * 弱网/手机上这直接表现为"按键后有半秒才动"。
+   * 但按键状态变化必须立刻发，否则松键后车会多冲一小段。
+   */
+  tick(input, force = false) {
     if (!this.ws || this.ws.readyState !== 1) return;
+    const now = performance.now();
+    const sig = `${input.forward}|${input.turn}|${input.fire ? 1 : 0}`;
+    const changed = sig !== this._lastSig;
+    if (!force && !changed && now - (this._lastInputAt || 0) < INPUT_MS) {
+      this._pingIfDue(now);
+      return;
+    }
+    this._lastSig = sig;
+    this._lastInputAt = now;
+
     this.seq += 1;
     this.ws.send(JSON.stringify({
       k: C2S.INPUT,
@@ -195,7 +222,10 @@ export class NetClient {
       fire: !!input.fire,
     }));
 
-    const now = performance.now();
+    this._pingIfDue(now);
+  }
+
+  _pingIfDue(now) {
     if (now - this._pingT > 2000) {
       this._pingT = now;
       this.ws.send(JSON.stringify({ k: C2S.PING, t0: Date.now() }));
@@ -277,6 +307,9 @@ function lerpAngle(a, b, t) {
   return a + d * t;
 }
 
+/** 角度差归一化到 [-PI, PI] */
+const angleDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+
 /**
  * ?ws=192.168.1.20:5173 → 联机服务在别的机器上。
  * 用途：页面放 GitHub Pages（纯静态），房间服务跑在自己的小服务器上；
@@ -292,15 +325,21 @@ function resolveOverride() {
   }
 }
 
-/** 本地预测：把自己的坦克按输入推进，用于跟手 */
-export function predict(me, input, dt) {
+/**
+ * 本地预测：把自己的坦克按输入推进，用于跟手。
+ *
+ * 转向 / 加速 / 撞墙滑行全部交给 core/motion.js —— 服务端跑的是同一个函数。
+ * 这里只负责"补一步"。碰撞参数（col / half）由调用方传，因为只有
+ * 渲染层（coop.js）手里才有地图碰撞表。
+ *
+ * 别名 `predictStep` 供 coop.js 按 tick 累积调用，名字更贴近语义。
+ */
+export function predict(me, input, dt, col, half) {
   if (!me) return;
-  const turn = Math.max(-1, Math.min(1, input.turn || 0));
-  if (turn !== 0) me.yaw += turn * (me.turnBase || 2.6) * dt;
-  const spd = (me.speedBase || 14) * Math.max(-1, Math.min(1, input.forward || 0));
-  me.speed += (spd - me.speed) * Math.min(1, dt * 8);
-  me.x += Math.sin(me.yaw) * me.speed * dt;
-  me.z += Math.cos(me.yaw) * me.speed * dt;
+  stepBody(me, input, dt, col, half);
 }
+
+/** 对外暴露一份，渲染层按 tick 累积时用它（同一个实现，只是名字直白些） */
+export const predictStep = predict;
 
 export { TICK_RATE };

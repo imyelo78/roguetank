@@ -11,7 +11,7 @@
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "build": "node build.mjs",
-    "test": "node test/rng.test.mjs && node test/scores.test.mjs && node test/world.test.mjs",
+    "test": "node test/rng.test.mjs && node test/scores.test.mjs && node test/world.test.mjs && node test/level.test.mjs && node test/motion.test.mjs",
     "test:net": "node test/net.test.mjs"
   },
   "dependencies": {

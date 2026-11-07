@@ -5,7 +5,13 @@
 
 export const PROTOCOL_VERSION = 1;
 export const TICK_RATE = 30;
-export const SNAPSHOT_RATE = 15;
+// 快照率用 20Hz（原来 15Hz）。
+//
+// 为什么提：客户端按服务端 tick 网格做本地预测，残差天然是"0 ~ 1.5 个 tick 的
+// 前进距离"。15Hz 下发时平均残差 0.53 米、最大 1 米，每次软校正都把车往后拽一点，
+// 手感粗糙（用户原话："操作困难、反应很迟钝"）。20Hz 下残差上限降到 0.75 米、
+// 均值 0.37 米；再往上提收益递减，而带宽是线性增长。
+export const SNAPSHOT_RATE = 20;
 export const MAX_PLAYERS = 4;
 
 /**

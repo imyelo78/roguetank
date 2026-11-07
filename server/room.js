@@ -135,7 +135,12 @@ export class Room {
       let guard = 0;
       while (acc >= TICK_MS && guard++ < maxCatchUp) {
         acc -= TICK_MS;
-        this._oneTick();
+        // 把"这一步对应的真实时刻"传下去：快照按模拟时间发，
+        // 而不是按"谁先跑到判定点"。否则同一次回调里连走两步时，
+        // 第一步到点发一次、第二步立刻又覆盖发一次，快照就变成
+        // tick 增量 2,2,2,2,1 的锯齿——客户端每帧拿到的是最后一次覆盖的
+        // 第二帧位置，本地只预测了一帧，偏差恒等于"跑一帧的距离"，看起来就是拖拽。
+        this._oneTick(t - acc);
       }
       // 快照独立按时间发：轮询间隔再小，对外也是稳定的 15Hz
       this.maybeSnapshot();
@@ -151,7 +156,7 @@ export class Room {
    * 只有 100ms，碰上这种突发就一顿一顿。改用时间节流后，
    * 无论调用方一次走一步还是一次走八步，对外发出的快照间隔都稳定在 66ms。
    */
-  _oneTick() {
+  _oneTick(tickTime = nowMs()) {
     const w = this.world;
     if (!w) return;
 
@@ -178,7 +183,7 @@ export class Room {
 
     // 快照按真实时间单独节流（见 tick 说明）。
     // 这里不用 w.tick 计数，因为一次调用可能连走多步，计数会把快照挤成突发。
-    this.maybeSnapshot();
+    this._maybeSnapshotAt(tickTime);
 
     if (w.state === 'over') {
       const results = w.players
@@ -208,22 +213,35 @@ export class Room {
    */
   maybeSnapshot(catchUp = false) {
     if (!this.world || !this.members.size) return;
-    const now = nowMs();
-    const gap = now - this._lastSnapAt;
-    // 留一点容差：宿主步长是 33ms，快照判定点很难刚好落在 66.7ms 上，
-    // 严格比较会稳定地漏掉一部分帧（表现为快照只有 13Hz 而不是 15Hz）。
-    if (gap < SNAP_MS - 8) return;
+    this._maybeSnapshotAt(nowMs(), catchUp);
+  }
+
+  /**
+   * 同 maybeSnapshot，但快照的"时刻"由调用方给。
+   *
+   * 用途：run() 里一次回调可能连走 2~3 步模拟。如果每一步都按 nowMs() 判定，
+   * 第一步恰好到点发了快照，第二步马上又到点（因为 nowMs() 没变，但容差 −8ms
+   * 让它又通过），结果是一次回调发两帧、然后静默一整帧。
+   * 传"这一步对应的模拟时刻"后，同一时刻只会发一帧，快照序列严格单调。
+   */
+  _maybeSnapshotAt(at, catchUp = false) {
+    if (!this.world || !this.members.size) return;
+    const gap = at - this._lastSnapAt;
+    // 容差取"最小相邻 tick 间隔的一半"：
+    // 20Hz 快照 = 1.5 个 30Hz tick，像原来那样按 8ms 容差判断，
+    // 会在 1 tick 和 2 tick 之间随机跳，快照间隔忽长忽短，客户端残差跟着抖。
+    if (gap < SNAP_MS - TICK_MS / 2) return;
 
     if (catchUp) {
       // 宿主是低频 alarm（DO）：这一轮可能欠了 2~3 帧，一次补齐，
       // 让客户端那边的序列保持连续。上限 3 帧，防止长挂起后狂发。
       const due = Math.min(3, Math.max(1, Math.round(gap / SNAP_MS)));
-      this._lastSnapAt = now;
+      this._lastSnapAt = at;
       for (let i = 0; i < due; i++) this._broadcastSnapshot();
       return;
     }
 
-    this._lastSnapAt = now;
+    this._lastSnapAt = at;
     this._broadcastSnapshot();
   }
 

@@ -1,16 +1,9 @@
 import * as THREE from '../vendor/three.module.js';
+import { HALF, PLAYER_START, generateBoxes } from './core/levelgen.js';
 
-export const HALF = 100;         // 可行驶半边长（200×200 战场）
-export const PLAYER_START = new THREE.Vector3(0, 0, 26);
-
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+// 地图数据统一由 core/levelgen.js 生成：这里只建 mesh，服务端只建碰撞表。
+// 两端共用一份数据，才能保证"你看得见的墙"和"服务端判定的墙"是同一堵。
+export { HALF, PLAYER_START };
 
 function groundTexture() {
   const size = 256;
@@ -121,45 +114,9 @@ export function createLevel(scene) {
   addVisual(scene, -HALF - edgeT / 2, 0, edgeT * 0.6, bevelH, edgeLen, '#9a7f42', matCache);
   addVisual(scene, HALF + edgeT / 2, 0, edgeT * 0.6, bevelH, edgeLen, '#9a7f42', matCache);
 
-  // ---- 手工摆放：中央掩体群 ----
-  const fixed = [
-    [-16, -2, 12, 7, 5, '#8b95a3'],
-    [16, -2, 12, 7, 5, '#8b95a3'],
-    [0, -20, 6, 8, 6, '#96a1b0'],
-    [-34, 24, 8, 5, 8, '#818b99'],
-    [34, 24, 8, 5, 8, '#818b99'],
-    [0, 44, 18, 3.5, 4, '#8a8a6a'],
-    // 外围掩体群（扩大战场后的战术点）
-    [-64, -36, 14, 6, 6, '#8b95a3'],
-    [64, -36, 14, 6, 6, '#8b95a3'],
-    [-70, 52, 10, 4.5, 10, '#818b99'],
-    [70, 52, 10, 4.5, 10, '#818b99'],
-    [0, -72, 22, 5, 4, '#8a8a6a'],
-    [-30, 78, 8, 3.2, 8, '#858f7a'],
-    [30, -50, 6, 4, 12, '#929aa6'],
-    [-6, 62, 10, 2.8, 8, '#7f8b7c'],
-  ];
-  for (const [x, z, w, h, d, c] of fixed) addBox(scene, obstacles, x, z, w, h, d, c, matCache);
-
-  // ---- 随机箱体（确定性） ----
-  const rnd = mulberry32(20261029);
-  const colors = ['#9a8a6c', '#7f9070', '#8e929c', '#a08a70'];
-  const placed = [];
-  let guard = 0;
-  while (placed.length < 30 && guard++ < 700) {
-    const x = (rnd() * 2 - 1) * (HALF - 12);
-    const z = (rnd() * 2 - 1) * (HALF - 12);
-    // 玩家出生点与中央通路保持空旷
-    if (Math.hypot(x - PLAYER_START.x, z - PLAYER_START.z) < 16) continue;
-    if (Math.hypot(x, z) < 12) continue;
-    if (fixed.some(([fx, fz, fw, , fd]) => Math.hypot(x - fx, z - fz) < Math.max(fw, fd) / 2 + 9)) continue;
-    if (placed.some(([px, pz]) => Math.hypot(x - px, z - pz) < 11)) continue;
-
-    const w = 3.5 + rnd() * 4;
-    const h = 2.6 + rnd() * 4.5;
-    const d = 3.5 + rnd() * 4;
-    addBox(scene, obstacles, x, z, w, h, d, colors[(rnd() * colors.length) | 0], matCache);
-    placed.push([x, z, w, d]);
+  // ---- 掩体：数据来自 core/levelgen.js，与服务端碰撞表同源 ----
+  for (const b of generateBoxes()) {
+    addBox(scene, obstacles, b.x, b.z, b.w, b.h, b.d, b.color, matCache);
   }
 
   // ---- 出生点 ----
