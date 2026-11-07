@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 import { RoomRegistry } from './server/room.js';
+import { PROTOCOL_VERSION } from './src/core/protocol.js';
 import { attachSession } from './server/session.js';
 import { FileStore, readBody } from './server/score-store.js';
 import { handleGet, handlePost } from './functions/api/_lib/leaderboard.js';
@@ -191,6 +192,11 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({
       ok: true,
+      // 协议版本：前端页面与后端进程是否同版本，远程一眼就能看出来。
+      // 之前排查"覆盖后仍提示客户端版本过旧"只能靠登服务器 ps/ls 猜，
+      // 有了这个字段，浏览器直接打开 /healthz 就知道服务端到底加载了哪份代码。
+      proto: PROTOCOL_VERSION,
+      pid: process.pid,
       uptime: Math.round(process.uptime()),
       rooms: s.rooms,
       players: s.players,

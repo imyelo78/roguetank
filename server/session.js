@@ -34,7 +34,14 @@ export function attachSession(socket, { join, onLog = () => {} }) {
   const send = (obj) => {
     try { if (isOpen(socket)) socket.send(JSON.stringify(obj)); } catch { /* 连接已断 */ }
   };
-  const deny = (reason) => send({ k: S2C.DENY, reason, text: DENY_TEXT[reason] || '连接被拒绝' });
+  const deny = (reason, text) => send({
+    k: S2C.DENY,
+    reason,
+    text: text || DENY_TEXT[reason] || '连接被拒绝',
+    // 把服务端版本带回去：前端能直接显示"页面 v2 / 服务端 v1"，
+    // 不用登服务器猜到底哪边没更新。
+    v: PROTOCOL_VERSION,
+  });
 
   listen(socket, 'message', (raw) => {
     let msg;
@@ -44,7 +51,18 @@ export function attachSession(socket, { join, onLog = () => {} }) {
     // ---- 握手：第一条必须是 hello ----
     if (!ctx.room) {
       if (msg.k !== C2S.HELLO) return deny('bad-proto');
-      if (msg.v !== PROTOCOL_VERSION) return deny('bad-version');
+      if (msg.v !== PROTOCOL_VERSION) {
+        // 版本不符有两种方向，处理方式完全不同，文案必须分开：
+        //   页面比服务端新 → 服务端还在跑旧代码，要重启 Node 进程（覆盖文件不等于生效）
+        //   页面比服务端旧 → 浏览器缓存里的旧页面，强刷即可
+        // 线上真实案例：覆盖了全部文件、protocol.js 也是 v2，但进程没重启，
+        // 于是页面一直提示"客户端版本过旧"，用户以为是缓存问题反复强刷。
+        const page = Number(msg.v);
+        const newer = Number.isFinite(page) && page > PROTOCOL_VERSION;
+        return deny('bad-version', newer
+          ? `服务端仍是旧版本（页面 v${page}，服务端 v${PROTOCOL_VERSION}）。文件覆盖了但进程没重启，请在服务器上重启 Node 进程后再试。`
+          : `页面版本过旧（页面 v${page}，服务端 v${PROTOCOL_VERSION}），按 Ctrl+Shift+R 强制刷新。`);
+      }
 
       const r = join(msg, { send, deny });
       if (!r || r.deny) return deny(r?.deny || 'bad-proto');
