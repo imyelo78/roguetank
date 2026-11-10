@@ -1,9 +1,12 @@
 import * as THREE from '../vendor/three.module.js';
 import { Tank } from './Tank.js';
 import { R } from './rng.js';
+import { enemySkin } from './teams.js';
+import { solveIntercept, AIM_DEFAULTS, flatPitch, dirFrom } from './core/aim.js';
 
 const BAR_W = 2.24;
 const LOS_INTERVAL = 0.2;
+const ZERO_VEL = { x: 0, z: 0 };
 
 // 血条几何体/材质共享，避免每辆敌人新建导致显存泄漏
 const BAR_BG_GEO = new THREE.PlaneGeometry(BAR_W + 0.16, 0.26);
@@ -58,17 +61,10 @@ export class Enemy {
       : charger ? 0.85 : elite ? 1.18 : 1;
     const speedMul = drone ? 1.9 : turret ? 0 : support ? 1.15 : shield ? 0.72
       : charger ? 1.25 : elite ? 0.85 : 1;
-    const bodies = boss
-      ? (bossInfo.kind === 'breaker'
-        ? { body: 0x7d3a2c, accent: 0x4a1e16, metal: 0x2a2220 }
-        : { body: 0x2f6f86, accent: 0x1d4354, metal: 0x223038 })
-      : elite
-        ? { body: 0xc0963a, accent: 0x6d5018, metal: 0x332b28 }
-        : drone ? { body: 0x8d5fb0, accent: 0x4d2e66, metal: 0x2a2432 }
-        : turret ? { body: 0x77806b, accent: 0x454c3e, metal: 0x2e332c }
-        : support ? { body: 0x4f8f5f, accent: 0x2c5537, metal: 0x2b332c }
-        : shield ? { body: 0x5d6d9c, accent: 0x333f63, metal: 0x2a2e38 }
-        : { body: charger ? 0xc25a20 : 0xa8483a, accent: charger ? 0x6d2a0e : 0x5e2318, metal: charger ? 0x2b2522 : 0x332b28 };
+    // 敌方配色统一从 teams.js 取（单机与组队同一张表）。
+    // 曾经这张表写在这里，补给车是绿的、炮台是灰绿的，和玩家军绿撞色；
+    // 而组队那边压根没传颜色，全走默认绿——两处不一致的根源就是"各写一份"。
+    const bodies = enemySkin(type);
 
     this.tank = new Tank(scene, {
       team: 'enemy',
@@ -460,7 +456,12 @@ export class Enemy {
       }
     }
 
-    if (this.los && dist < 38 && this.fireCd <= 0 && this.spawnShield <= 0 && aimErr < 0.2) {
+    // 开火判据用**弧长**（角度 × 距离）而不是裸角度：
+    // 0.2 rad 在 14 米处就是 2.8 米偏差，比 1.45 米的命中半径大一倍——
+    // 炮塔还差着大半格就开炮，站桩玩家也照样擦身而过（实测最近 2.1 米）。
+    // 弧长 < 1.2 米 = 炮塔确实指到了"能打中"的位置才准开火。
+    const aimArc = aimErr * dist;
+    if (this.los && dist < 38 && this.fireCd <= 0 && this.spawnShield <= 0 && aimArc < 1.2) {
       this.fireCd = 2.6 + R.combat() * 0.8;
       ctx.fire(tank, new THREE.Vector3(dx, 0, dz).normalize(), this.damage, 'enemy', {
         speed: 46, color: 0xffe2a0, glow: 0xff8a2a, scale: 1.6,
@@ -550,17 +551,59 @@ export class Enemy {
       this._navigate(dt, ctx, p.x + Math.sin(a) * 8, p.z + Math.cos(a) * 8, 0.42);
     }
 
-    const aimErr = tank.aimTowards(aimYaw, dt, 4.5);
+    // ---- 提前量解算 ----
+    // 以前炮塔朝"玩家现在的位置"转、炮弹也朝那个点飞。玩家横移 15 m/s 时，
+    // 18 米距离要飞 0.3 秒，人已经挪了 4.5 米，而命中半径只有 1.45 米——
+    // 数学上必空。这就是"破城者主炮一点伤害都没有"的真正原因：
+    // 炮没坏，是它只会打你刚才站的地方（原本靠范围炮击锁定兜底，锁定被移除后就露馅了）。
+    //
+    // ⚠ 解算必须从**炮口**出发，不能用车身中心：
+    // 炮口在炮塔前方约 2 米，按中心算出来的角度，落到目标处就整体偏 2 米——
+    // 比 1.45 米的命中半径还大，等于白算。（实测：按中心算，48 发只中 1.4 发。）
+    const pv = ctx.playerVel || ZERO_VEL;
+    const leadSpeed = breaker ? AIM_DEFAULTS.breakerSpeed : AIM_DEFAULTS.prismSpeed;
+    const leadMul = breaker ? AIM_DEFAULTS.breakerLead : AIM_DEFAULTS.prismLead;
+    const muz = tank.muzzleWorld(this._muzzleTmp || (this._muzzleTmp = new THREE.Vector3()));
+    const mdx = player.x - muz.x;
+    const mdz = player.z - muz.z;
+    const sol = solveIntercept({ dx: mdx, dz: mdz, vx: pv.x, vz: pv.z, speed: leadSpeed, lead: leadMul });
+    const fireYaw = sol ? Math.atan2(sol.x, sol.z) : Math.atan2(mdx, mdz);
+
+    const aimErr = tank.aimTowards(fireYaw, dt, 4.5);
+
+    // 俯角：Boss 模型放大后炮口在 2.89 米（破城者）/ 2.39 米（棱镜）高，
+    // 而玩家命中判定的上限是 2.3 米。平射出去的炮弹全部从头顶掠过，
+    // 伤害恒为 0 —— 这才是"主炮一点伤害都没有"的元凶（不是走位，也不是没瞄准）。
+    // 弹道按实际交战距离下落，命中点正好穿过车身中部（1.1 米）。
+    const muzzleY = muz.y;
+    const horiz = Math.hypot(mdx, mdz);
+    const aimPitch = flatPitch(muzzleY, horiz);
+    const dirAt = (yaw) => {
+      // 方向向量交给 core/aim.js 拼（同一份数学，单机与联机服务端共用），
+      // 这里只负责换成 THREE 的向量。
+      const d = dirFrom(yaw, aimPitch);
+      return new THREE.Vector3(d.x, d.y, d.z);
+    };
 
     // 主武器
-    if (this.los && this.fireCd <= 0 && this.spawnShield <= 0 && aimErr < 0.2) {
+    // 同小兵：弧长判据（角度 × 距离 < 1.2 米），否则 0.2 rad 的裸角度
+    // 在 14 米处就是 2.8 米的落点偏差，比命中半径还大，站桩都打不中。
+    if (this.los && this.fireCd <= 0 && this.spawnShield <= 0 && aimErr * horiz < 1.2) {
       if (breaker) {
-        this.fireCd = this.enraged ? 2.3 : 3.2;
-        const base = Math.atan2(dx, dz);
-        for (const off of [-0.08, 0, 0.08]) {
-          const a = base + off;
-          ctx.fire(tank, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), this.damage, 'enemy', {
-            speed: 44, color: 0xffc9a0, glow: 0xff5a2a, scale: 1.45,
+        // 4.6 秒一轮（狂暴 3.4）。节奏是被"命中率"按出来的：
+        // 高度 bug 修掉之前它每轮都是 0 伤害，现在每轮稳定打中 1 发 = 15 点。
+        // 按 120 血、8 轮算，站桩挨 8 轮就是 37 秒——
+        // 一场 Boss 战本来就要打那么久，这个数字刚好"站着不动会死、
+        // 跑起来能活一段"，不是被秒。
+        this.fireCd = this.enraged ? 3.4 : 4.6;
+        const base = fireYaw;
+        // 散布 0.15 rad：18 米处横向 ±2.7 米，明显大于玩家 1.45 米的命中半径。
+        // 这样"中间那发稳定命中，两侧两发只是封走位"——
+        // 实测站桩/匀速跑每轮挨 1 发（15 点），想全躲必须变向。
+        // 试过 0.095：三发全会中，一轮 45 点，绕圈 10 秒就死，太狠。
+        for (const off of [-0.15, 0, 0.15]) {
+          ctx.fire(tank, dirAt(base + off), this.damage, 'enemy', {
+            speed: leadSpeed, color: 0xffc9a0, glow: 0xff5a2a, scale: 1.45,
           });
         }
         ctx.shake = Math.max(ctx.shake, 0.16);
@@ -577,10 +620,9 @@ export class Enemy {
       if (this.burstT <= 0) {
         this.burstT = 0.1;
         this.burst -= 1;
-        const base = Math.atan2(dx, dz);
-        const a = base + (R.combat() - 0.5) * 0.05;
-        ctx.fire(tank, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), this.damage, 'enemy', {
-          speed: 66, color: 0x9ff4ff, glow: 0x38d8ff, scale: 0.85,
+        const a = fireYaw + (R.combat() - 0.5) * 0.05;
+        ctx.fire(tank, dirAt(a), this.damage, 'enemy', {
+          speed: leadSpeed, color: 0x9ff4ff, glow: 0x38d8ff, scale: 0.85,
         });
       }
     }
@@ -612,9 +654,18 @@ export class Enemy {
     const count = this.enraged ? 16 : 12;
     const base = R.combat() * Math.PI * 2;
     const dmg = Math.max(7, this.damage);
+    // 环射同样要下压：棱镜炮口 2.39 米，高过玩家 2.3 米的命中上限，
+    // 平射的弹幕会整整一圈从头顶飞过去（以前就是白放）。
+    const muz = this.tank.muzzleWorld(this._muzzleTmp2 || (this._muzzleTmp2 = new THREE.Vector3()));
+    const player = ctx.player.group.position;
+    // 落角按同一套规则算（不要用"直指脚下"的版本：那会把弹幕整个砸进地面）
+    const pitch = flatPitch(muz.y, Math.hypot(player.x - muz.x, player.z - muz.z));
     for (let i = 0; i < count; i++) {
       const a = base + (i / count) * Math.PI * 2;
-      ctx.fire(this.tank, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), dmg, 'enemy', {
+      // 全向弹幕是"铺开"而不是"追人"：俯角取一半，让它们散成一个向下的锥面，
+      // 不然所有弹都会朝玩家所在的那个点收束。
+      const d = dirFrom(a, pitch * 0.5);
+      ctx.fire(this.tank, new THREE.Vector3(d.x, d.y, d.z), dmg, 'enemy', {
         speed: 50, color: 0xbff6ff, glow: 0x38d8ff, scale: 1.05,
       });
     }
