@@ -72,6 +72,8 @@ export function attachSession(socket, { join, onLog = () => {} }) {
       ctx.name = r.name;
       onLog('join', r.room.code, r.name);
       send(r.room.welcomePayload(r.id));
+      // 如果这一波正好在选卡，补发一次（重连/中途加入不该白丢这一波的收益）
+      r.room._resendCards?.(r.id);
       return;
     }
 
@@ -82,6 +84,9 @@ export function attachSession(socket, { join, onLog = () => {} }) {
         break;
       case C2S.READY:
         if (ctx.room.requestStart(ctx.id)) onLog('start', ctx.room.code, ctx.name);
+        break;
+      case C2S.PICK:
+        ctx.room.onPick(ctx.id, msg.id);
         break;
       case C2S.PING:
         send({ k: S2C.PONG, t0: msg.t0, t1: Date.now() });

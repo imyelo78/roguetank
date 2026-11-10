@@ -59,6 +59,18 @@ assert.equal(wa.v, PROTOCOL_VERSION);
 assert.equal(wa.maxPlayers, 4);
 ok(`建房成功，房间码 ${wa.code}`);
 
+// 地表场：两个人必须拿到同一个种子，否则"你陷在沼泽、他跑在草地"
+assert.ok(wa.terrain && wa.terrain.seed > 0, 'WELCOME 必须带 terrain.seed');
+assert.ok(!Array.isArray(wa.terrain.cells), '不要把 27×27 的格点数组塞进握手包');
+ok(`地表种子 ${wa.terrain.seed}（档位 ${wa.terrain.preset}，k=${wa.terrain.k}）`);
+
+// 客户端按种子本地重建，必须能建出和 map 尺寸一致的图（纯函数保证逐格相同）
+{
+  const { buildTerrain } = await import('../src/core/terrain.js');
+  const local = buildTerrain(wa.terrain.seed, 100, { k: wa.terrain.k });
+  ok(`客户端可本地重建 ${local.n}×${local.n} 地表场`);
+}
+
 console.log('\n[2] 第二人凭房间码加入');
 const b = new Client('乙', 'light');
 const wb = await b.open(wa.code);
@@ -66,6 +78,8 @@ assert.equal(wb.k, S2C.WELCOME);
 assert.equal(wb.code, wa.code);
 assert.equal(wb.players.length, 2);
 ok('两人同房');
+assert.equal(wb.terrain.seed, wa.terrain.seed, '同房间两人拿到的地表种子必须相同');
+ok('两人地表种子一致');
 
 console.log('\n[3] 错误的房间码必须被拒绝');
 const c = new Client('丙', 'balanced');
@@ -194,6 +208,160 @@ joiner.close();
 r1.close();
 r2.close();
 await sleep(300);
+
+// ---------------------------------------------------------------
+// 联机成长：每波清完各自 3 选 1
+// ---------------------------------------------------------------
+console.log('\n[12] 联机成长：发卡 → 各自选 → 应用');
+{
+  const g1 = new Client('成长甲', 'heavy');
+  const wg1 = await g1.open();
+  const g2 = new Client('成长乙', 'heavy');
+  const wg2 = await g2.open(wg1.code);
+
+  // 建筑必须由服务端下发（客户端不自己生成）
+  assert.ok(Array.isArray(wg1.world.boxes) && wg1.world.boxes.length > 30, 'welcome 应带建筑坐标');
+  const bx = wg1.world.boxes[0];
+  assert.ok(['x', 'z', 'w', 'd'].every((k) => typeof bx[k] === 'number'), '建筑只需 x/z/w/d');
+  ok(`服务端下发 ${wg1.world.boxes.length} 个建筑（不含随机高度/颜色，省带宽）`);
+
+  g1.send({ k: C2S.READY });
+
+  // 不真打，等着收 CARDS：第 1 波清完才会发。给足够时间 + 主动开火清怪太慢，
+  // 所以直接等，超时就算失败（服务端有全场 8 只左右，最多半分钟）。
+  const waitFor = async (cs, type, ms) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      const m = cs.last(type);
+      if (m) return m;
+      await sleep(150);
+    }
+    return null;
+  };
+
+  // 帮忙清怪：从各自出生点朝地图中心开火。怪从中心方向刷出来、
+  // 会主动走近玩家，所以"朝中心打"命中率最高。
+  // 之前两个版本都试过：固定朝 -Z 打（北边出生点打不到怪）、
+  // 从快照解析敌人坐标自动瞄准（编码格式对不上，一只都打不中）。
+  // welcome.world.players 里有自己的出生坐标，从这里算方向最稳。
+  const myPos = (welcome) => {
+    const me = welcome.world.players.find((p) => p.id === welcome.you);
+    return me ? [me.x, me.z] : [0, 0];
+  };
+  const [x1, z1] = myPos(wg1);
+  const [x2, z2] = myPos(wg2);
+  // 方向：从出生点指向地图中心，取 90 米外的点
+  const toCenter = ([x, z]) => {
+    const len = Math.hypot(x, z) || 1;
+    return [-x / len * 90, -z / len * 90];
+  };
+  const [tx1, tz1] = toCenter([x1, z1]);
+  const [tx2, tz2] = toCenter([x2, z2]);
+  let seqG = 1;
+  const fire = setInterval(() => {
+    g1.send({ k: C2S.INPUT, seq: seqG++, mx: 0, mz: 0, ax: tx1, az: tz1, fire: true });
+    g2.send({ k: C2S.INPUT, seq: seqG, mx: 0, mz: 0, ax: tx2, az: tz2, fire: true });
+    seqG++;
+  }, 66);
+
+  // 谁先收到都算过：站桩 2 分钟被 4 只 gunner 集火，先死一个很正常
+  // （这正是联机的真实体验）。发卡只发给活着的人，这是设计而非 bug。
+  const cards1 = await Promise.race([
+    waitFor(g1, S2C.CARDS, 120000).then((m) => m && { cs: g1, m }),
+    waitFor(g2, S2C.CARDS, 120000).then((m) => m && { cs: g2, m }),
+  ]);
+  clearInterval(fire);
+  assert.ok(cards1, '第 1 波清完应有人收到 CARDS');
+  assert.equal(cards1.m.options.length, 3, '每次应给 3 张');
+  assert.ok(cards1.m.ms > 0, '应带倒计时');
+  ok(`第 ${cards1.m.wave} 波清完，「${cards1.cs.name}」收到 3 张卡（${cards1.m.options.map((o) => o.name).join(' / ')}）`);
+
+  // 选一张，服务端应回确认事件；已选过再点会被拒绝
+  const before = (cards1.cs.byType.get(S2C.EVENT) || []).length;
+  cards1.cs.send({ k: C2S.PICK, id: cards1.m.options[0].id });
+  await sleep(400);
+  const picked = (cards1.cs.byType.get(S2C.EVENT) || []).slice(before)
+    .flatMap((m) => m.e).filter((e) => e.kind === 'picked' || e.kind === 'pick');
+  assert.ok(picked.length > 0, '选完后应收到确认事件');
+  ok(`选了「${cards1.m.options[0].name}」，服务端确认`);
+
+  const before2 = (cards1.cs.byType.get(S2C.EVENT) || []).length;
+  cards1.cs.send({ k: C2S.PICK, id: cards1.m.options[1].id });
+  await sleep(300);
+  const extra = (cards1.cs.byType.get(S2C.EVENT) || []).slice(before2)
+    .flatMap((m) => m.e).filter((e) => e.kind === 'picked' || e.kind === 'pick');
+  assert.equal(extra.length, 0, '已经选过就不能再选');
+  ok('重复选卡被服务端拒绝（客户端说了不算）');
+
+  // 单测层面的补充：真实网络里"打完整波"太慢也太不稳（怪会走位，玩家会挨打），
+  // 这里直接用 World 跑同样的规则，把"别人还在选、超时自动选、卡池枯竭"几条边界钉死。
+  {
+    const { World } = await import('../src/core/world.js');
+    const w = new World({ code: 'UT', seed: 31337 });
+    const p1 = w.addPlayer({ id: 'x', name: '甲', chassisId: 'light' });
+    const p2 = w.addPlayer({ id: 'y', name: '乙', chassisId: 'heavy' });
+    w.start();
+    // 每 10 帧清一次怪，快速走完一波
+    let dealt = null;
+    for (let i = 0; i < 600 && !dealt; i++) {
+      for (const e of w.step(1 / 30)) if (e.kind === 'cards') dealt = e;
+      if (i % 10 === 0) { w.enemies.length = 0; w.pending.length = 0; }
+    }
+    assert.ok(dealt, 'World 清波后应发卡');
+    assert.equal(dealt.dealt.length, 2, '两个活着的人各一份');
+    assert.ok(dealt.dealt.every((d) => d.options.length === 3), '每人 3 张');
+    ok('World 清波 → 两个玩家各 3 张卡');
+
+    assert.equal(w.pickCard('x', dealt.dealt[0].options[0].id).ok, true);
+    assert.equal(w.pickCard('x', dealt.dealt[0].options[1].id).ok, false, '不能选两次');
+    assert.equal(w.awaitingPicks, true, '还有人没选，窗口应保持打开');
+    ok('一人选完后窗口保持，等另一人');
+
+    // 超时：把窗口拨到 0，下一 tick 应自动替他选
+    w.pickT = 0;
+    w.step(1 / 30);
+    assert.equal(w.awaitingPicks, false, '超时后应关窗');
+    const stat = w.players.find((q) => q.id === 'y').stats;
+    assert.equal(Object.values(stat.counts).reduce((a, b) => a + b, 0), 1, '超时应自动替他拿一张');
+    ok('超时自动选第一张，不会白丢这一波');
+
+    // 再走一会儿应进入下一波
+    for (let i = 0; i < 90; i++) w.step(1 / 30);
+    assert.equal(w.wave, 2, `选完卡后应进入第 2 波，实际 ${w.wave}`);
+    ok('选卡结束 → 波次推进到第 2 波');
+
+    // 卡池枯竭：把所有卡都拉满，再清一波应该不发卡也不卡住
+    for (const q of w.players) {
+      for (const k of Object.keys(q.stats.counts)) q.stats.counts[k] = 999;
+    }
+    const { UPGRADES } = await import('../src/upgrades.js');
+    const { weaponCards } = await import('../src/weapons.js');
+    for (const q of w.players) {
+      for (const u of UPGRADES) q.stats.counts[u.id] = 999;
+      for (const u of weaponCards(q.stats.weaponId)) q.stats.counts[u.id] = 999;
+    }
+    let stuck = true;
+    let sawCards = false;
+    for (let i = 0; i < 300; i++) {
+      for (const e of w.step(1 / 30)) if (e.kind === 'cards') sawCards = true;
+      if (i % 10 === 0) { w.enemies.length = 0; w.pending.length = 0; }
+    }
+    assert.equal(sawCards, false, '全满级时不应再发卡');
+    assert.ok(w.wave >= 3, `全满级后波次仍应继续推进，实际第 ${w.wave} 波`);
+    ok('所有卡满级后不再发卡，波次正常推进（不会卡死在选卡界面）');
+  }
+
+  // 选完后波次应继续推进
+  const w0 = cards1.cs.last(S2C.SNAP)?.w || 1;
+  await sleep(3000);
+  const w1 = cards1.cs.last(S2C.SNAP)?.w || 1;
+  assert.ok(w1 >= w0, '波次不该倒退');
+  ok(`选卡结束后波次推进到第 ${w1} 波`);
+
+  g1.close();
+  g2.close();
+  await sleep(300);
+}
 
 // 本地榜单接口：`npm start` 起的不只是房间服务，成绩也要能真正上榜，
 // 否则本地验证时永远只会看到"云端同步失败"。

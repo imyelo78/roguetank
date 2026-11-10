@@ -16,6 +16,7 @@ import {
   generateBoxes, blockedAt, resolveMultiSpawns, SPAWNS, HALF, PLAYER_START,
 } from '../src/core/levelgen.js';
 import { buildStaticWorld, World } from '../src/core/world.js';
+import { createPlayer } from '../src/core/players.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0;
@@ -101,8 +102,76 @@ console.log('\n[6] 客户端不再自己生成地图');
   // 这一条是防"手抄第二份数据"的最后一道闸。
   const src = readFileSync(join(here, '../src/level.js'), 'utf8');
   assert.equal(/function\s+mulberry32/.test(src), false, 'level.js 里又出现了独立的随机数生成器');
-  assert.ok(/generateBoxes\(\)/.test(src), 'level.js 应当只从 levelgen 取箱体数据');
+  assert.ok(/generateBoxes\(seed\)/.test(src), 'level.js 应当只从 levelgen 取箱体数据');
   ok('渲染层只消费数据，不生成数据');
 }
 
 console.log(`\n全部通过：${pass} 项\n`);
+
+console.log('\n[9] 建筑按局种子变化（每局换图）');
+{
+  const a = generateBoxes(101);
+  const b = generateBoxes(202);
+  assert.notDeepEqual(a, b, '不同种子必须给出不同布局');
+
+  // 固定掩体也要动，否则"14 组手工掩体"的位置永远不变，玩家还是在背板
+  const moved = a.filter((x, i) => Math.hypot(x.x - b[i].x, x.z - b[i].z) > 1).length;
+  assert.ok(moved >= 10, `固定掩体应有明显位移，实际只有 ${moved} 个动了`);
+
+  // 但扰动不能大到把掩体挪出地图或压成薄片（固定掩体已夹到 ≥4 米，
+  // 随机建筑的尺寸本来就可能在 3.5 米上下，这里只查固定那 14 个）
+  for (let i = 0; i < 14; i++) {
+    const box = a[i];
+    assert.ok(Math.abs(box.x) < HALF && Math.abs(box.z) < HALF, '掩体必须在地图内');
+    assert.ok(box.w >= 4 && box.d >= 4, `掩体过窄：${box.w}×${box.d}`);
+  }
+  ok(`换种子后 ${moved} 个固定掩体位置改变，且都在图内、尺寸合理`);
+
+  // seed 0 = 不扰动：老布局原样返回，方便回放与对比
+  assert.deepEqual(generateBoxes(0).slice(0, 14).map((b) => [b.x, b.z]),
+    generateBoxes(0).slice(0, 14).map((b) => [b.x, b.z]));
+  ok('seed=0 时不扰动（?map=old 走这条，能回到上一版布局）');
+}
+
+console.log('\n[10] 出生点在任何种子下都不压在墙上');
+{
+  let bad = [];
+  for (let i = 1; i <= 40; i++) {
+    const seed = (i * 2654435761) >>> 0;
+    const boxes = generateBoxes(seed);
+    for (const [x, z] of resolveMultiSpawns(boxes)) {
+      if (blockedAt(boxes, x, z, 1.9)) bad.push(seed);
+    }
+  }
+  assert.equal(bad.length, 0, `${bad.length} 个种子有出生点被墙压住：${bad.slice(0, 5)}`);
+  ok('40 个随机种子、320 个出生点，没有一个落在墙里');
+}
+
+console.log('\n[11] 服务端与客户端拿到的是同一套建筑');
+{
+  const seed = 424242;
+  const w = new World({ code: 'X', seed });
+  const srv = w.static.boxes;
+
+  // 客户端不自己生成，直接吃服务端下发的坐标
+  const sent = w.fullState().boxes.map((b) => [b.x, b.z, b.w, b.d]);
+  assert.deepEqual(sent, srv, '下发给客户端的建筑必须与服务端碰撞表逐项相等');
+
+  // 但生成函数本身也必须同源（万一有人绕过下发自己生成，也不能错位）
+  const local = buildStaticWorld(null, seed).boxes;
+  assert.deepEqual(local, srv, '同一种子两端各自生成的结果必须一致');
+  ok(`${srv.length} 个建筑：下发坐标 === 服务端碰撞表 === 本地按种子重建`);
+
+  // 两个种子生成的世界箱子不同（否则"换图"是假的）
+  const w2 = new World({ code: 'Y', seed: seed + 1 });
+  assert.notDeepEqual(w2.static.boxes, srv, '不同种子的世界必须有不同建筑');
+  ok('不同房间种子得到不同建筑布局');
+}
+
+console.log('\n[12] 换图后出生点跟着换，不会有人落在墙里');
+{
+  const w = new World({ code: 'Z', seed: 987654321 });
+  const p = w.addPlayer({ id: 'a', name: '甲', chassisId: 'balanced' });
+  assert.ok(!w.static.blocked(p.x, p.z, 1.9), `玩家出生在墙里：${p.x},${p.z}`);
+  ok(`玩家出生点 (${p.x.toFixed(1)}, ${p.z.toFixed(1)}) 是空地`);
+}

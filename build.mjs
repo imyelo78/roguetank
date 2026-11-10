@@ -20,13 +20,17 @@ await writeFile(
   `/*
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Cache-Control: no-cache
 
 /vendor/*
-  Cache-Control: public, max-age=31536000, immutable
+  Cache-Control: no-cache
 
 /src/*
-  Cache-Control: public, max-age=600
+  Cache-Control: no-cache
 `
+// 全部 no-cache。vendor 曾经设成 max-age=31536000, immutable（一年、永不验证），
+// 静态托管上这意味着 three.module.js 更新后老用户一年拿不到新的，而且完全没有报错，
+// 只会表现成"改了代码没生效"。文件名没有 hash，就不该配 immutable。
 );
 
 console.log(`built -> ${dist}`);

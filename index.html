@@ -34,6 +34,11 @@
           <b id="wave">1</b>
           <i class="enemy-left">剩余 <em id="left">0</em></i>
         </div>
+        <div id="terrain-chip" class="terrain-chip hidden">
+          <i id="terrain-dot" class="terrain-dot"></i>
+          <span id="terrain-name">草地</span>
+          <b id="terrain-speed">100%</b>
+        </div>
         <div id="modifier" class="modifier hidden"></div>
       </div>
 
@@ -72,45 +77,104 @@
     <div id="center-msg" class="center-msg"></div>
   </div>
 
-  <!-- ================= 开始界面 ================= -->
-  <div id="overlay" class="overlay">
-    <div class="panel start-panel">
-      <div class="logo-line"></div>
-      <h1>钢铁突击</h1>
-      <p class="sub">3D 坦克 · 肉鸽生存</p>
+  <!-- ================= 开始界面 =================
+       版式按 Pixso 设计稿「web 1920 / 2:1」1:1 还原：
+       中央 780×520 面板（#232931@0.80，圆角 35，1px #f2ca91@0.80 描边），
+       标题 46px 渐变 #f2ca91→#f79b38，模式卡 156×88 圆角 15，
+       输入框与主按钮 280×50 圆角 10，主按钮实心 #f79b38。
+       设计稿是 1920 基准，下面用 CSS 变量 + 媒体查询按比例缩，不写死像素。 -->
+  <div id="overlay" class="overlay menu-overlay">
+    <div class="menu-panel">
+      <i class="deco-diamond d-tl"></i>
+      <i class="deco-diamond d-tr"></i>
+      <i class="deco-diamond d-bl"></i>
+      <i class="deco-diamond d-br"></i>
 
-      <ul class="keys">
-        <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>驾驶</span></li>
-        <li><kbd>鼠标</kbd><span>炮塔瞄准</span></li>
-        <li><kbd>左键</kbd><kbd>空格</kbd><span>开炮</span></li>
-        <li><kbd>Q</kbd><span>切换已解锁主炮</span></li>
-        <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><span>选择强化</span></li>
-      </ul>
+      <div class="menu-title">
+        <h1>钢铁突击</h1>
+        <p class="menu-sub">3D坦克 · 肉鸽生存</p>
+      </div>
 
-      <div class="chassis-block">
-        <p class="chassis-title">选择车体 <span>按 <kbd>1</kbd>~<kbd>4</kbd> 或点击卡片</span></p>
-        <div id="chassis-cards" class="chassis-cards"></div>
+      <div class="mode-block">
+        <p class="menu-section">作战模式</p>
+        <div id="mode-cards" class="mode-cards">
+          <button class="mode-card sel" data-mode="solo">
+            <b>无尽冲锋</b>
+            <i>单人成长越打越强</i>
+          </button>
+          <button class="mode-card" data-mode="coop">
+            <b>群狼共舞</b>
+            <i>4人团队协作关卡</i>
+          </button>
+          <button class="mode-card off" data-mode="campaign" disabled>
+            <b>经典战役</b>
+            <i>复刻开发中</i>
+          </button>
+        </div>
       </div>
 
       <div class="callsign">
-        <span>呼号</span>
-        <input id="callsign" maxlength="12" placeholder="必填，如 铁骑01" autocomplete="off" />
+        <input id="callsign" maxlength="12" placeholder="选择呼号" autocomplete="off" />
       </div>
       <p id="callsign-err" class="callsign-err hidden"></p>
 
-      <div id="best" class="best hidden">
-        <span>最佳记录</span>
-        <b id="best-text">—</b>
+      <div class="start-btns">
+        <button id="start-btn">开始冲锋</button>
       </div>
 
-      <div class="start-btns">
-        <button id="start-btn">单人出击</button>
-        <button id="coop-btn" class="coop">组队（最多 4 人）</button>
-      </div>
       <p class="tip">
-        <a id="lb-open" class="link">查看排行榜</a> · 每清完一波选择强化；每 3 波军械补给，每 5 波 Boss
+        <span id="best" class="best hidden">最佳 <b id="best-text">—</b></span>
+        <a id="lb-open" class="link">排行榜</a>
       </p>
     </div>
+
+    <!--
+      操作说明：设计稿 3:47「176×218 @1721,836」。
+      ⚠ 内容必须与设计稿逐行一致，**设计稿没有的行一律不加**。
+         设计稿只有 4 组：行驶 / 瞄准 / 开炮 / 切换解锁过的武器。
+         曾经自作主张加过「1 2 3 选择强化」，那不是设计稿的内容。
+    -->
+    <div id="key-help" class="key-help">
+      <button id="key-help-head" class="key-help-head" type="button">
+        <span>操作说明</span>
+        <i class="key-help-caret"></i>
+      </button>
+      <ul class="key-help-list">
+        <li><kbd class="kk">W</kbd><kbd class="kk">A</kbd><kbd class="kk">S</kbd><kbd class="kk">D</kbd><span>行驶</span></li>
+        <li><kbd class="kw">鼠标</kbd><span>瞄准</span></li>
+        <li><kbd class="kw">左键</kbd><kbd class="kw">空格</kbd><span>开炮</span></li>
+        <li><kbd class="kk">Q</kbd><span>切换解锁过的武器</span></li>
+      </ul>
+    </div>
+
+    <!--
+      排行榜：设计稿 3:48「176×385 @1721,27」。
+      结构按设计稿：
+        · 174×60 @1,1  #1a1a1a@0.5  顶部标题条
+        · 78×22 @9,10  #f2ca91@0.8 圆角5   ——"今日排行"的胶囊底
+        · "今日排行" @20,11 / "总排行榜" @102,11，14px 700
+        · "你的名次" @10,42 9px + 名次数字
+        · "人上榜 20" @129,42 9px 右对齐
+        · 10 行，第一行 T65，行距 32，每行 160×25
+        · 线 @23,94 146×257 —— 行与行之间的竖分隔条
+      数据由 HUD.renderMenuBoard() 填。
+    -->
+    <aside id="menu-board" class="menu-board">
+      <div class="mb-bar">
+        <div class="mb-tabs">
+          <button class="mb-tab sel" data-board="day" type="button">今日排行</button>
+          <button class="mb-tab" data-board="all" type="button">总排行榜</button>
+        </div>
+        <div class="mb-mine">
+          <span>你的名次</span>
+          <b id="mb-mine-rank">—</b>
+        </div>
+        <em id="mb-mine-total" class="mb-total">—</em>
+      </div>
+      <ol id="mb-body" class="mb-list">
+        <li class="mb-empty">读取中…</li>
+      </ol>
+    </aside>
   </div>
 
   <!-- ================= 强化三选一 ================= -->
@@ -138,6 +202,7 @@
           <input id="room-code" maxlength="4" placeholder="房间码" autocomplete="off" spellcheck="false" />
           <button id="lobby-join-btn" class="ghost-btn">加入</button>
         </div>
+        <p class="lb-sub" style="margin-top:8px;font-size:12px;opacity:.75">不填码点「创建房间」= 随机码；先填 4 位码再点「创建房间」= 用你定的码建房（0/O/1/I 容易看错，别用）</p>
       </div>
 
       <div id="lobby-wait" class="hidden">
@@ -167,7 +232,7 @@
       <p class="lb-sub">
         <span id="lb-sub">—</span> · <span id="lb-source" class="lb-source">—</span>
       </p>
-      <p class="lb-note">所有战斗（单人或组队）都计入同一榜单，多人局的条目会标注人数。地图随机，分数仅供横向参考。</p>
+      <p class="lb-note">榜单只收单人局。组队局的分数按人数缩放、还含团队分，混排会让排名失去意义。地图随机，分数仅供横向参考。</p>
       <div class="lb-tabs">
         <button class="lb-tab sel" data-view="day">今日</button>
         <button class="lb-tab" data-view="all">总榜</button>
