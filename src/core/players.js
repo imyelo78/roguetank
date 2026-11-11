@@ -127,6 +127,7 @@ export function updateRevive(players, dt) {
 /**
  * 人数缩放。线性放大会变成推墙，不放大会变成切菜，所以：
  *   敌人血量 sqrt(n)，数量 n^0.85。4 人时血量 ×2、数量 ×3.2。
+ * r30：联机敌军数量整体再 ×0.6（只减敌军、不动玩家与血量），4 人净数量 ≈ ×1.92。
  */
 export function scaleForPlayers(n) {
   const c = Math.max(1, Math.min(4, n));

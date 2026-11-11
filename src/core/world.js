@@ -892,8 +892,11 @@ export class World {
     this.wave = n;
     const bossWave = n % 5 === 0;
     const eliteWave = !bossWave && n % 5 === 3;
+    // r30 已拍板：联机只减敌军数量（×0.6），不动玩家人数、不动血量缩放。
+    // 4 人 W12 实测 122 只 → 约 70 只；精英/炮台/补给等特色兵种保底不缩。
+    const CS = 0.6;
     const base = 2 + n * 2 + Math.min(6, Math.floor(n / 2)) - (n % 5 === 3 ? 2 : 0);
-    const count = Math.round(base * this.scale.countMul);
+    const count = Math.round(base * this.scale.countMul * CS);
     const hp = Math.round((55 + n * 14) * this.scale.hpMul);
     const speed = 8.5 + Math.min(4.5, n * 0.6);
 
@@ -903,7 +906,7 @@ export class World {
     if (bossWave) {
       const breaker = Math.floor(n / 5) % 2 === 1;
       this.pending.push({ t: 0.7, type: breaker ? 'boss_breaker' : 'boss_prism', hpScale: 1300 + n * 300 });
-      for (let i = 0; i < 3 + Math.floor(n / 4); i++) {
+      for (let i = 0; i < Math.max(2, Math.round((3 + Math.floor(n / 4)) * CS)); i++) {
         this.pending.push({ t: 1.7 + i * 0.9, type: 'gunner', hp });
       }
     } else {
@@ -912,13 +915,13 @@ export class World {
         for (let i = 0; i < ec; i++) this.pending.push({ t: 1.2 + i * 2.4, type: 'elite', hp: Math.round(hp * 4) });
       }
       for (let i = 0; i < count; i++) this.pending.push({ t: i * 0.75, type: 'gunner', hp });
-      for (let j = 0; j < Math.min(8, Math.floor(n / 2)); j++) {
+      for (let j = 0; j < Math.max(1, Math.round(Math.min(8, Math.floor(n / 2)) * CS)); j++) {
         this.pending.push({ t: 2.2 + j * 1.1, type: 'charger', hp: Math.max(30, Math.round(hp * 0.5)) });
       }
-      if (n >= 4) for (let i = 0; i < Math.min(6, Math.floor((n - 2) / 2)); i++) this.pending.push({ t: 3.5 + i * 1.4, type: 'drone', hp: Math.max(18, Math.round(hp * 0.3)) });
+      if (n >= 4) for (let i = 0; i < Math.max(1, Math.round(Math.min(6, Math.floor((n - 2) / 2)) * CS)); i++) this.pending.push({ t: 3.5 + i * 1.4, type: 'drone', hp: Math.max(18, Math.round(hp * 0.3)) });
       if (n >= 6) for (let i = 0; i < Math.min(2, 1 + Math.floor(n / 12)); i++) this.pending.push({ t: 2.5 + i * 3, type: 'turret', hp: Math.round(hp * 2.2) });
       if (n >= 7) this.pending.push({ t: 4.5, type: 'support', hp: Math.round(hp * 1.4) });
-      if (n >= 8) for (let i = 0; i < Math.min(4, Math.floor((n - 4) / 2)); i++) this.pending.push({ t: 5.5 + i * 2.2, type: 'shield', hp: Math.round(hp * 1.3) });
+      if (n >= 8) for (let i = 0; i < Math.max(1, Math.round(Math.min(4, Math.floor((n - 4) / 2)) * CS)); i++) this.pending.push({ t: 5.5 + i * 2.2, type: 'shield', hp: Math.round(hp * 1.3) });
     }
 
     this._pushEvent({ kind: 'wave', wave: n, boss: bossWave, elite: eliteWave });

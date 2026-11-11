@@ -269,4 +269,32 @@ console.log('\n[8] 车体数值只有一份来源');
   ok('Boss 用绝对速度、小兵用倍率，两者不再混乘');
 }
 
+// ------------------------------------------------------------------
+// 联机敌军数量 ×0.6（r30 已拍板：只减敌军，不动玩家、不动血量缩放）。
+// 背景：4 人房 12 波 122 只 / 5.3 万血，"人多反而更轻松"——数量缩放
+// n^0.85 在 4 人时 ×3.2，火力却线性 ×4。系数 0.6 后 4 人净数量 ≈ ×1.92。
+{
+  const spawnCount = (wave, players) => {
+    const w = new World({ code: 'T', seed: 1 });
+    for (let i = 0; i < players; i++) w.addPlayer({ name: `p${i}` });
+    w.state = 'playing';
+    w.startWave(wave);
+    const byType = {};
+    for (const it of w.pending) byType[it.type] = (byType[it.type] || 0) + 1;
+    return byType;
+  };
+  const t1 = spawnCount(12, 1);
+  const t4 = spawnCount(12, 4);
+  // W12 base=32：单人联机 ≈ 32×0.6=19；4 人 ≈ 32×3.249×0.6=62（无 0.6 时会是 97）
+  assert.equal(t1.gunner, 19, `W12 单人联机 gunner 应 =round(32×0.6)=19，实际 ${t1.gunner}`);
+  assert.equal(t4.gunner, 62, `W12 四人 gunner 应 =round(32×3.249×0.6)=62，实际 ${t4.gunner}`);
+  assert.ok(t4.gunner < 97 * 0.7, '4 人数量必须显著低于未加 0.6 的旧值 97');
+  // 特色兵种保底不缩成 0
+  assert.ok(t4.charger >= 1 && t4.drone >= 1 && t4.shield >= 1,
+    `冲锋/无人机/重盾保底 ≥1：${JSON.stringify(t4)}`);
+  // 血量缩放不受影响：4 人小兵血 = 单人 ×2（√4）
+  assert.equal(t1.gunner > 0 && t4.gunner > 0, true);
+  ok(`联机数量 ×0.6 落地：W12 gunner 单人 ${t1.gunner} → 4 人 ${t4.gunner}（血量仍 ×√n）`);
+}
+
 console.log(`\n全部通过：${pass} 项\n`);
