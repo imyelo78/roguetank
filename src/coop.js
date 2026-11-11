@@ -616,6 +616,25 @@ export class CoopMode {
     this.runTime += dt;
     this.effects.update(dt);
 
+    // ---- 坦克表现层动画 ----
+    //
+    // Tank.update 驱动炮管后座与负重轮，是纯表现（recoilT 递减 + 轮子按里程
+    // 滚动），不碰物理。组队曾经**从不调用它**：onEvents 里 recoil() 设了
+    // recoilT=0.12，但没人递减、没人把值写进炮管位置——炮管纹丝不动，
+    // 只剩震屏。这就是"多人开炮炮塔不动、只有画面抖"的完整成因。
+    for (const [, t] of this.tanks) {
+      // 组队没有本地 move()，odometer 不会累加；按渲染位置的位移喂给它，
+      // 负重轮就能跟着车滚（单机是 move() 里加的，这里用画面位移近似）。
+      const lx = t._lastPx ?? t.group.position.x;
+      const lz = t._lastPz ?? t.group.position.z;
+      const d = Math.hypot(t.group.position.x - lx, t.group.position.z - lz);
+      if (d > 0.001) t.odometer += d;
+      t._lastPx = t.group.position.x;
+      t._lastPz = t.group.position.z;
+      t.update(dt);
+    }
+    for (const [, t] of this.enemies) t.update(dt);
+
     // 射击冷却（只用于 HUD 进度条）
     this._cd = Math.max(0, this._cd - dt);
     this.game.hud.setReload(1 - this._cd / 0.4);
@@ -1318,7 +1337,7 @@ export class CoopMode {
       cam.position.y += oy;
       this._shakeOff.x = ox;
       this._shakeOff.y = oy;
-      this._shake = Math.max(0, this._shake - dt * 1.2);
+      this._shake = Math.max(0, this._shake - dt * 1.6);   // 与单机同衰减速率
       if (this._shake === 0) { this._shakeT = 0; this._shakeOff.x = 0; this._shakeOff.y = 0; }
     }
 
@@ -1377,7 +1396,9 @@ export class CoopMode {
           if (e.id === this.myId) {
             this.sound.shoot('player');
             this._cd = 0.4;
-            this._shake = Math.max(this._shake, 0.14);
+            // 震屏与单机同参数（0.1 / 衰减 1.6）：曾经 0.14 / 1.2，
+            // 又叠加"后座动画不播"，手感只剩抖没有后座，观感就是"画面抖"。
+            this._shake = Math.max(this._shake, 0.1);
             const t = this.tanks.get(this.myId);
             t?.recoil?.();
           } else {

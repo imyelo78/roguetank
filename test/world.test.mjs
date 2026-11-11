@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { World, CHASSIS_TABLE } from '../src/core/world.js';
+import { World, CHASSIS_TABLE, ENEMY_TYPES } from '../src/core/world.js';
 import { encodeSnapshot, decodeSnapshot, quantPos, dequantPos } from '../src/core/protocol.js';
 
 let pass = 0;
@@ -246,6 +246,27 @@ console.log('\n[8] 车体数值只有一份来源');
     assert.equal(p.takenMul, a.takenMul, `${id} 减伤没进模拟`);
   }
   ok('新建玩家读到的是同一份数值');
+}
+
+
+// ------------------------------------------------------------------
+// Boss 速度语义：tpl.speed 对小兵是倍率（gunner=1），对 Boss 是绝对速度。
+// 曾把两者乘在一起：第 5 波破城者 = 基础 10 × 7.2 = 72 m/s，
+// 玩家 15 m/s 被近 5 倍时速碾压——"多人模式的破城者跑起来像飞一样"。
+{
+  const w = new World({ code: 'T', seed: 1 });
+  w.addPlayer({ name: '甲' });
+  w.state = 'playing';
+  w.startWave(5);                       // 5 的倍数 = boss 波
+  for (let i = 0; i < 600; i++) w.step(1 / 30);   // 等 pending 全部落地
+  const boss = w.enemies.find((e) => e.boss);
+  const gunner = w.enemies.find((e) => !e.boss);
+  assert.ok(boss, '第 5 波必须刷出 Boss');
+  assert.equal(boss.speed, ENEMY_TYPES.boss_breaker.speed,
+    `Boss 速度必须是表内绝对值 ${ENEMY_TYPES.boss_breaker.speed}，实际 ${boss.speed}`);
+  assert.ok(gunner && gunner.speed > 5 && gunner.speed < 20,
+    `小兵速度应为基础速度 × 倍率，实际 ${gunner?.speed}`);
+  ok('Boss 用绝对速度、小兵用倍率，两者不再混乘');
 }
 
 console.log(`\n全部通过：${pass} 项\n`);

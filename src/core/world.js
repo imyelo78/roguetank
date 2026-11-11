@@ -989,7 +989,11 @@ export class World {
       turretYaw: 0,
       hp,
       maxHp: hp,
-      speed: (8.5 + Math.min(4.5, this.wave * 0.6)) * tpl.speed,
+      // ⚠ tpl.speed 有两种语义：小兵是**倍率**（gunner=1），Boss 是**绝对速度**
+      // （breaker=7.2 m/s）。混乘的后果：第 5 波破城者 = 基础 10 × 7.2 = 72 m/s，
+      // 是玩家（15 m/s）的近 5 倍——"跑起来像飞一样"。Boss 直接用绝对值，
+      // 与单机 Enemy.js 的行为对齐。
+      speed: tpl.boss ? tpl.speed : (8.5 + Math.min(4.5, this.wave * 0.6)) * tpl.speed,
       radius: tpl.radius,
       damage: tpl.damage,
       range: tpl.range,
