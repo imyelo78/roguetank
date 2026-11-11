@@ -28,6 +28,11 @@ import { CHASSIS_TABLE, normalizeChassisId } from '../chassis.js';
 // 局内成长（抽卡/应用）：纯函数，单机与联机共用同一份卡池与权重
 import { createStats } from '../upgrades.js';
 import { rollForPlayer, applyCard } from './progression.js';
+// 武器解算：纯函数无依赖，服务端直接复用单机同一套
+// （伤害/射速/弹速/穿甲/高爆/多联装全在这一个函数里算齐）。
+// 以前联机的 _playerFire 只认 PLAYER_WEAPON 的裸数值，syncedStats
+// 同步的 8 项成长字段没有一项被消费——multishot 叠到 3 仍只发 1 发。
+import { resolveWeapon } from '../weapons.js';
 
 export { HALF };
 
@@ -546,23 +551,36 @@ export class World {
   }
 
   _playerFire(p) {
-    const w = PLAYER_WEAPON;
+    // r30：与单机同一套武器解算。damageMul/fireRateMul/bulletSpeedMul/
+    // weaponMods/multishot/pierce/explosive 至此全部生效——
+    // 以前这里只认 PLAYER_WEAPON 裸数值，玩家拿卡等于拿了个寂寞。
+    const w = resolveWeapon(p.stats);
     p.fireCd = w.fireCd;
     p.stats.shots++;
-    const yaw = p.turretYaw;
-    this.bullets.push({
-      id: nextId(),
-      x: p.x + Math.sin(yaw) * 2.2,
-      z: p.z + Math.cos(yaw) * 2.2,
-      yaw,
-      vx: Math.sin(yaw) * w.bulletSpeed,
-      vz: Math.cos(yaw) * w.bulletSpeed,
-      team: 0,
-      owner: p.id,
-      damage: w.damage,
-      life: 2.2,
-    });
-    this._pushEvent({ kind: 'shot', id: p.id, x: p.x, z: p.z, yaw });
+    const base = p.turretYaw;
+    // 多联装：与单机 _firePlayer 相同的对称散布
+    const n = Math.max(1, Math.round(p.stats.multishot));
+    const spread = 0.055;
+    for (let i = 0; i < n; i++) {
+      const jitter = w.spread ? (this.rng.combat() - 0.5) * w.spread * 2 : 0;
+      const yaw = base + (i - (n - 1) / 2) * spread + jitter;
+      this.bullets.push({
+        id: nextId(),
+        x: p.x + Math.sin(yaw) * 2.2,
+        z: p.z + Math.cos(yaw) * 2.2,
+        yaw,
+        vx: Math.sin(yaw) * w.bulletSpeed,
+        vz: Math.cos(yaw) * w.bulletSpeed,
+        team: 0,
+        owner: p.id,
+        damage: w.damage,
+        life: 2.2,
+        pierce: w.pierce,
+        explosive: w.explosive,
+        splashMul: w.splashMul,
+      });
+    }
+    this._pushEvent({ kind: 'shot', id: p.id, x: p.x, z: p.z, yaw: base });
   }
 
   // ---------------- 敌人 ----------------
@@ -748,23 +766,32 @@ export class World {
       // 远程开火：射程内且炮塔确实指到"能打中"的位置（弧长判据：
       // 角度 × 距离 < 1.2 米。裸角度 0.35 在 25 米处是 8.8 米偏差，
       // 炮塔差着大半格就开炮，弹永远擦身而过）。
+      // 棱镜三连点射：0.1 秒一发共 3 发（与单机 Enemy.js 同参数）。
+      // 以前联机棱镜只打单发，Boss 伤害只有单机一半。
+      if ((e.burst || 0) > 0) {
+        e.burstT -= dt;
+        if (e.burstT <= 0) {
+          e.burstT = 0.1;
+          e.burst -= 1;
+          this._enemyBullet(e, fireYaw + (this.rng.combat() - 0.5) * 0.05);
+          this._pushEvent({ kind: 'eshot', id: e.id });
+        }
+      }
       if (e.range > 0 && e.fireCd <= 0 && dist < e.range && Math.abs(tdiff) * dist < 1.2) {
         e.fireCd = e.fireCdRange[0] + this.rng.combat() * (e.fireCdRange[1] - e.fireCdRange[0]);
         // 命中率：给子弹一点散布，避免"弹弹必中"变成无解消耗
         const spread = 0.06;
-        const yaw = e.turretYaw + (this.rng.combat() - 0.5) * spread * 2;
-        this.bullets.push({
-          id: nextId(),
-          x: e.x + Math.sin(yaw) * 1.6,
-          z: e.z + Math.cos(yaw) * 1.6,
-          yaw,
-          vx: Math.sin(yaw) * e.bulletSpeed,
-          vz: Math.cos(yaw) * e.bulletSpeed,
-          team: 1,
-          owner: e.id,
-          damage: e.damage,
-          life: 2.6,
-        });
+        const yaw0 = e.turretYaw + (this.rng.combat() - 0.5) * spread * 2;
+        if (e.type === 'boss_breaker') {
+          // 破城者三连发：中间稳定命中、两侧封走位（与单机同散布 ±0.15）
+          for (const off of [-0.15, 0, 0.15]) this._enemyBullet(e, yaw0 + off);
+        } else if (e.type === 'boss_prism') {
+          e.burst = 3;
+          e.burstT = 0;
+          this._enemyBullet(e, yaw0);
+        } else {
+          this._enemyBullet(e, yaw0);
+        }
         // 敌人开炮事件：只带 id（坐标客户端自己从实体上读，省字节）。
         // 客户端拿它在小地图上闪一下——联机里没有炮口火光也没有音效，
         // 这是玩家唯一能察觉"有人朝我开火"的信号。
@@ -781,6 +808,22 @@ export class World {
         }
       }
     }
+  }
+
+  /** 敌方一发子弹（收拢了三处重复的 push） */
+  _enemyBullet(e, yaw) {
+    this.bullets.push({
+      id: nextId(),
+      x: e.x + Math.sin(yaw) * 1.6,
+      z: e.z + Math.cos(yaw) * 1.6,
+      yaw,
+      vx: Math.sin(yaw) * e.bulletSpeed,
+      vz: Math.cos(yaw) * e.bulletSpeed,
+      team: 1,
+      owner: e.id,
+      damage: e.damage,
+      life: 2.6,
+    });
   }
 
   _explodeEnemy(e, target) {
@@ -814,6 +857,8 @@ export class World {
       if (b.team === 0) {
         for (const e of this.enemies) {
           if (!e.alive) continue;
+          // 穿透弹已经伤过的目标不再重复判定（同一颗弹只伤同一目标一次）
+          if (b.hitIds && b.hitIds.has(e.id)) continue;
           const d = segCircle(px, pz, b.x, b.z, e.x, e.z, e.radius + 0.4);
           if (d >= 0) onSeg.push({ t: d, e });
         }
@@ -837,7 +882,15 @@ export class World {
 
       if (hit.enemy) {
         this._hitEnemy(hit.enemy, b.damage, b.owner, b);
-        dead = true;
+        // 高爆弹头：命中点溅射，直接命中的目标不重复吃（与单机 _explodeAt 同参）
+        if (b.explosive > 0) this._splashAt(b, hit.enemy);
+        // 穿透：消耗一次次数后继续飞行（与单机同规则）
+        if (b.pierce > 0) {
+          b.pierce -= 1;
+          (b.hitIds = b.hitIds || new Set()).add(hit.enemy.id);
+        } else {
+          dead = true;
+        }
       } else if (hit.player) {
         this._damagePlayer(hit.player, b.damage, b.owner);
         dead = true;
@@ -845,6 +898,22 @@ export class World {
 
       if (dead) this.bullets.splice(i, 1);
     }
+  }
+
+  /** 高爆溅射：以弹着点为圆心的范围伤害，伤害吃持有者的 splashDamageMul */
+  _splashAt(bullet, direct) {
+    const radius = 4.2 * (bullet.splashMul || 1);
+    const owner = this.players.find((p) => p.id === bullet.owner);
+    const mul = owner ? owner.stats.splashDamageMul : 1;
+    const damage = 30 * bullet.explosive * mul;
+    for (const e of this.enemies) {
+      if (!e.alive || e === direct) continue;
+      if (Math.hypot(e.x - bullet.x, e.z - bullet.z) < radius) {
+        this._hitEnemy(e, damage, bullet.owner, bullet);
+      }
+    }
+    // 客户端复用自爆兵的 boom 事件播爆炸特效
+    this._pushEvent({ kind: 'boom', x: bullet.x, z: bullet.z, r: radius });
   }
 
   _hitEnemy(e, damage, ownerId, bullet) {
@@ -951,9 +1020,10 @@ export class World {
       this.waveActive = false;
       this.waveGap = 4;
       // 清完一波给全员补一口：小局制 + 倒地救援之外的第二层容错
+      // r30：纳米修复（waveHeal）卡的固定回血也计入——以前这张卡联机白拿
       for (const p of this.players) {
         if (p.alive && !p.down) {
-          p.hp = Math.min(p.maxHp, p.hp + p.maxHp * WAVE_HEAL);
+          p.hp = Math.min(p.maxHp, p.hp + p.maxHp * WAVE_HEAL + (p.stats.waveHeal || 0));
         }
       }
       this._pushEvent({ kind: 'cleared', wave: this.wave });

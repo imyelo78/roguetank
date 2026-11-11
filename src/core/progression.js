@@ -100,6 +100,7 @@ export function applyCard(p, id) {
   p.speedBase = s.speed;
   p.maxHp = s.maxHp;
   p.hp = Math.min(p.hp, p.maxHp);
+  p.killHeal = s.killHeal; // 击杀回血卡：不落到 p 上，_hitEnemy 读不到
 
   return { ok: true, hp: Math.round(p.hp), maxHp: p.maxHp };
 }
