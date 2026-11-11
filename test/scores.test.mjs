@@ -2,7 +2,26 @@
 // 运行：node test/scores.test.mjs
 
 import assert from 'node:assert/strict';
-import { onRequestGet, onRequestPost, __test } from '../functions/api/scores.js';
+import { handleGet, handlePost, __test } from '../functions/api/_lib/leaderboard.js';
+
+// 旧站（Cloudflare Pages）已下线，functions/api/scores.js 壳已删除。
+// 测试直接驱动 leaderboard.js 本体，这里补一个行为等价的薄壳：
+// 同样处理"未绑定 KV → kv-unbound"，响应带 status 和 json()。
+const json = (data, status = 200) => ({ status, json: async () => data });
+const kvOf = (env) => (env && env.DAILY_SCORES) || null;
+const onRequestGet = ({ env, request }) => {
+  const kv = kvOf(env);
+  if (!kv) return Promise.resolve(json({ ok: false, reason: 'kv-unbound' }));
+  return handleGet(kv, new URL(request.url)).then((r) => json(r.body, r.status));
+};
+const onRequestPost = ({ env, request }) => {
+  const kv = kvOf(env);
+  if (!kv) return Promise.resolve(json({ ok: false, reason: 'kv-unbound' }));
+  return request.json()
+    .then((body) => handlePost(kv, body))
+    .then((r) => json(r.body, r.status));
+};
+
 
 const { mergeEntry, normalizeEntry, todayKey } = __test;
 

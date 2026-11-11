@@ -1,5 +1,7 @@
 import * as THREE from '../vendor/three.module.js';
-import { createLevel, PLAYER_START } from './level.js';
+import { createLevel, PLAYER_START, HALF } from './level.js';
+import { generateBoxes } from './core/levelgen.js';
+import { buildTerrain, presetK, TERRAIN } from './core/terrain.js';
 import { Tank } from './Tank.js';
 import { Enemy } from './Enemy.js';
 import { Bullet } from './Bullet.js';
@@ -7,7 +9,9 @@ import { Effects } from './Effects.js';
 import { HUD } from './HUD.js';
 import { createStats, UPGRADES, rollChoices } from './upgrades.js';
 import { WEAPONS, resolveWeapon } from './weapons.js';
-import { CHASSIS } from './chassis.js';
+import { CHASSIS, CHASSIS_TABLE, normalizeChassisId } from './chassis.js';
+import { followStep, validateFollow } from './core/camera.js';
+import { HIT_TOP, AIM_BODY_Y, FLAT_SLOPE } from './core/aim.js';
 import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
 import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
@@ -16,6 +20,7 @@ import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
 import { CoopMode } from './coop.js';
 import { NetClient } from './net.js';
+import { angleDiff } from './core/motion.js';
 
 const TMP = new THREE.Vector3();
 const TMP2 = new THREE.Vector3();
@@ -89,7 +94,7 @@ export class Game {
     this.clearedTimer = 0;
 
     this.stats = createStats();
-    this.chassisId = 'balanced';
+    this.chassisId = 'panther';
     this.mods = { ...MODIFIER_DEFAULTS };
     this.sound = new Sound();
     this.upgradeCounts = {};
@@ -170,12 +175,16 @@ export class Game {
     this.scene.add(sun);
     this.scene.add(sun.target);
 
-    // 单机版没有服务端下发，允许用 URL 参数试地形（?terrain=gentle / 1 / 1.5）。
-    // 联机不要这么干：四个人必须用同一个强度，那边由服务端统一下发。
-    const tq = new URLSearchParams(location.search).get('terrain');
-    const TERRAIN_PRESETS = { flat: 0, gentle: 0.45, standard: 1, rugged: 1.5 };
-    const terrainScale = tq == null ? 0 : (tq in TERRAIN_PRESETS ? TERRAIN_PRESETS[tq] : (Math.max(0, Number(tq) || 0)));
-    this.world = createLevel(this.scene, terrainScale);
+    // 单机版没有服务端下发，地形由本局种子派生（每局一张新地表）。
+    //   ?terrain=off|light|standard|harsh  改强度档
+    //   ?tseed=12345                       钉死地形，用来复现某一局 / 截图 / 调关卡
+    // 联机不要读这两个参数：四个人必须是同一张图，那边由服务端统一下发。
+    const tq = new URLSearchParams(location.search);
+    this.terrainPreset = tq.get('terrain') || 'standard';
+    this.terrainSeedFixed = tq.has('tseed') ? ((Number(tq.get('tseed')) || 0) >>> 0) : null;
+    // ?map=old 回到"建筑固定"的旧布局（seed 0 = 不扰动），方便对比新旧图
+    this.mapSeedFixed = tq.get('map') === 'old' ? 0 : null;
+    this.world = createLevel(this.scene, null); // 先建空图，start() 里按种子铺地表
     this.nav = createNav(this.world);
     this.effects = new Effects(this.scene);
 
@@ -202,6 +211,11 @@ export class Game {
 
     this.camLook = new THREE.Vector3(0, 1, 26);
 
+    // 玩家真实速度（米/秒，逐帧由位移反推）。
+    // 敌方主炮的提前量要用它——不能拿"按键方向 × 最高速度"凑，
+    // 那样撞墙、上坡减速时预判会打到不存在的位置。
+    this.playerVel = { x: 0, z: 0 };
+
     // 上次没传成功的成绩，进游戏时静默补传一次
     flushPending().catch(() => {});
   }
@@ -211,7 +225,8 @@ export class Game {
       this.scene.remove(this.player.group);
       this.player = null;
     }
-    const c = CHASSIS[this.chassisId] || CHASSIS.balanced;
+    const c = CHASSIS[normalizeChassisId(this.chassisId)];
+    const ct = CHASSIS_TABLE[normalizeChassisId(this.chassisId)];
     this.player = new Tank(this.scene, {
       team: 'player',
       chassis: this.chassisId,
@@ -221,6 +236,9 @@ export class Game {
       metal: c.colors.metal,
       hp: this.stats.maxHp,
       speed: this.stats.speed,
+      // 炮塔：与联机端读同一张表，均衡/重装全向瞬间，轻装/猎手全向 170°/s
+      turretRate: ct.turretRate,
+      turretLimit: ct.turretLimit,
       x: PLAYER_START.x,
       z: PLAYER_START.z,
       rotY: Math.PI,
@@ -290,8 +308,11 @@ export class Game {
         return;
       }
 
-      // 开始菜单：1~4 选车体
-      if (this.state === 'menu' && ['1', '2', '3', '4'].includes(k)) {
+      // 开始菜单：1~4 选车体。
+      // 焦点在输入框里时不能抢键 —— 呼号允许数字（"铁骑01"），
+      // 抢了就等于"想打数字结果换了车体"，而且输入框里还没输进去。
+      const typing = document.activeElement?.tagName === 'INPUT';
+      if (this.state === 'menu' && !typing && ['1', '2', '3', '4'].includes(k)) {
         this.hud.selectChassis(Number(k) - 1);
         e.preventDefault();
         return;
@@ -368,7 +389,7 @@ export class Game {
         this.mode = 'solo';
         this.restart();
       },
-      onPick: (id) => this.pickUpgrade(id),
+      onPick: (id) => this._pickCard(id),
       onWeapon: (id) => this.pickWeapon(id),
     });
 
@@ -453,6 +474,42 @@ export class Game {
     return this.seed;
   }
 
+  /**
+   * 按本局种子铺地表。
+   *
+   * 为什么放在 start() 而不是构造时：重开一局要换一张图（fresh 的地表），
+   * 但菜单背景不能每帧重建地面几何体。start 是唯一的"这局开始"的时点。
+   *
+   * 异或常数与 server/room.js 的做法一致：让"地形图案"和"波次序列"不共用一条流，
+   * 否则以后调地形生成算法的步数，整局的出怪顺序会跟着变。
+   */
+  _applyTerrain(seed) {
+    const tseed = this.terrainSeedFixed != null ? this.terrainSeedFixed : ((seed ^ 0x7e3a91) >>> 0);
+    const map = buildTerrain(tseed, HALF, { k: presetK(this.terrainPreset) });
+    this.terrainMap = map;
+    this.world.setTerrain(map);
+    this.minimap?.setTerrain?.(map);
+    this._terrainTick = 0;
+    return map;
+  }
+
+  /**
+   * 按种子换一套建筑。
+   *
+   * 建筑是三件东西：碰撞表（world）、导航网格（nav）、小地图底图（minimap）。
+   * 三者必须一起换，漏掉一个就会出现"能穿墙"或"AI 对着空气绕路"。
+   * nav 是启动时按地图烘焙一次的，换图只能重建；一张 200×200 的网格
+   * 大概 1~2ms，只在开局跑一次，不进帧循环。
+   */
+  _applyLayout(seed) {
+    // `?map=old` 可以钉死上一版的固定布局，方便对比新旧图、复现老录像
+    const mid = this.mapSeedFixed != null ? this.mapSeedFixed : seed;
+    this.world.setLayout(generateBoxes(mid));
+    this.nav = createNav(this.world);
+    this.minimap?.invalidate?.();
+    return mid;
+  }
+
   start(chassisId, opts = {}) {
     // 出击时收回输入框焦点并清空按键，避免呼号框吃掉游戏按键 / 菜单按键残留
     if (document.activeElement && document.activeElement !== document.body) {
@@ -460,12 +517,14 @@ export class Game {
     }
     this.keys.clear();
     this.firing = false;
-    if (chassisId && CHASSIS[chassisId]) this.chassisId = chassisId;
+    this.chassisId = normalizeChassisId(chassisId);
     if (opts.name) this.callsign = opts.name;
 
     // 普通模式：每局随机（同一天不再固定，玩法本来就允许挑图）
     const seed = opts.seed != null ? opts.seed >>> 0 : randomSeed();
     this._applySeed(seed);
+    this._applyTerrain(seed);
+    this._applyLayout(seed);
     this.sound.unlock();
     this._clearField();
     this._resetRun();
@@ -485,12 +544,19 @@ export class Game {
     this._resetPlayer();
     this.camera.position.set(PLAYER_START.x, CAM_HEIGHT, PLAYER_START.z + CAM_BACK);
     this.camLook.set(PLAYER_START.x, 1, PLAYER_START.z);
+    // 清掉逐帧速度缓存：否则第一帧的"速度"是 (新位置 - 上一局最后位置) / dt，
+    // 会是一个荒唐的大值，相机跟着前馈飞出去。
+    this._lastPlayerX = null;
+    this._lastPlayerZ = null;
+    this.playerVel.x = 0;
+    this.playerVel.z = 0;
     this.aimPoint.set(PLAYER_START.x, 0, PLAYER_START.z - 10);
     this.hud.setHealth(this.player.hp, this.player.maxHp);
 
     this.hud.startPlaying();
     this.state = 'playing';
     this.aimMarker.visible = true;
+    this.camera.lookAt(this.camLook);
     const c = CHASSIS[this.chassisId];
     this.hud.showMessage(`${c.name} · 出击 ｜ ${this.mods.icon} ${this.mods.name} · ${this.mods.desc}`, 2.6);
     this.startWave(1);
@@ -782,9 +848,34 @@ export class Game {
   // ------------------------------------------------------------------
   fire(tank, dir, damage, team, opts = {}) {
     const pos = tank.muzzleWorld(new THREE.Vector3());
+
+    // 高度放行校验：高个子炮口发射的水平弹永远打不到人。
+    //
+    // 这条曾经是"破城者主炮一点伤害都没有"的元凶：Boss 模型放大后炮口
+    // 在 2.89 米（棱镜 2.39 米），而玩家命中判定的上限是 HIT_TOP = 2.3 米，
+    // 平射出去的炮弹从头顶掠过、判定永远不成立，玩家只看到它在开炮。
+    //
+    // 这里只拦**几乎平射**的弹（|俯角| < 1.4°）：
+    // Boss 主炮在 Enemy 里已经按实际交战距离算好了俯角（flatPitch，斜率
+    // 0.03~0.12），这个兜底绝不能碰它——曾经把"俯角不足"的判据写成了
+    // 0.18，又用方向向量的水平长度（≈1）当距离去除高度差，算出 1.8 的
+    // 斜率，把好好的弹压成 60° 砸在 Boss 脚下（实测离玩家最近 12 米）。
+    let vx = dir.x;
+    let vy = dir.y;
+    let vz = dir.z;
+    let aim = dir;
+    const horiz = Math.hypot(vx, vz);
+    if (team !== 'player' && horiz > 1e-4 && vy / horiz > -FLAT_SLOPE) {
+      // fire() 不知道目标多远，按典型交战距离 18 米补：2.89 米的炮口压出
+      // 0.10 的斜率（5.6°），14~25 米全程都在 0~2.3 米的判定带里；
+      // 1.6 米的小兵炮口只压 0.03，弹道几乎不变。
+      const need = (pos.y - AIM_BODY_Y) / 18;
+      aim = TMP3.set(vx, -Math.max(FLAT_SLOPE, need), vz).normalize();
+    }
+
     this.bullets.push(new Bullet(this.scene, {
       pos,
-      dir,
+      dir: aim,
       team,
       damage,
       speed: opts.speed ?? (team === 'player' ? 68 : 50),
@@ -796,7 +887,7 @@ export class Game {
       glow: opts.glow,
       scale: opts.scale ?? 1,
     }));
-    this.effects.muzzle(pos, dir);
+    this.effects.muzzle(pos, aim);
     tank.recoil();
     this.sound.shoot(team, opts.weaponKind);
     if (team === 'player') this.shake = Math.max(this.shake, 0.1);
@@ -829,15 +920,59 @@ export class Game {
   _updateAim() {
     this.aimRay.setFromCamera(this.mouseNDC, this.camera);
     const hit = this.aimRay.ray.intersectPlane(this.groundPlane, TMP);
-    if (hit) {
-      this.aimPoint.copy(TMP);
-      this.aimMarker.position.set(TMP.x, 0.06, TMP.z);
+    if (!hit) return;
+    this.aimPoint.copy(TMP);
+
+    // 指示环跟随**炮口实际指向**，不是鼠标。
+    // 炮塔转速有限（轻装 / 猎手 170°/s），鼠标已经甩到侧面时炮口还在半路——
+    // 环如果挂在鼠标上，玩家会以为"瞄准了却打不中"。
+    // 现在环会停在炮口真正能到的位置并变红，转到位后自动变回正常色。
+    let mx = TMP.x;
+    let mz = TMP.z;
+    const p = this.player;
+    if (p && p.alive) {
+      const dx0 = TMP.x - p.x;
+      const dz0 = TMP.z - p.z;
+      const dist = Math.hypot(dx0, dz0);
+      if (dist > 1.2) {
+        const off = angleDiff(Math.atan2(dx0, dz0), p.turretYaw);
+        const clipped = Math.abs(off) > 0.03;
+        if (clipped) {
+          const r = Math.min(dist, 14);
+          mx = p.x + Math.sin(p.turretYaw) * r;
+          mz = p.z + Math.cos(p.turretYaw) * r;
+        }
+        this.aimMarker.material.color.setHex(clipped ? 0xd0553a : 0xff9a3d);
+        this.aimMarker.material.opacity = clipped ? 0.55 : 0.75;
+      }
     }
+    this.aimMarker.position.set(mx, 0.06, mz);
+  }
+
+  /** 顶部地表指示：0.12 秒刷一次就够，玩家看不出差别，还省 DOM 重排 */
+  _updateTerrainChip(dt) {
+    this._terrainAcc = (this._terrainAcc || 0) + dt;
+    if (this._terrainAcc < 0.12) return;
+    this._terrainAcc = 0;
+    // 单机 Tank 没有 x/z 字段，位置只存在 group.position 上
+    const p = this.player?.group?.position;
+    if (!p || !this.world.hasTerrain) { this.hud.setTerrain(null); return; }
+    const t = TERRAIN[this.world.terrainAt(p.x, p.z)];
+    this.hud.setTerrain({
+      name: t.name,
+      color: '#' + t.color.toString(16).padStart(6, '0'),
+      speed: this.world.speedAt(p.x, p.z),
+    });
   }
 
   _updatePlayer(dt) {
     const player = this.player;
     if (!player.alive) return;
+
+    // 位移前的位置：函数末尾用它反推本帧速度，供敌方主炮算提前量
+    const pos = player.group.position;
+    const ox = pos.x;
+    const oz = pos.z;
 
     let mx = 0;
     let mz = 0;
@@ -852,7 +987,8 @@ export class Game {
     const dx = this.aimPoint.x - p.x;
     const dz = this.aimPoint.z - p.z;
     const aimLen = Math.hypot(dx, dz);
-    if (aimLen > 1.2) player.setAim(Math.atan2(dx, dz));
+    // 炮塔朝鼠标转，但受射界与转速限制（core/motion.js 的同一份实现）
+    if (aimLen > 1.2) player.aimAt(this.aimPoint.x, this.aimPoint.z, dt);
 
     const w = resolveWeapon(this.stats);
 
@@ -872,7 +1008,11 @@ export class Game {
     this.playerCd -= dt;
     if (this.firing && !this.overheated && this.playerCd <= 0 && aimLen > 1.2) {
       this.playerCd = w.fireCd;
-      this._firePlayer(new THREE.Vector3(dx, 0, dz).normalize(), w);
+      // 弹道走炮口朝向，不是鼠标朝向。
+      // 炮口还在追鼠标（转速上限）时，两者不是一个方向——如果按鼠标方向开火，
+      // 屏幕上炮管指着前面、炮弹却横着飞出去。
+      const fy = player.turretYaw;
+      this._firePlayer(new THREE.Vector3(Math.sin(fy), 0, Math.cos(fy)), w);
 
       if (w.heat) {
         this.heat += w.heat.perShot;
@@ -888,6 +1028,12 @@ export class Game {
     const cd = Math.max(0.01, w.fireCd);
     this.hud.setReload(1 - Math.max(0, this.playerCd) / cd);
     this.hud.setHeat(this.heat, this.overheated, !!w.heat);
+
+    // 本帧实际速度（不是"按了什么键"）：撞墙、坡道减速都会自然反映出来，
+    // 这样敌人预判的是"你真正会到的地方"，而不是"你以为自己会到的地方"。
+    const inv = 1 / Math.max(dt, 1e-4);
+    this.playerVel.x = (pos.x - ox) * inv;
+    this.playerVel.z = (pos.z - oz) * inv;
   }
 
   _separate() {
@@ -976,7 +1122,7 @@ export class Game {
           }
         }
       } else if (this.player.alive && !b.hits.has(this.player)) {
-        if (segDistXZ(b.prev, b.pos, this.player.group.position) < 1.45 && b.pos.y < 2.3) {
+        if (segDistXZ(b.prev, b.pos, this.player.group.position) < 1.45 && b.pos.y < HIT_TOP) {
           hitTarget = this.player;
         }
       }
@@ -1035,7 +1181,7 @@ export class Game {
     if (enemy.sight) this.scene.remove(enemy.sight);
     this.kills += 1;
 
-    // 猎手型：击杀回甲
+    // 击杀回甲（豹式的 perks 为空，这里恒不触发；保留是为了以后做车体变体）
     if (this.stats.killHeal > 0 && this.player.alive && this.player.hp < this.player.maxHp) {
       this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.stats.killHeal);
       this.hud.setHealth(this.player.hp, this.player.maxHp);
@@ -1132,6 +1278,21 @@ export class Game {
     }
     this.sound.clear();
     this.hud.showRewards(this.wave, this.choices, this.upgradeCounts);
+  }
+
+  /**
+   * 卡片点击的唯一入口。面板是单机 / 联机共用的，回调却只有这一个，
+   * 所以必须在这里按模式分流。
+   *
+   * 踩过的坑：以前这里直接是 `onPick: (id) => this.pickUpgrade(id)`。
+   * 单机没问题，联机时 `pickUpgrade` 第一行就是 `if (this.state !== 'reward') return`——
+   * 组队局的 state 是 'coop'，于是**鼠标点卡片完全没反应**，而键盘 1/2/3
+   * 走的是 coop 自己绑的监听，反而能用。面板上还写着「点击卡片，或按 1 2 3」，
+   * 十个玩家里有九个会去点，然后就卡在选卡界面出不来了。
+   */
+  _pickCard(id) {
+    if (this.mode === 'coop' && this.coop) return this.coop.pickCard(id);
+    return this.pickUpgrade(id);
   }
 
   pickUpgrade(id) {
@@ -1295,11 +1456,28 @@ export class Game {
 
   _updateCamera(dt) {
     const p = this.player.group.position;
-    const target = TMP.set(p.x, CAM_HEIGHT, p.z + CAM_BACK);
-    const k = 1 - Math.exp(-5.5 * dt);
-    this.camera.position.lerp(target, k);
+    // 跟随算法与组队共用一份（src/core/camera.js）。见那里的注释：
+    // 纯低通会留下 速度/k ≈ 2 米的滞后，且随地形变速前后变，
+    // 视距跟着伸缩 = "车一跑起来画面一顿一顿地晃"。
+    const v = this.player._camVel || (this.player._camVel = { x: 0, z: 0 });
+    v.x = this._lastPlayerX == null ? 0 : (p.x - this._lastPlayerX) / Math.max(dt, 1e-4);
+    v.z = this._lastPlayerZ == null ? 0 : (p.z - this._lastPlayerZ) / Math.max(dt, 1e-4);
+    this._lastPlayerX = p.x;
+    this._lastPlayerZ = p.z;
 
-    this.camLook.lerp(TMP3.set(p.x, 1.1, p.z), 1 - Math.exp(-8 * dt));
+    const f = followStep(
+      { x: this.camera.position.x, z: this.camera.position.z },
+      { x: p.x, z: p.z },
+      v,
+      Math.round(Math.hypot(v.x, v.z)),      // 标量只用来判断"在不在动"
+      dt,
+      this._followCam || (this._followCam = validateFollow({ back: CAM_BACK, height: CAM_HEIGHT })),
+    );
+    this.camera.position.x = f.x;
+    this.camera.position.z = f.z;
+    this.camera.position.y = f.y;
+
+    this.camLook.set(f.lookX, 1.1, f.lookZ);
     this.camera.lookAt(this.camLook);
 
     if (this.shake > 0) {
@@ -1370,11 +1548,23 @@ export class Game {
     const hz = s.hz || 0;
     // 低于 12Hz 就标红：15Hz 掉了两成说明服务端或链路在拖
     const warn = hz && hz < 12 ? ' ⚠' : '';
+    // 帧率是"卡顿式抖动"的唯一判据：低于 50fps 时，人眼看到的抖是掉帧，
+    // 再怎么调插值和预测都没用 —— 得先降画质 / 关阴影。
+    const fpsWarn = fps < 50 ? ' ⚠低帧' : '';
+
+    // 插值游标被夹死的次数（每秒增量）。持续 > 0 说明远端实体在定格跳帧，
+    // 这是"敌人/队友一跳一跳"的直接证据，和本机帧率无关。
+    const frozenNow = this.net?._interpFrozen ?? 0;
+    const frozenPerSec = this._dbgFrozenBase == null ? 0 : frozenNow - this._dbgFrozenBase;
+    this._dbgFrozenBase = frozenNow;
+    const interpTicks = this.net?._interpTicks ?? 0;
+    const interpMs = interpTicks * (1000 / 30);
+
     this._dbgEl.textContent = [
-      `snap  ${hz.toFixed(1)} Hz${warn}   平均间隔 ${(s.gapMs || 0).toFixed(0)}ms`,
-      `最大间隔 ${(s.gapMax || 0).toFixed(0)}ms   停顿 ${s.stalls || 0} 次`,
-      `ping  ${rtt}ms   fps  ${fps.toFixed(0)}`,
-      `模式  ${this.mode}   房间 ${this.net?.room || '-'}`,
+      `fps   ${fps.toFixed(0)}${fpsWarn}     ping ${rtt}ms`,
+      `snap  ${hz.toFixed(1)} Hz${warn}  间隔 ${(s.gapMs || 0).toFixed(0)}/${(s.gapMax || 0).toFixed(0)}ms`,
+      `插值  ${interpTicks} 格 ${interpMs.toFixed(0)}ms   夹死 ${frozenPerSec}/s`,
+      `停顿 ${s.stalls || 0} 次   模式 ${this.mode}   房间 ${this.net?.room || '-'}`,
     ].join('\n');
   }
 
@@ -1394,6 +1584,7 @@ export class Game {
       this.runTime += dt;
       this._updateAim();
       this._updatePlayer(dt);
+      this._updateTerrainChip(dt);
       // 倒序：冲锋兵自爆时会从数组中移除自身
       for (let i = this.enemies.length - 1; i >= 0; i--) {
         this.enemies[i].update(dt, this);
@@ -1451,12 +1642,15 @@ export class Game {
     this._coopName = name || this.callsign || loadCallsign() || '指挥官';
     this._coopChassis = chassis || this.chassisId;
 
-    hud._netAction = (code) => {
+    hud._netAction = (code, make) => {
       if (hud._joining) return;      // 防连点：一次只连一个房间
       hud._joining = true;
       hud.setLobbyError('');
-      hud.lobbyStatus.textContent = code ? `正在加入 ${code}…` : '正在创建房间…';
-      this.net.connect({ code: code || '', name: this._coopName, chassis: this._coopChassis });
+      // make=1：输入框填了码点「创建房间」→ 用自定义码开新房
+      hud.lobbyStatus.textContent = code
+        ? (make ? `正在用房间码 ${code} 建房…` : `正在加入 ${code}…`)
+        : '正在创建房间…';
+      this.net.connect({ code: code || '', name: this._coopName, chassis: this._coopChassis, make: !!make });
       // 回调注册是幂等的；这里再确保一次，防止早退分支导致"_netAction 是 undefined"
       this._bindNet();
       // 兜底：10 秒还没连上就告诉用户，别让"连接中…"一直转
@@ -1520,6 +1714,8 @@ export class Game {
         this.hud.showRoomChip(this.net.room, m.players.length);
         return;
       }
+      // 服务端下发的自动开局剩余秒数（0 = 没在倒计时），大厅文案按它显示
+      if (typeof m.autoStart === 'number') hud._autoStartLeft = m.autoStart;
       hud.showRoom(
         this.net.room || hud.room,
         m.players,
@@ -1532,7 +1728,24 @@ export class Game {
     this.net.on('event', (list) => this.coop?.onEvents(list));
 
     this.net.on('deny', (m) => {
-      const text = m.text || '连接被拒绝';
+      let text = m.text || '连接被拒绝';
+      // 「房间不存在」九成是两边连的服务器不一样（域名 vs IP、或不同端口），
+      // 把实际连的地址摆出来，两个浏览器一对就知道是不是同一个地方
+      if (m.reason === 'no-room') {
+        text += `（连接的服务器：${location.host}）`;
+        // 再顺手问一下这台服务器上现在开着哪些房间：如果房主的码不在列表里，
+        // 要么是房主看错了旧房间码，要么是两个人根本连的不是同一台服务器——
+        // 一行字把这两种情况都钉死，不用再让用户"多试几次"。
+        try {
+          fetch('/api/rooms').then((r) => r.json()).then((d) => {
+            if (!d?.ok) return;
+            const codes = String(d.codes || '').trim();
+            const hint = codes ? `；这台服务器上现有的房间：${codes}` : '；这台服务器上现在没有任何房间';
+            if (this.mode === 'coop') return;
+            hud.setLobbyError(text + hint);
+          }).catch(() => { /* 拿不到列表就只显示基础提示 */ });
+        } catch { /* 同上 */ }
+      }
       // 被拒绝也是一次连接尝试的终点：必须解锁，否则下一次点"加入"会被防连点挡住，
       // 表现就是"输错一次码之后，再输什么都不动了"。
       hud._joining = false;
@@ -1628,6 +1841,22 @@ export class Game {
 
   /** 本局结束：展示结算并上传成绩（人数计入榜单） */
   async _endCoop(msg) {
+    // 房间被服务端回收（空闲超时）：不是"打完一局"，不能走结算页。
+    // 以前服务端静默删索引，房主这边毫无察觉，界面上房间码还挂着，
+    // 朋友按码进来报"房间不存在"，房主一脸茫然。现在立刻退回主菜单并说清原因。
+    if (msg?.expired) {
+      const wasCoop = this.mode === 'coop';
+      this.leaveCoop();
+      this.net.close();
+      this.hud.roomCode = '';
+      this.hud._lastRoom = '';
+      this.hud.hideRoomChip?.();
+      this.hud.closeLobby();
+      this.hud.showMessage(msg.text || '房间已回收，请重新创建房间', 5);
+      if (wasCoop) this.state = 'menu';
+      return;
+    }
+
     const me = this.coop?.me;
     if (!me) return;
     const myId = this.coop.myId;
@@ -1645,7 +1874,12 @@ export class Game {
     const row = (msg.results || []).find((r) => r.id === myId) || { kills: 0, score: 0 };
     const teamSize = (this.net.players || []).length || 1;
 
-    const base = {
+    // 组队局不上榜（已定方案）。
+    //
+    // 两个口径没法混排：单人一只枪手 100 分，组队是 ENEMY_TYPES.score 的 10 分 × √人数，
+    // 同一张榜上组队永远垫底，排名也就不传递任何信息了。
+    // 所以这里不调 _submitRun、不拉榜，直接给结算页 —— 少一次网络往返，也少一条会失败的路径。
+    this.hud.showGameOver({
       wave: msg.wave || waveNow || 1,
       kills: row.kills || 0,
       score: row.score || 0,
@@ -1654,8 +1888,13 @@ export class Game {
       best: null,
       isNew: false,
       teamScore,
-    };
-    await this._submitRun(base, 'coop', teamSize);
+      mode: 'coop',
+      teamSize,
+      ranked: false,
+      myName: loadCallsign() || '指挥官',
+      leaderboard: [],
+      overall: [],
+    });
     this.hud.closeLobby();
     this.net.close();
   }

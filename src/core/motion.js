@@ -10,9 +10,9 @@
 export const dirX = (yaw) => Math.sin(yaw);
 export const dirZ = (yaw) => Math.cos(yaw);
 
-// 坡度对速度的影响。地形高度场与客户端渲染、服务端模拟共用同一份实现，
+// 地表类型对速度的影响。地形场与客户端渲染、服务端模拟共用同一份实现，
 // 所以这里直接 import，不另写一套公式。
-import { slopeFactor } from './terrain.js';
+import { speedAt } from './terrain.js';
 
 /** 归一化到 [-1,1]，非数字一律当 0 */
 export const clampDir = (v) => {
@@ -69,14 +69,11 @@ export function stepBody(body, input, dt, col, half) {
   // 恒速：不插值、不趋近。原来用 dt*8 的速度斜坡，松键后还会滑 0.2~0.3 秒，
   // 叠加网络延迟与预测校正，体感就是"按了没反应、松了还在动"。
   //
-  // 地形：只有"目标速度"乘坡度系数，位移仍是一步到位。
-  // 不能让位移本身依赖坡度积分——两端浮点差会随帧累积成可见漂移。
-  // col.terrainScale 为 0（旧地图 / 没开地形的房间）时完全走原路径。
+  // 地表：只有"目标速度"乘地形系数，位移仍是一步到位。
+  // 不能让位移本身依赖地形做积分——两端浮点差会随帧累积成可见漂移。
+  // col.terrain 为空（旧地图 / 没开地形的房间）时完全走原路径。
   const baseSpeed = body.speedBase || 15;
-  const ts = col?.terrainScale || 0;
-  body.speed = ts > 0
-    ? baseSpeed * slopeFactor(body.x, body.z, ux, uz, ts)
-    : baseSpeed;
+  body.speed = col?.terrain ? baseSpeed * speedAt(col.terrain, body.x, body.z) : baseSpeed;
 
   // 车头追移动方向。位移是立即生效的，所以方向感不受转速影响。
   const want = Math.atan2(ux, uz);
@@ -155,14 +152,64 @@ export function stepBody(body, input, dt, col, half) {
   if (!col.blocked(body.x, nz, r)) body.z = nz;
 }
 
-/** 炮塔朝世界坐标转（有限转速，避免瞬狙） */
-export function aimTurret(body, aimX, aimZ, dt, radPerSec = 10) {
+/**
+ * 炮塔朝世界坐标转。
+ *
+ * 两个约束同时生效：
+ *   1. 射界 limit —— 相对**车头**的最大偏角（弧度）。全向车 π，受限车 15°，
+ *      全向炮塔 180°（即不限）。
+ *   2. 转速 radPerSec —— 每秒最多转多少弧度。全向炮塔传 TURRET_SNAP_RATE
+ *      就是"瞬间对准"；豹式用这个值。
+ *
+ * 为什么射界夹紧要分两步：
+ *   炮塔是装在车体上的。车体转弯时炮塔必须**立即**跟过去，不能等转速慢慢追，
+ *   否则车头甩 90°，炮口会在车侧外面挂半秒才收回射界内——看起来像炮塔松了。
+ *   所以先用"车体带动"把相对角夹回射界，再用转速追鼠标。
+ *
+ * @param {object} body  { x, z, yaw, turretYaw }
+ * @param {number} aimX  瞄准点世界坐标 X（省略则只做射界夹紧，不追目标）
+ * @param {number} aimZ  瞄准点世界坐标 Z
+ * @param {number} dt
+ * @param {number} radPerSec 炮塔转速上限（rad/s）
+ * @param {number} limit     相对车头的射界半角（rad），默认全向
+ */
+export function aimTurret(body, aimX, aimZ, dt, radPerSec = 10, limit = Math.PI) {
+  // 车头朝向未知（老调用方 / 半成品 body）时按全向处理。
+  // 射界是「相对车头」的概念，车头没定义就没法夹紧；硬算会得到 NaN 角度，
+  // 然后整辆车从所有参照系里一起消失——这类 NaN 传播以前在 speedAt 上踩过一次。
+  const hasYaw = Number.isFinite(body.yaw);
+  const yaw = hasYaw ? body.yaw : 0;
+  const lim = hasYaw && Number.isFinite(limit) && limit > 0 ? Math.min(limit, Math.PI) : Math.PI;
+
+  // 炮塔角自身坏掉时先归位，别让 NaN 顺着加法扩散
+  if (!Number.isFinite(body.turretYaw)) body.turretYaw = yaw;
+
+  // 1) 车体带动炮塔：车体转了多少，炮塔跟着转多少
+  //
+  // turretYaw 存的是**世界角**（协议要传绝对值），所以车体转向后必须补上同样的
+  // 增量，否则"焊在车体上的炮塔"会停留在原地。
+  // 这里不能图省事用 sign(相对角) 直接夹紧：车体右转 90° 时相对角会跳到 -75°，
+  // 按符号夹会把它收到 -15°，炮塔凭空从右边翻到左边——明明只是车转了个身。
+  const prevYaw = Number.isFinite(body._aimYaw) ? body._aimYaw : yaw;
+  const dYaw = angleDiff(yaw, prevYaw);
+  if (dYaw !== 0) body.turretYaw += dYaw;
+  body._aimYaw = yaw;
+
+  // 2) 仍然超界（例如玩家把准星甩到侧后方）就收回射界内
+  const rel = angleDiff(body.turretYaw, yaw);
+  if (Math.abs(rel) > lim) body.turretYaw = yaw + Math.sign(rel) * lim;
+
   if (aimX === undefined || aimZ === undefined) return;
+
+  // 3) 目标角先夹进射界，再按转速追过去
   const want = Math.atan2(aimX - body.x, aimZ - body.z);
-  let diff = want - body.turretYaw;
-  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-  const maxStep = radPerSec * dt;
-  body.turretYaw += Math.sign(diff) * Math.min(Math.abs(diff), maxStep);
+  if (!Number.isFinite(want)) return;
+  const wantRel = Math.max(-lim, Math.min(lim, angleDiff(want, yaw)));
+  const target = yaw + wantRel;
+
+  const d = angleDiff(target, body.turretYaw);
+  const step = Math.max(0, Number(radPerSec) || 0) * dt;
+  body.turretYaw += Math.abs(d) <= step ? d : Math.sign(d) * step;
 }
 
 /** 角度插值（走最短弧） */

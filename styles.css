@@ -156,10 +156,49 @@ html, body {
 
 .hud-center { text-align: center; }
 
+/* 地表指示：脚下是什么地形、跑得动跑不动。
+   位置放在 WAVE 正下方，是玩家视野的落点区（瞄具在中间），
+   不用抬眼看也能瞥到 —— 沼泽里被追时要靠它做决定。 */
+.terrain-chip {
+  /* 块级 + width:fit-content 才独占一行。
+     用 inline-flex 的话它会和 WAVE 框排在同一行（已经踩过一次：
+     截图里「沼泽 68%」贴在 WAVE 右边，像是个无关的小徽章）。 */
+  display: flex;
+  width: fit-content;
+  margin: 6px auto 0;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  letter-spacing: .04em;
+  color: #cfd9c8;
+  background: rgba(12, 18, 23, .66);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 10px;
+  transition: border-color .18s, color .18s;
+}
+.terrain-chip b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #fff;
+}
+.terrain-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: #6e7a52;
+  box-shadow: 0 0 8px rgba(0, 0, 0, .6) inset;
+  transition: background .18s;
+}
+/* 明显减速时整条变暖色，余光也能察觉到"脚下不对" */
+.terrain-chip.slow { color: #ffc98a; border-color: rgba(255, 166, 61, .42); }
+.terrain-chip.fast { color: #a8e0a0; border-color: rgba(150, 220, 140, .3); }
+
 /* 挑战词条标签 */
 .modifier {
-  margin-top: 6px;
-  display: inline-block;
+  display: block;
+  width: fit-content;
+  margin: 6px auto 0;
   font-size: 11px;
   letter-spacing: .04em;
   color: var(--amber-soft);
@@ -468,62 +507,83 @@ html, body {
 }
 .panel h2.fail { color: #ff7a5c; }
 
-.logo-line {
-  width: 46px;
-  height: 3px;
-  margin: 0 auto 16px;
-  border-radius: 2px;
-  background: linear-gradient(90deg, transparent, var(--amber), transparent);
-}
-
-.sub {
-  font-size: 12.5px;
-  color: var(--muted);
-  letter-spacing: .12em;
-  margin: 8px 0 24px;
-}
-
-.keys {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 11px;
-  margin-bottom: 24px;
-}
-.keys li {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #b9c8d4;
-}
-.keys span { margin-left: 8px; color: #7a8e9f; }
-
-/* ---------- 车体选择 ---------- */
-.chassis-block { margin-bottom: 22px; }
-.chassis-title {
-  font-size: 13px;
-  letter-spacing: .1em;
-  color: var(--amber-soft);
-  margin-bottom: 10px;
-}
-.chassis-title span { color: var(--muted); letter-spacing: 0; }
-.chassis-title kbd {
-  padding: 0 4px;
+/* 键位说明搬到右下角浮动块（#key-help），这里只留 kbd 的通用外观 */
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  min-width: 18px;
+  border-radius: 4px;
   border: 1px solid var(--line);
-  border-radius: 3px;
-  font-size: 11px;
+  background: rgba(255, 255, 255, .06);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #cbd7e2;
+  text-align: center;
 }
+
+/* ---------- 模式三选一 ---------- */
+.mode-block { margin-bottom: 13px; }
+.mode-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+.mode-card {
+  padding: 9px 6px 8px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .028);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: center;
+  font-family: inherit;
+  transition: border-color .15s ease, background .15s ease;
+}
+.mode-card:hover { background: rgba(255, 166, 61, .07); border-color: rgba(255, 166, 61, .35); }
+.mode-card.sel {
+  border-color: var(--amber);
+  background: rgba(255, 166, 61, .12);
+  box-shadow: 0 0 0 1px var(--amber) inset;
+}
+.mode-card b { display: block; font-size: 12.5px; letter-spacing: .04em; }
+.mode-card i {
+  display: block;
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted);
+  margin-top: 3px;
+  /* 三张卡里文案长短不一，给足两行高度，卡片才齐平 */
+  min-height: 2.9em;
+}
+.mode-card.sel i { color: var(--amber-soft); }
+/* 未开放的玩法：看得见、点不动。不做成 display:none —— 玩家应该知道后面有什么 */
+.mode-card.off {
+  opacity: .42;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+.mode-card.off:hover { background: rgba(255, 255, 255, .028); border-color: var(--line); }
+
+/* ---------- 车体选择：一行四张 ---------- */
+.chassis-block { margin-bottom: 14px; }
 .chassis-cards {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+}
+/* 只有一款车时，repeat(4,1fr) 会让它挤在左边占 1/4，右边空出三大块。
+   看着像"是不是加载失败了三张"。单卡改成居中定宽的一张名片。 */
+.chassis-cards.single {
+  grid-template-columns: 1fr;
+  max-width: 260px;
+  margin: 0 auto;
 }
 .chassis-card {
   position: relative;
-  padding: 10px 8px 9px;
-  border-radius: 10px;
+  padding: 7px 4px 7px;
+  border-radius: 9px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, .03);
   color: var(--ink);
@@ -540,28 +600,83 @@ html, body {
 }
 .chassis-card .chassis-key {
   position: absolute;
-  top: 5px; left: 7px;
-  font-size: 10px;
+  top: 3px; left: 5px;
+  font-size: 9.5px;
   color: var(--muted);
 }
 .chassis-card.sel .chassis-key { color: var(--amber); }
-.chassis-card .chassis-icon { font-size: 20px; display: block; margin-bottom: 3px; }
-.chassis-card b { display: block; font-size: 13px; letter-spacing: .04em; }
+.chassis-card .chassis-icon { font-size: 17px; display: block; line-height: 1.2; }
+.chassis-card b { display: block; font-size: 12.5px; letter-spacing: .03em; margin-top: 1px; }
 .chassis-card i {
-  display: block;
+  display: flex;
+  justify-content: center;
+  gap: 0;
   font-style: normal;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
-  margin-top: 3px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
 }
+/* 分隔点用伪元素：窄屏时把 content 清空、整行转竖排，
+   不然 390px 宽的屏幕上「170 甲 · 12.5 速」会折成两行还溢出卡片 */
+.chassis-card i span + span::before { content: '·'; margin: 0 4px; }
 .chassis-card em {
   display: block;
   font-style: normal;
-  font-size: 10.5px;
+  font-size: 9.5px;
   color: var(--amber-soft);
-  margin-top: 2px;
+  margin-top: 1px;
 }
-.start-panel { width: min(92vw, 520px); }
+.chassis-card em.dim { color: #6a7c8c; }
+
+/* ---------- 操作说明：右下角浮动 ----------
+   从主面板里搬出来的原因很实际：呼号 + 模式 + 车体三块已经占满一屏，
+   再加五行键位，1366×768 的笔记本上会把「出击」按钮挤出可视区。
+   解耦之后面板多高都不影响它，窄屏还能收成一行。 */
+.key-help {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 2;
+  width: 176px;
+  border-radius: 10px;
+  background: rgba(10, 15, 20, .78);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .45);
+  overflow: hidden;
+  text-align: left;
+}
+.key-help-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: rgba(255, 255, 255, .04);
+  color: var(--amber-soft);
+  font-family: inherit;
+  font-size: 10.5px;
+  letter-spacing: .12em;
+  cursor: pointer;
+}
+.key-help-caret {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--muted);
+  transition: transform .18s ease;
+}
+.key-help.collapsed .key-help-caret { transform: rotate(-90deg); }
+/* 旧版键位样式已删除（首页按设计稿重写过，改为绝对定位四行）。
+   这里曾经有一整段 padding:7px 10px 9px / gap:5px / font-size:11px 的规则，
+   以及一条 `.key-help-list span { margin-left: auto }` —— 后者在绝对定位的
+   span 上会把文字推出容器、跑到面板左边画布外（实测"切换解锁过的武器"
+   只有一半可见）。留着就是给下一个人挖坑，直接删干净。
+   新规则见文件末尾「首页右上角常驻排行榜 / 右下角操作说明」两段。 */
+.key-help.collapsed .key-help-list { display: none; }
+
+
 
 /* ---------- 呼号与开始按钮 ---------- */
 .callsign {
@@ -742,7 +857,7 @@ html, body {
 .ghost-btn:hover { background: rgba(255, 166, 61, .1); }
 .start-btns { display: flex; gap: 10px; justify-content: center; }
 .start-btns button {
-  padding: 13px 30px;
+  padding: 12px 30px;
   border-radius: 10px;
   border: 1px solid transparent;
   background: linear-gradient(180deg, #ffb45c, #f08a1d);
@@ -814,18 +929,16 @@ kbd {
   border-bottom-width: 2px;
 }
 
+/* 最佳记录：原来是面板里一整块强调卡（9px 上下内边距 + 边框 + 底色），
+   现在缩成 tip 行里的一段内联文本 —— 首页高度紧张，
+   而"我上次打到第几波"是次要信息，不配占掉 40px。 */
 .best {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-bottom: 18px;
-  padding: 9px 14px;
-  border-radius: 9px;
-  background: rgba(255, 166, 61, .08);
-  border: 1px solid rgba(255, 166, 61, .2);
-  font-size: 12px;
-  color: #b9a382;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-right: 10px;
+  font-size: 11px;
+  color: #8a7a5f;
 }
 .best b {
   color: var(--amber-soft);
@@ -852,7 +965,7 @@ button:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(255, 13
 button:active { transform: translateY(0); }
 
 .tip {
-  margin-top: 16px;
+  margin-top: 12px;
   font-size: 11px;
   color: #6d8090;
   letter-spacing: .06em;
@@ -1052,6 +1165,23 @@ button:active { transform: translateY(0); }
   .panel h1 { font-size: 26px; }
   .reward-head h2 { font-size: 22px; }
   .minimap-wrap { right: 10px; bottom: 104px; padding: 4px; }
+  /* 小屏上车体卡再压一档，保证一行放得下四个 */
+  .chassis-card { padding: 6px 2px; }
+  .chassis-card .chassis-icon { font-size: 15px; }
+  .chassis-card b { font-size: 11.5px; }
+  .chassis-card i { font-size: 9.5px; }
+  .chassis-card i span + span::before { content: ''; margin: 0; }
+  .chassis-card em { font-size: 9px; }
+  .mode-card b { font-size: 11.5px; }
+  .mode-card i { font-size: 9.5px; }
+  .key-help { right: 10px; bottom: 10px; width: 158px; }
+}
+
+/* 手机上四张车体卡只有 76px 宽，装甲和速度横排一定溢出。
+   转竖排：一行装甲、一行速度，宽度需求从 74px 降到 40px。 */
+@media (max-width: 520px) {
+  .chassis-card i { flex-direction: column; line-height: 1.35; }
+  .mode-card i { font-size: 9px; }
 }
 
 /* ---------- 好友挑战：开局横幅 ---------- */
@@ -1124,10 +1254,13 @@ button:active { transform: translateY(0); }
   color: #0d0f11;
   background: var(--muted);
 }
-.chd.c-balanced { background: #8fae5c; }
-.chd.c-light { background: #6f9ab5; }
-.chd.c-heavy { background: #b0b39c; }
-.chd.c-hunter { background: #c79a5a; }
+/* 车体徽章配色。只有豹式一款；旧 id 保留同色，老存档/老排行榜记录
+   带着 balanced/light/heavy/hunter 进来时不会变成没有底色的空块。 */
+.chd.c-panther,
+.chd.c-balanced,
+.chd.c-light,
+.chd.c-heavy,
+.chd.c-hunter { background: #8fae5c; }
 .lb-list li span small { display: block; font-size: 10px; color: rgba(143, 163, 181, .7); }
 
 /* 多人局的人数额标（单人局不显示，避免整榜都是"单人"） */
@@ -1277,6 +1410,27 @@ button:active { transform: translateY(0); }
 }
 .room-chip b { color: var(--amber-soft); letter-spacing: .18em; font-size: 14px; }
 .room-chip i { font-style: normal; color: var(--ink); }
+/* 构建号：只做诊断用，压得很淡，不抢房间码的注意力 */
+.room-chip em { font-style: normal; font-size: 10px; opacity: .45; letter-spacing: .06em; }
+
+/* 页面与服务端构建不一致：这是"你测的是旧包"的直接证据，必须显眼 */
+.build-mismatch {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 99999;
+  max-width: min(92vw, 720px);
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: #7a1d16;
+  border: 1px solid #d4544a;
+  color: #ffe9e6;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .55);
+}
 
 .lobby-status {
   font-size: 12px;
@@ -1308,3 +1462,762 @@ button:active { transform: translateY(0); }
 }
 .gl-fallback b { color: var(--amber-soft); font-size: 13px; }
 .gl-fallback span { color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
+
+/* ==========================================================================
+   首页（主菜单）—— 1:1 还原 Pixso 设计稿「web 1920 / 图纸 2:1」
+
+   设计稿是 1920×1080 的绝对坐标。这里不写死像素，先用 --s 把「1920 基准」
+   缩放到当前视口，再用 calc() 按设计稿数值表达。好处是 1366×768 的笔记本上
+   整块面板等比缩小，不会出现"面板没变、旁边浮动卡片挤到面板上"。
+   数值全部来自 DSL（get_node_dsl），不是目测。
+   ========================================================================== */
+:root {
+  --home-bg: #171717;          /* 3:2 满屏遮罩 rgba(23,23,23,.88) 压在场景上 */
+  --home-panel: #232931;       /* 3:365 面板底 */
+  --home-cream: #f2ca91;       /* 主描边 / 主亮色 */
+  --home-cream-2: #f6e4bd;     /* 次级暖色（榜单描边、名次） */
+  --home-orange: #f79b38;      /* 主按钮 / 高亮模式卡 */
+  --home-line: #f2ca91;
+  --home-text: #ffffff;
+  --home-dim: rgba(255, 255, 255, .60);
+}
+
+/* 主菜单是"战场透过暗幕"的效果：把 overlay 的径向渐变换成设计稿的 #171717@.88，
+   并允许背景场景透出来（叠加在 canvas 上）。 */
+.menu-overlay {
+  background: rgba(23, 23, 23, .88);
+  backdrop-filter: none;
+  /* 设计稿里面板上下留白很足，垂直居中即可 */
+  padding: 24px;
+  --s: 1;
+}
+@media (max-width: 1600px) { .menu-overlay { --s: .92; } }
+@media (max-width: 1440px) { .menu-overlay { --s: .84; } }
+@media (max-height: 900px)  { .menu-overlay { --s: .82; } }
+@media (max-height: 800px)  { .menu-overlay { --s: .72; } }
+@media (max-width: 1100px)  { .menu-overlay { --s: .70; } }
+@media (max-height: 700px)  { .menu-overlay { --s: .62; } }
+
+/* ---------- 中央面板：780×520，圆角 35，1px #f2ca91@.8 ---------- */
+.menu-panel {
+  position: relative;
+  box-sizing: border-box;
+  width: calc(780px * var(--s, 1));
+  min-height: calc(520px * var(--s, 1));
+  padding: calc(44px * var(--s, 1)) calc(60px * var(--s, 1));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: calc(35px * var(--s, 1));
+  background: rgba(35, 41, 49, .80);
+  border: 1px solid rgba(242, 202, 145, .80);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .55);
+  text-align: center;
+  animation: panelIn .3s cubic-bezier(.2, .9, .3, 1.1) both;
+}
+
+/* ---------- 四角菱形装饰（设计稿 16×16 / 6 边 / #f2ca91） ---------- */
+.deco-diamond {
+  position: absolute;
+  width: calc(16px * var(--s, 1));
+  height: calc(16px * var(--s, 1));
+  background: rgba(242, 202, 145, .9);
+  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+  pointer-events: none;
+  opacity: .85;
+  z-index: 1;
+}
+/* 设计稿菱形贴的是面板四角内侧（面板 570,277~1350,797；菱形 596/1308, 302/752）。
+   这里不写死视口坐标——面板宽度随 --s 变，居中之后左右位置也跟着变。
+   直接把菱形挂进 .menu-panel 的角上，用绝对定位内缩 26px。 */
+.d-tl { top: calc(26px * var(--s, 1)); left: calc(26px * var(--s, 1)); }
+.d-tr { top: calc(26px * var(--s, 1)); right: calc(26px * var(--s, 1)); }
+.d-bl { bottom: calc(26px * var(--s, 1)); left: calc(26px * var(--s, 1)); }
+.d-br { bottom: calc(26px * var(--s, 1)); right: calc(26px * var(--s, 1)); }
+
+/* ---------- 标题 ---------- */
+.menu-title { text-align: center; margin-bottom: calc(30px * var(--s, 1)); }
+.menu-title h1 {
+  font-size: calc(46px * var(--s, 1));
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: .04em;
+  background: linear-gradient(180deg, #f2ca91 0%, #f79b38 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin: 0;
+}
+.menu-sub {
+  margin-top: calc(6px * var(--s, 1));
+  font-size: calc(14px * var(--s, 1));
+  letter-spacing: .06em;
+  color: #ffffff;
+  opacity: .88;
+}
+
+/* ---------- 分区小标题「作战模式」20px 粗体 #f79b38 ---------- */
+.menu-section {
+  font-size: calc(20px * var(--s, 1));
+  font-weight: 700;
+  color: var(--home-orange);
+  letter-spacing: .08em;
+  margin-bottom: calc(16px * var(--s, 1));
+}
+
+/* ---------- 三张模式卡：156×88 圆角 15，间距 20 ---------- */
+.mode-block { margin-bottom: calc(26px * var(--s, 1)); width: 100%; }
+.mode-cards {
+  display: flex;
+  justify-content: center;
+  gap: calc(20px * var(--s, 1));
+}
+.mode-card {
+  box-sizing: border-box;
+  width: calc(156px * var(--s, 1));
+  height: calc(88px * var(--s, 1));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(6px * var(--s, 1));
+  border-radius: calc(15px * var(--s, 1));
+  background: rgba(255, 255, 255, .10);
+  border: 1px solid rgba(170, 170, 170, .80);
+  color: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color .16s ease, background .16s ease, transform .16s ease;
+}
+.mode-card:hover { border-color: rgba(242, 202, 145, .8); background: rgba(255, 255, 255, .14); transform: translateY(-1px); }
+.mode-card b {
+  display: block;
+  font-size: calc(18px * var(--s, 1));
+  font-weight: 700;
+  letter-spacing: .04em;
+  line-height: 1.2;
+}
+.mode-card i {
+  display: block;
+  font-style: normal;
+  font-size: calc(12px * var(--s, 1));
+  line-height: 1.3;
+  color: #ffffff;
+  opacity: .85;
+  white-space: nowrap;
+}
+/* 选中态：设计稿 3:373 —— 描边换成 #f79b38@.9，文字转橙 */
+.mode-card.sel {
+  border-color: rgba(247, 155, 56, .90);
+  background: rgba(255, 255, 255, .10);
+}
+.mode-card.sel b { color: #f79b38; }
+.mode-card.sel i { color: #f79b38; opacity: .90; }
+/* 未开放：保留可见性，不做成 display:none —— 玩家该知道后面有什么 */
+.mode-card.off { opacity: .45; cursor: not-allowed; border-style: dashed; }
+.mode-card.off:hover { background: rgba(255, 255, 255, .10); border-color: rgba(170, 170, 170, .8); transform: none; }
+
+/* ---------- 车体：只有豹式一张，做成一条紧凑信息条 ----------
+   设计稿里没有车体选择（当时是四款车），合并成一款后不再需要四宫格。
+   放进 280 宽的输入框上方，保持与呼号、按钮同宽对齐。 */
+.chassis-block { margin-bottom: calc(18px * var(--s, 1)); width: 100%; display: flex; justify-content: center; }
+.chassis-cards { display: flex; justify-content: center; gap: calc(10px * var(--s, 1)); }
+.chassis-card {
+  box-sizing: border-box;
+  width: calc(280px * var(--s, 1));
+  height: calc(44px * var(--s, 1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(10px * var(--s, 1));
+  padding: 0 calc(16px * var(--s, 1));
+  border-radius: calc(10px * var(--s, 1));
+  background: rgba(255, 255, 255, .10);
+  border: 1px solid rgba(242, 202, 145, .60);
+  color: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color .16s ease, background .16s ease;
+}
+.chassis-card.sel { border-color: rgba(247, 155, 56, .90); }
+.chassis-card .chassis-key { display: none; }
+.chassis-card .chassis-icon { font-size: calc(16px * var(--s, 1)); line-height: 1; }
+.chassis-card b { font-size: calc(14px * var(--s, 1)); font-weight: 700; letter-spacing: .04em; }
+.chassis-card i {
+  font-style: normal;
+  font-size: calc(12px * var(--s, 1));
+  color: rgba(255, 255, 255, .75);
+  display: flex;
+  gap: calc(6px * var(--s, 1));
+}
+.chassis-card i span + span::before { content: '·'; margin-right: calc(6px * var(--s, 1)); }
+.chassis-card em {
+  font-style: normal;
+  font-size: calc(11px * var(--s, 1));
+  color: #f79b38;
+  opacity: .9;
+}
+.chassis-card em:empty { display: none; }
+
+/* ---------- 呼号输入框：280×50，圆角 10，1px #f2ca91@.6 ---------- */
+.callsign { width: 100%; display: flex; justify-content: center; margin: 0 0 calc(24px * var(--s, 1)); }
+.callsign input {
+  box-sizing: border-box;
+  width: calc(280px * var(--s, 1));
+  height: calc(50px * var(--s, 1));
+  padding: 0 calc(16px * var(--s, 1));
+  border-radius: calc(10px * var(--s, 1));
+  border: 1px solid rgba(242, 202, 145, .60);
+  background: rgba(255, 255, 255, .15);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: calc(14px * var(--s, 1));
+  text-align: center;
+  outline: none;
+  transition: border-color .16s ease, background .16s ease;
+}
+.callsign input::placeholder { color: rgba(170, 170, 170, .90); }
+.callsign input:focus { border-color: #f79b38; background: rgba(255, 255, 255, .20); }
+.callsign input.shake { animation: shake .4s ease; border-color: #ff6a4a; }
+
+.callsign-err {
+  margin: calc(-14px * var(--s, 1)) 0 calc(12px * var(--s, 1));
+  font-size: calc(12px * var(--s, 1));
+  color: #ff8a6a;
+}
+
+/* ---------- 主按钮：280×50，圆角 10，实心 #f79b38，字 #333 16px 粗 ---------- */
+.start-btns { width: 100%; display: flex; justify-content: center; }
+#start-btn {
+  box-sizing: border-box;
+  width: calc(280px * var(--s, 1));
+  height: calc(50px * var(--s, 1));
+  border: none;
+  border-radius: calc(10px * var(--s, 1));
+  background: #f79b38;
+  color: #333333;
+  font-family: inherit;
+  font-size: calc(16px * var(--s, 1));
+  font-weight: 700;
+  letter-spacing: .08em;
+  cursor: pointer;
+  transition: filter .16s ease, transform .12s ease;
+}
+#start-btn:hover { filter: brightness(1.08); }
+#start-btn:active { transform: translateY(1px); }
+#start-btn:disabled { opacity: .55; cursor: default; }
+
+.tip {
+  margin-top: calc(18px * var(--s, 1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(16px * var(--s, 1));
+  font-size: calc(12px * var(--s, 1));
+  color: rgba(255, 255, 255, .6);
+}
+.tip .link { color: var(--home-cream); }
+.tip .link:hover { color: var(--home-orange); }
+.tip .best b { color: var(--home-cream); }
+
+/* ==========================================================================
+   首页右上角常驻排行榜（设计稿 3:48：176×385 @1721,27）
+   ---------------------------------------------------------------------------
+   所有数值都对着设计稿节点写的，注释里标了节点名和坐标，改之前先回设计稿核对：
+     矩形 12  0,0   176×385 圆角10  #ffffff@.10 + #333333@.80
+     矩形 13  1,1   174×60         #1a1a1a@.50   （顶部标题条）
+     矩形 18  9,10  78×22  圆角5   #f2ca91@.80   （"今日排行"胶囊底）
+     今日排行 20,11  14px/700
+     总排行榜 102,11 14px/700
+     你的名次 10,42   9px
+     人上榜20 129,42  9px 右对齐
+     组合1..10  L9  T65/97/129/161/193/225/257/289/321/353   160×25
+     线       23,94  146×257      （行间竖分隔条）
+   ========================================================================== */
+.menu-board {
+  position: fixed;
+  top: calc(27px * var(--s, 1));
+  right: calc(23px * var(--s, 1));
+  width: calc(176px * var(--s, 1));
+  height: calc(385px * var(--s, 1));
+  box-sizing: border-box;
+  border-radius: calc(10px * var(--s, 1));
+  background: linear-gradient(rgba(255, 255, 255, .10), rgba(255, 255, 255, .10)),
+              rgba(51, 51, 51, .80);
+  border: none;
+  overflow: hidden;
+  text-align: left;
+  z-index: 2;
+}
+
+/* 顶部标题条：174×60 @1,1，只有上两角圆 */
+.mb-bar {
+  position: absolute;
+  left: calc(1px * var(--s, 1));
+  top: calc(1px * var(--s, 1));
+  width: calc(174px * var(--s, 1));
+  height: calc(60px * var(--s, 1));
+  box-sizing: border-box;
+  background: rgba(26, 26, 26, .50);
+  border-radius: calc(10px * var(--s, 1)) calc(10px * var(--s, 1)) 0 0;
+}
+
+/* 两个 tab 用绝对定位对齐设计稿：今日排行 @20,11，总排行榜 @102,11 */
+.mb-tabs {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+.mb-tab {
+  position: absolute;
+  top: calc(11px * var(--s, 1));
+  border: none;
+  background: none;
+  padding: 0;
+  width: auto;                /* 别被父级的宽度撑满，绝对定位下按内容自适应 */
+  display: block;
+  font-family: inherit;
+  font-size: calc(14px * var(--s, 1));
+  font-weight: 700;
+  line-height: calc(21px * var(--s, 1));
+  letter-spacing: .02em;
+  color: #ffffff;
+  cursor: pointer;
+  transition: color .16s ease;
+  white-space: nowrap;
+}
+/* 胶囊底是设计稿里一个独立矩形 78×22 @9,10（相对面板），
+   盖住"今日排行"四个字并向右多伸一截。用伪元素按绝对值画，不靠 padding 撑。 */
+.mb-tab[data-board="day"] {
+  left: calc(20px * var(--s, 1));
+}
+.mb-tab[data-board="all"] {
+  left: calc(102px * var(--s, 1));
+}
+/* 胶囊底：设计稿只有一个，画在"今日排行"下面（矩形 18  78×22 @9,10）。
+   但两个 tab 都可点，所以改成"跟随 .sel"：
+     · 选中今日  → 胶囊左沿 9（= 20 - 11），宽 78，正好盖住四个字多的那一截
+     · 选中总榜  → 胶囊跟着移到 102 - 11 = 91，同样 78 宽
+   设计稿只给了今日态，总榜态按同一规格平移，视觉语言一致。 */
+.mb-tab.sel::before {
+  content: '';
+  position: absolute;
+  left: calc(-11px * var(--s, 1));
+  top: calc(-1px * var(--s, 1));      /* 11 → 10 */
+  width: calc(78px * var(--s, 1));
+  height: calc(22px * var(--s, 1));
+  border-radius: calc(5px * var(--s, 1));
+  background: rgba(242, 202, 145, .80);
+  z-index: -1;
+}
+.mb-tab.sel { color: #1a1a1a; }
+
+/* 你的名次 @10,42 */
+.mb-mine {
+  position: absolute;
+  left: calc(10px * var(--s, 1));
+  top: calc(42px * var(--s, 1));
+  display: flex;
+  align-items: baseline;
+  gap: calc(5px * var(--s, 1));
+  font-size: calc(9px * var(--s, 1));
+  line-height: calc(13px * var(--s, 1));
+  color: #f6e4bd;
+  white-space: nowrap;
+}
+.mb-mine b {
+  font-size: calc(10px * var(--s, 1));
+  font-weight: 400;
+  color: #ffffff;
+}
+/* 人上榜 N @129,42 右对齐 */
+.mb-total {
+  position: absolute;
+  right: calc(7px * var(--s, 1));     /* 176-129-40 = 7 */
+  top: calc(42px * var(--s, 1));
+  font-style: normal;
+  font-size: calc(9px * var(--s, 1));
+  line-height: calc(13px * var(--s, 1));
+  color: #ffffff;
+  white-space: nowrap;
+  text-align: right;
+}
+.mb-total i { font-style: normal; color: #f6e4bd; }
+
+/* 列表：第一行 T65，行距 32，左右各缩进 9，宽 160 */
+.mb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: absolute;
+  left: calc(9px * var(--s, 1));
+  top: calc(65px * var(--s, 1));
+  width: calc(160px * var(--s, 1));
+}
+.mb-row {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: calc(32px * var(--s, 1));
+  box-sizing: border-box;
+}
+/* 行间竖分隔条：设计稿「线」146×257 @23,94（相对面板）。
+   它从第 2 行顶（T97 上方 3px）一直拉到最后，实际就是行与行之间的分隔。
+   用每行右侧的 1px 竖线实现，视觉等价且不用绝对布局。 */
+.mb-row::after {
+  content: '';
+  position: absolute;
+  left: calc(14px * var(--s, 1));   /* 设计稿"线"左起 x=23，行盒左沿 9 → 14 */
+  right: calc(6px * var(--s, 1));   /* 到 x=169，行盒右沿 169 → 0，留 6 收在内容内 */
+  bottom: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, .16);
+}
+.mb-row:last-child::after { display: none; }
+
+/* 行内元素按设计稿绝对定位（基准是 160×25 的行盒，上沿在 T 处、
+   文字 top 是相对该行的偏移）：
+     名次    L0   T6   10px  #f6e4bd
+     昵称    L12  T4   12px  #ffffff
+     分数    L117 T0   11px  #f2ca91  右对齐到 160
+     第N波   L96  T13  8px   #ffffff@.6  右对齐
+     杀敌    L122 T13  8px   @.6
+     时长    L144 T13  8px   @.6          右对齐到 160
+*/
+.mb-row .r {
+  position: absolute;
+  left: 0;
+  top: calc(6px * var(--s, 1));
+  width: calc(12px * var(--s, 1));   /* 两位数（10）也要留出位置，别压到昵称 */
+  font-size: calc(10px * var(--s, 1));
+  line-height: calc(15px * var(--s, 1));
+  color: #f6e4bd;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
+/* 前三名设计稿标了红 / 橙 / 橄榄三色（第3名 #aebc11 看着像草绿，
+   原稿就是这样标的，照抄） */
+.mb-row:nth-child(1) .r { color: #ec0c0c; }
+.mb-row:nth-child(2) .r { color: #d95d0a; }
+.mb-row:nth-child(3) .r { color: #aebc11; }
+
+.mb-row .n {
+  position: absolute;
+  left: calc(15px * var(--s, 1));    /* 设计稿 12，但那是留给 1 位数的；两位名次会压字 */
+  top: calc(4px * var(--s, 1));
+  max-width: calc(93px * var(--s, 1));
+  font-size: calc(12px * var(--s, 1));
+  line-height: calc(18px * var(--s, 1));
+  color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-row .s {
+  position: absolute;
+  right: 0;
+  top: 0;
+  font-size: calc(11px * var(--s, 1));
+  line-height: calc(16px * var(--s, 1));
+  color: #f2ca91;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.mb-row .m {
+  position: absolute;
+  right: 0;
+  top: calc(13px * var(--s, 1));
+  display: flex;
+  gap: calc(5px * var(--s, 1));
+  font-size: calc(8px * var(--s, 1));
+  line-height: calc(12px * var(--s, 1));
+  color: rgba(255, 255, 255, .60);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mb-empty {
+  padding: calc(18px * var(--s, 1)) 0;
+  text-align: center;
+  font-size: calc(11px * var(--s, 1));
+  color: rgba(255, 255, 255, .55);
+}
+
+/* ==========================================================================
+   右下角操作说明（设计稿 3:47：176×218 @1721,836）
+   ---------------------------------------------------------------------------
+     矩形 12  0,0   176×218 圆角10  #ffffff@.10 + #333333@.80
+     矩形 13  1,1   174×36         #1a1a1a@.50   （标题条）
+     操作说明 9,8   14px/700       #f2ca91
+     下箭头1  161,15  8×8          （折叠箭头，纯图形，不是字符）
+     键帽 22×22 圆角5 #ffffff@.15，长键 46×22
+     四行基线：T52 / T94 / T135 / T176，行高 22，行距约 41
+   ========================================================================== */
+.key-help {
+  position: fixed;
+  right: calc(23px * var(--s, 1));
+  bottom: calc(26px * var(--s, 1));
+  width: calc(176px * var(--s, 1));
+  height: calc(218px * var(--s, 1));
+  box-sizing: border-box;
+  border-radius: calc(10px * var(--s, 1));
+  background: linear-gradient(rgba(255, 255, 255, .10), rgba(255, 255, 255, .10)),
+              rgba(51, 51, 51, .80);
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  overflow: hidden;
+  text-align: left;
+  z-index: 2;
+}
+/* 标题条 174×36 @1,1 */
+.key-help-head {
+  position: absolute;
+  left: calc(1px * var(--s, 1));
+  top: calc(1px * var(--s, 1));
+  width: calc(174px * var(--s, 1));
+  height: calc(36px * var(--s, 1));
+  box-sizing: border-box;
+  display: block;
+  padding: 0;
+  border: none;
+  border-radius: calc(10px * var(--s, 1)) calc(10px * var(--s, 1)) 0 0;
+  background: rgba(26, 26, 26, .50);
+  color: #f2ca91;
+  font-family: inherit;
+  font-size: calc(14px * var(--s, 1));
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-align: left;
+  cursor: pointer;
+}
+.key-help-head > span {
+  position: absolute;
+  left: calc(8px * var(--s, 1));      /* 1(面板内缩) + 9 - 1 = 8 */
+  top: calc(7px * var(--s, 1));       /* 8 - 1 */
+  line-height: calc(21px * var(--s, 1));
+  white-space: nowrap;
+}
+/* 下箭头 8×8 @161,15：设计稿是矢量图形，用 CSS 边框画三角，不用字体符号
+   （字体符号在不同系统上大小/基线都不一样，和设计稿对不上） */
+.key-help-caret {
+  position: absolute;
+  left: calc(160px * var(--s, 1));
+  top: calc(14px * var(--s, 1));
+  width: calc(8px * var(--s, 1));
+  height: calc(8px * var(--s, 1));
+  transition: transform .18s ease;
+}
+.key-help-caret::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+  border-left: calc(4px * var(--s, 1)) solid transparent;
+  border-right: calc(4px * var(--s, 1)) solid transparent;
+  border-top: calc(5px * var(--s, 1)) solid rgba(246, 228, 189, .85);
+}
+.key-help.collapsed .key-help-caret { transform: rotate(-90deg); }
+
+/* 四行键位：绝对定位到设计稿的基线 T52/94/135/176 */
+.key-help-list {
+  list-style: none;
+  margin: 0;
+  /* 四行基线 T52/94/135/176，行高 22：
+       第一行从 T52 开始 → padding-top 52
+       行间空隙 = (94-52-22)=20、(135-94-22)=19、(176-135-22)=19
+     用固定高度 22 + margin 精确摆放，不用 flex 的 gap（gap 只能等距，
+     而设计稿三处间距是 20/19/19，差 1px 也不能凑） */
+  padding: calc(52px * var(--s, 1)) 0 0 calc(12px * var(--s, 1));
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+/* 四行键位：绝对定位到设计稿的行基线 T52/94/135/176。
+   ⚠ li 必须 position:static（默认值），否则 li>span 的 right 会相对 li 计算，
+     文字跑到面板外（实测 x=-69）。让绝对定位越过 li 直接落到 .key-help 上。 */
+.key-help-list li {
+  position: static;   /* 关键：让 li>span 的 absolute 落到 .key-help 上 */
+  display: flex;
+  align-items: center;
+  gap: calc(7px * var(--s, 1));
+  white-space: nowrap;
+  height: calc(22px * var(--s, 1));
+  flex: 0 0 auto;
+}
+.key-help-list li + li:nth-child(2) { margin-top: calc(20px * var(--s, 1)); }
+.key-help-list li + li:nth-child(3) { margin-top: calc(19px * var(--s, 1)); }
+.key-help-list li + li:nth-child(4) { margin-top: calc(19px * var(--s, 1)); }
+/* 键帽组：不能再给 li 设绝对定位（会抢走 span 的参照系），
+   所以用一个独立的换算把四行放到 T52/94/135/176。
+   li 是 static + flex，纵向位置靠 .key-help-list 的 padding 与行间 margin 得到。 */
+
+/* 键帽 22×22 圆角5，#ffffff@.15；WASD 之间间隔 7（设计稿 L17/48/77/106） */
+.key-help-list .kk,
+.key-help-list .kw {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: calc(22px * var(--s, 1));
+  min-width: calc(22px * var(--s, 1));
+  padding: 0 calc(4px * var(--s, 1));
+  border-radius: calc(5px * var(--s, 1));
+  border: none;
+  background: rgba(255, 255, 255, .15);
+  font-family: inherit;
+  font-size: calc(12px * var(--s, 1));
+  line-height: 1;
+  color: #ffffff;
+  text-align: center;
+  white-space: nowrap;
+}
+/* 宽键固定 46（设计稿 矩形 9/10/11 都是 46×22） */
+.key-help-list .kw { min-width: calc(46px * var(--s, 1)); }
+
+/* 说明文字贴面板右沿（设计稿"行驶/瞄准/开炮"右沿都在 x=169，
+   "切换解锁过的武器"更长，从 73 起、右沿同样 169）。
+   ⚠ 两个坑，都踩过：
+     1) 不能用 margin-left:auto —— 绝对定位元素上的 auto 边距会把它推出容器；
+     2) right 的参照是**最近的定位祖先**。如果 <li> 自己是 position:absolute，
+        这里 right:7px 就是相对 <li>（宽只有键帽那么宽），文字会跑到 x=-69，
+        也就是面板左边画布外。所以 li 必须是 static，让绝对定位落到 .key-help 上。 */
+.key-help-list li > span {
+  position: absolute;
+  right: calc(7px * var(--s, 1));
+  font-size: calc(12px * var(--s, 1));
+  line-height: calc(22px * var(--s, 1));
+  color: #ffffff;
+  white-space: nowrap;
+}
+/* span 的纵向位置跟它所在的行对齐（绝对定位到面板坐标） */
+.key-help-list li:nth-child(1) > span { top: calc(52px * var(--s, 1)); }
+.key-help-list li:nth-child(2) > span { top: calc(94px * var(--s, 1)); }
+.key-help-list li:nth-child(3) > span { top: calc(135px * var(--s, 1)); }
+.key-help-list li:nth-child(4) > span { top: calc(176px * var(--s, 1)); }
+
+/* 折叠时不显示列表（箭头转向另见 .collapsed 规则） */
+.key-help.collapsed .key-help-list { display: none; }
+
+@media (max-height: 800px), (max-width: 1100px) {
+  /* 矮屏 / 窄屏：设计稿是 1920×1080，1366×768 放不下右侧两张浮动卡。
+     第一版是直接 display:none，结果 1366 用户在首页看不到排行榜和键位提示，
+     等于功能没了。现在改成"整体再缩一档、贴边站好"：
+     面板本身已按 --s 缩过，这里只压浮动卡的尺寸，避免压到中央面板。 */
+  .key-help, .menu-board {
+    transform-origin: top right;
+    scale: 0.82;
+  }
+  .menu-board { top: calc(14px * var(--s, 1)); right: calc(12px * var(--s, 1)); }
+  .key-help { right: calc(12px * var(--s, 1)); bottom: calc(8px * var(--s, 1)); }
+}
+
+@media (max-width: 900px) {
+  /* 再窄就真的没地方放了（会被中央面板盖住），这时才隐藏 */
+  .key-help, .menu-board { display: none !important; }
+}
+
+/* ==========================================================================
+   首页新样式的响应式收尾
+   ---------------------------------------------------------------------------
+   注意顺序：上面那段 max-width:720px / 520px 写在首页新版式**之前**，
+   它们里面还留着按旧四宫格调过的规则（车体卡 padding 6px、字号 11.5px、
+   520px 以下 flex-direction: column 竖排）。首页重写后这些规则会和
+   「单张车体信息条」打架 —— 实测 1920 下「120 甲 / 15 速 / 全向炮塔」
+   被压成三行竖排。这里统一覆盖回来。
+   ========================================================================== */
+@media (max-width: 1500px), (max-height: 860px) {
+  .menu-title h1 { font-size: calc(40px * var(--s, 1)); }
+  .mode-card i { white-space: normal; }
+}
+
+/* 窄屏 / 矮屏：浮动卡片已经隐藏，中央面板占满可用宽度 */
+@media (max-width: 1100px) {
+  .menu-panel {
+    width: min(94vw, 640px);
+    min-height: 0;
+    padding: 32px 24px 28px;
+    --s: 1;
+  }
+  .menu-panel .deco-diamond { display: none; }
+  .menu-panel .menu-title h1 { font-size: 34px; }
+  .menu-panel .menu-sub { font-size: 12.5px; }
+  .menu-panel .menu-section { font-size: 15px; margin-bottom: 12px; }
+  .menu-panel .mode-card { width: auto; flex: 1 1 0; height: auto; padding: 12px 6px; }
+  .menu-panel .mode-card b { font-size: 14px; }
+  .menu-panel .mode-card i { font-size: 10.5px; white-space: normal; }
+  .menu-panel .mode-cards { gap: 8px; }
+  .menu-panel .chassis-card { width: 100%; max-width: 280px; }
+  .menu-panel .callsign input,
+  .menu-panel #start-btn { width: 100%; max-width: 280px; height: 46px; font-size: 15px; }
+  .menu-panel .callsign { margin-bottom: 18px; }
+}
+
+/* 手机：车体信息条恢复成两行（名称一行、参数一行），不再竖排成三列 */
+@media (max-width: 720px) {
+  .menu-panel .chassis-card {
+    height: auto;
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+  .menu-panel .chassis-card i { flex-direction: row; line-height: 1.2; }
+  .menu-panel .chassis-card i span + span::before { content: '·'; margin-right: 6px; }
+  .menu-panel .chassis-card b { font-size: 13.5px; }
+  .menu-panel .chassis-card em { font-size: 11px; }
+  .menu-panel .tip { flex-wrap: wrap; gap: 10px; font-size: 11.5px; }
+}
+
+/* 单卡态：名称与标语同一行，不再有被挤压的 flex 子项 */
+.chassis-card em { white-space: nowrap; }
+.chassis-card em::before { content: '·'; margin-right: calc(6px * var(--s, 1)); opacity: .55; }
+
+/* 单卡态排版：豹式（粗）+ 基础型（橙）+ 120 甲 · 全向炮塔（浅），一行排开。
+   280px 宽的条里，这四段的自然宽度约 34+46+52+72=204px，留 76px 给间距，不会挤。 */
+.chassis-card em { white-space: nowrap; }
+.chassis-card em::before { content: '·'; margin-right: calc(6px * var(--s, 1)); opacity: .55; }
+.chassis-card i { white-space: nowrap; }
+.chassis-card i span { white-space: nowrap; }
+
+/* 榜单行高：设计稿「组合 1~10」实测 T65/97/129/161/193/225/257/289/321/353，
+   行距恒为 32，10 行正好 320px，卡片 385 高留出底部 385-65-320 = 0 的余量。
+   这条规则曾在文件末尾被 `flex: 1 1 0; height: auto` 覆盖过 —— 那版是
+   按"可用高度等分"写的，碰到新的绝对定位布局会让行高塌成 0、文字重叠。
+   现在行长由 .mb-row 自己定死 32，不再需要任何等分规则。 */
+
+/* ==========================================================================
+   面板高度回到设计稿的 520
+   ---------------------------------------------------------------------------
+   设计稿里面板内容总高：标题组 86 + 32（间隔）+ 作战模式标题 30 + 16 + 卡片 88
+   + 32（间隔）+ 输入框 50 + 27（间隔）+ 按钮 50 = 411，上下各留 55 余量 = 521。
+   合并成一款车后多了一条车体信息条（44 高 + 20 间隔），实测撑到 580，
+   上下留白也跟着变多，看着"松"。这里把主标题上下、各块间隔按设计稿比例收紧，
+   让总高回到 520 附近，视觉密度才和原稿一致。
+   ========================================================================== */
+.menu-panel { padding: calc(38px * var(--s, 1)) calc(60px * var(--s, 1)); }
+.menu-title { margin-bottom: calc(20px * var(--s, 1)); }
+.mode-block { margin-bottom: calc(20px * var(--s, 1)); }
+.menu-section { margin-bottom: calc(14px * var(--s, 1)); }
+.chassis-block { margin-bottom: calc(16px * var(--s, 1)); }
+.callsign { margin-bottom: calc(20px * var(--s, 1)); }
+.tip { margin-top: calc(14px * var(--s, 1)); }
+
+/* ==========================================================================
+   车体选择区已从首页移除（设计稿里没有这一栏）
+   ---------------------------------------------------------------------------
+   Pixso 稿 91 段文字里没有任何"豹式 / 车体 / 基础型"，只有标题、三个模式、
+   呼号、按钮、榜单、键位。坦克现在固定为豹式一款，没有可选项，就不该在首页
+   占一行 —— 去掉之后面板高度正好回到设计稿的 520。
+   HUD.renderChassis() 找不到 #chassis-cards 会直接 return，不会报错。
+   ========================================================================== */

@@ -6,15 +6,35 @@
 // 版本 2：输入从"油门 + 方向盘"（f/t）改为八方向平移（mx/mz），与单机操作一致。
 // 必须升版本：老页面留在缓存里会继续发 f/t，服务端按 mx/mz 解出来全是 0，
 // 表现就是"进房间后车完全不动"——比报错难查得多。
-export const PROTOCOL_VERSION = 2;
+// 版本 3：联机成长（每波各自 3 选 1）+ 建筑随种子变化。
+// 必须升版本：v2 客户端收到 CARDS 消息会安静地忽略，玩家会觉得"说好的选卡呢"；
+// 更危险的是 v2 客户端按自己的常量生成建筑，换种子后直接撞假墙。
+export const PROTOCOL_VERSION = 3;
+
+/**
+ * 构建标识。**每次出包都要改**，只用于诊断，不参与协议校验。
+ *
+ * 为什么要有它：联机问题里最常见的假象是"我改了但你测的还是旧包"——
+ * 服务端进程没重启、浏览器缓存了旧 dist、CDN 没刷新，现象和真 bug 一模一样，
+ * 排查方向直接跑偏。页面会把本地 BUILD 和服务端 /healthz 的 build 对比，
+ * 不一致就在左上角红条提示；房间码旁边也会显示当前构建号，截图即可确认版本。
+ */
+export const BUILD = 'r27';
 export const TICK_RATE = 30;
-// 快照率用 20Hz（原来 15Hz）。
-//
-// 为什么提：客户端按服务端 tick 网格做本地预测，残差天然是"0 ~ 1.5 个 tick 的
-// 前进距离"。15Hz 下发时平均残差 0.53 米、最大 1 米，每次软校正都把车往后拽一点，
-// 手感粗糙（用户原话："操作困难、反应很迟钝"）。20Hz 下残差上限降到 0.75 米、
-// 均值 0.37 米；再往上提收益递减，而带宽是线性增长。
-export const SNAPSHOT_RATE = 20;
+/**
+ * 快照率。**必须能整除 TICK_RATE**，否则相邻快照的 tick 差会在两个值之间锯齿，
+ * 客户端插值段长不齐 → 画面轻微抖动（这是 08 版之前一直没除掉的病根）。
+ *
+ * 历史：15Hz（整除，稳）→ 20Hz（不整除，锯齿）→ 回到 15Hz。
+ * 当初提到 20Hz 是为了减小残差，但真正让手感变差的是锯齿，不是残差：
+ * 残差只要不超过 1 个 tick 就不会被看出来，而锯齿每三帧就来一次。
+ *
+ * 改成 15Hz 后：段长恒为 2 格，客户端退 2 格插值，夹死率 6%、最长冻结 1 帧、
+ * 速度突变 ≈ 0；带宽还比 20Hz 低 25%。
+ *
+ * 改这里必须同时改 server/room.js 的 TICKS_PER_SNAP（= TICK_RATE / SNAPSHOT_RATE）。
+ */
+export const SNAPSHOT_RATE = 15;
 export const MAX_PLAYERS = 4;
 
 /**
@@ -24,11 +44,12 @@ export const MAX_PLAYERS = 4;
  */
 /** 客户端 → 服务端 */
 export const C2S = {
-  HELLO: 'hello',       // { v, name, chassis, code? }   code 为空表示建房
+  HELLO: 'hello',       // { v, name, chassis, code?, make? }   code 为空表示建房（随机码）；make + code 表示用自定义码建房
   INPUT: 'in',          // { seq, mx, mz, ax, az, fire }   紧凑字段名，省带宽
   PING: 'ping',         // { t }
   READY: 'ready',       // {}
   LEAVE: 'leave',
+  PICK: 'pick',         // { id }  从 CARDS 给的选项里挑一张
 };
 
 /** 服务端 → 客户端 */
@@ -40,6 +61,7 @@ export const S2C = {
   PONG: 'pong',         // { t0, t1 }
   END: 'end',           // { results[], wave }  本局结束
   ROSTER: 'roster',     // { players[], started, host }  有人进出
+  CARDS: 'cards',       // { wave, options[{id,name,icon,rarity,desc}], deadline }
 };
 
 /** 拒绝原因 → 人话 */
@@ -48,7 +70,14 @@ export const DENY_TEXT = {
   'no-room': '房间不存在，检查一下房间码',
   'bad-version': '客户端版本过旧，刷新页面再试',
   'bad-proto': '数据格式不对',
-  'in-game': '这局已经开始了，等他们打完再来',
+  'room-taken': '这个房间码已经被占用了，换一个或者直接点「加入」',
+  'bad-code': '房间码要 4 位字母或数字（不用 0/O/1/I 这几个容易看错的）',
+  // 「房间过期」：服务端回收房间时主动推给还挂着的房主，
+  // 否则他只会在朋友报错时才知道码已经失效了。
+  'room-expired': '房间已经回收了（长时间没人进来），请重新创建并换新码',
+  // 注：这里曾经有 in-game / not-started 两条文案，但服务端从来不返回它们。
+  // 中途加入对局是**有意的设计**（朋友打一半进来接着打），不存在"开始了就不让进"。
+  // 留着会让人以为有这条规则，反而误导，所以删掉。
 };
 
 /** 房间码：4 位，去掉了容易看错的 0/O/1/I */
@@ -60,11 +89,38 @@ export function makeRoomCode() {
   return s;
 }
 
+/**
+ * 房间码归一化：只做"去空白 / 转大写 / 掐长度"，**绝不替换字符**。
+ *
+ * ⚠ 以前这里写着 O→0→2、I→1→J 的连环替换，是个真实事故：
+ *   用户手输 AB0D，被静默改写成 AB2D，然后收到"房间不存在"——
+ *   他怎么也想不通，自己明明照着屏幕敲的。
+ *   更糟的是 0→2 这一步：本来想纠正 O 被输入成 0，结果把真正的 0 也改了。
+ *   生成的码本来就不含 0/O/1/I（见 CODE_ALPHA），所以合法输入永远不需要纠正。
+ *
+ * 现在遇到 0/O/1/I 不猜，交给 UI 提示"这几个字符不用，换成 2/J 或换个码"，
+ * 让人自己决定。见 ROOM_CODE_RE 与 HUD 的错误提示。
+ */
 export function normalizeRoomCode(v) {
-  const s = String(v || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
-  // 常见误输入纠正
-  return s.replace(/O/g, '0').replace(/I/g, '1').replace(/0/g, '2').replace(/1/g, 'J').slice(0, 4);
+  return String(v || '').toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 4);
 }
+
+/**
+ * 容易看错的字符：命中了就提示，不自动改写。
+ * 返回 null 表示没问题，否则返回那条导致问题的字符。
+ */
+export function roomCodeProblem(v) {
+  const s = normalizeRoomCode(v);
+  if (s.length !== 4) return { why: 'length', code: s };
+  if (/[01OI]/.test(s)) return { why: 'confusable', code: s };
+  return null;
+}
+
+/**
+ * 合法房间码：4 位，取自 CODE_ALPHA（不含 0/O/1/I）。
+ * 自定义建房码用同一套字母表，避免"自己定了个码里带 0，朋友照着念成 O 永远进不来"。
+ */
+export const ROOM_CODE_RE = /^[2-9A-HJ-NP-Z]{4}$/;
 
 /** 坐标量化为 int16（1cm 精度，±327m 足够覆盖战场） */
 export const quantPos = (v) => Math.max(-32768, Math.min(32767, Math.round(v * 100)));

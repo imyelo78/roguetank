@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>阵营配色对照 · 钢铁突击</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #10161c; overflow: hidden;
+    font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; color: #dfe8f0; }
+  #stage { position: absolute; inset: 0; }
+  #head { position: absolute; left: 22px; bottom: 16px; pointer-events: none; }
+  #head h1 { margin: 0; font-size: 19px; letter-spacing: .08em; font-weight: 600; }
+  #head p { margin: 6px 0 0; font-size: 12.5px; color: #90a2b4; }
+  #legend { position: absolute; right: 20px; top: 16px; font-size: 12px; line-height: 1.9;
+    background: rgba(10,16,22,.72); border: 1px solid rgba(120,160,190,.22);
+    border-radius: 6px; padding: 10px 14px; pointer-events: none; }
+  #legend b { font-weight: 600; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 7px; vertical-align: 1px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="head">
+  <h1>阵营配色对照</h1>
+  <p>绿 = 我方（自己亮一档 / 队友暗一档）　　暖色 = 敌方（按类型分色相）</p>
+</div>
+<div id="legend">
+  <div><span class="dot" style="background:#6bff9a"></span>识别灯：<b>自己</b> 青绿</div>
+  <div><span class="dot" style="background:#37c8ff"></span>识别灯：<b>队友</b> 青蓝</div>
+  <div><span class="dot" style="background:#ff3b26"></span>识别灯：<b>敌人</b> 血红</div>
+</div>
+<script type="module">
+import * as THREE from '../vendor/three.module.js';
+import { Tank } from '../src/Tank.js';
+import { SELF_SKIN, MATE_SKIN, enemySkin } from '../src/teams.js';
+
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x172430);
+scene.fog = new THREE.Fog(0x172430, 60, 120);
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.5, 300);
+camera.position.set(0, 39, 37);
+camera.lookAt(0, 0, 4);
+
+scene.add(new THREE.HemisphereLight(0xcfe4f5, 0x4a5240, 1.35));
+const sun = new THREE.DirectionalLight(0xfff3dd, 2.1);
+sun.position.set(24, 44, 18);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 160 });
+sun.shadow.bias = -0.0007;
+sun.shadow.normalBias = 0.03;
+scene.add(sun);
+
+// 草地：和游戏里同一档的草绿，用来检验"绿车不会沉进背景"
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(160, 160),
+  new THREE.MeshStandardMaterial({ color: 0x3d5230, roughness: 1 }),
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/** 车顶标签 */
+function label(text, color = '#dfe8f0') {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 96;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(8,12,16,.72)';
+  g.fillRect(0, 0, 512, 96);
+  g.fillStyle = color;
+  g.font = 'bold 46px "PingFang SC", "Microsoft YaHei", sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, 256, 50);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  sp.scale.set(6, 1.15, 1);
+  return sp;
+}
+
+// 3 列 × 4 行：我方两辆 + 敌方七类
+const COLS = [-8.5, 0, 8.5];
+const ROWS = [-9, 0, 9, 17.5];
+const ITEMS = [
+  { name: '自己', team: 'player', skin: SELF_SKIN, detail: 'high', chassis: 'panther', label: '#9cf2b8' },
+  { name: '队友', team: 'player', skin: MATE_SKIN, detail: 'low', chassis: 'panther', label: '#9cf2b8' },
+  { name: '炮手', team: 'enemy', type: 'gunner' },
+  { name: '冲锋', team: 'enemy', type: 'charger' },
+  { name: '精英', team: 'enemy', type: 'elite' },
+  { name: '无人机', team: 'enemy', type: 'drone' },
+  { name: '炮台', team: 'enemy', type: 'turret' },
+  { name: '补给车', team: 'enemy', type: 'support' },
+  { name: '重盾', team: 'enemy', type: 'shield' },
+  { name: '破城者', team: 'enemy', type: 'boss_breaker', scale: 1.75 },
+  { name: '棱镜', team: 'enemy', type: 'boss_prism', scale: 1.45 },
+];
+
+ITEMS.forEach((it, i) => {
+  const col = i % 3;
+  const row = Math.floor(i / 3);
+  const skin = it.skin || enemySkin(it.type);
+  const t = new Tank(scene, {
+    team: it.team,
+    type: it.type,
+    chassis: it.chassis,
+    detail: it.detail || 'low',
+    body: skin.body,
+    accent: skin.accent,
+    metal: skin.metal,
+    lamp: skin.lamp,
+    x: COLS[col],
+    z: ROWS[row],
+    rotY: Math.PI * 0.92,   // 略侧对镜头，车体和炮塔都露出来
+  });
+  t.turret.rotation.y = 0;
+  if (it.scale) t.group.scale.setScalar(it.scale);
+
+  const lb = label(it.name, it.label);
+  lb.position.set(COLS[col], 4.4 + (it.scale ? 1.5 : 0), ROWS[row]);
+  scene.add(lb);
+});
+
+// 让炮口一致朝镜头右前方，更像一张"陈列图"
+scene.traverse((o) => {
+  if (o.name === 'nameplate') o.visible = true;
+});
+
+function resize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', resize);
+resize();
+// 持续渲染：软件渲染（swiftshader）下 WebGL 上下文偶尔会 lost/restored，
+// 只画一帧的话恢复之后画布就是空的（截出来一片黑）。
+renderer.setAnimationLoop(() => renderer.render(scene, camera));
+// 供截图脚本判断渲染完成
+window.__boardReady = true;
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 // 肉鸽强化系统
 import { WEAPONS, weaponCards } from './weapons.js';
-import { CHASSIS } from './chassis.js';
+import { CHASSIS, normalizeChassisId } from './chassis.js';
 
 export const RARITY = {
   common: { label: '常规', color: '#93a7b8' },
@@ -8,8 +8,8 @@ export const RARITY = {
   epic: { label: '史诗', color: '#c07bff' },
 };
 
-export function createStats(chassisId = 'balanced') {
-  const c = CHASSIS[chassisId] || CHASSIS.balanced;
+export function createStats(chassisId = 'panther') {
+  const c = CHASSIS[normalizeChassisId(chassisId)];
   return {
     damageMul: 1,
     fireRateMul: 1,
@@ -18,6 +18,10 @@ export function createStats(chassisId = 'balanced') {
     damageTakenMul: c.perks?.damageTakenMul ?? 1,
     speed: c.speed,
     maxHp: c.hp,
+    // 每张卡已选次数。联机时要存进玩家状态、跟着重连恢复，
+    // 所以不能再散落在 UI 的 this.upgradeCounts 里 ——
+    // 单机的这份字段是给联机对齐用的同一形状，两边行为才一致。
+    counts: {},
     multishot: 1,
     pierce: 0,
     explosive: 0,

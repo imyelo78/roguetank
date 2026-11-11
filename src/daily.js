@@ -60,18 +60,42 @@ export function getPid() {
 
 // ---------------- 本地兜底存储 ----------------
 
+/**
+ * 0 分不算一局成绩（开局即毁 / 直接退出），不上榜。
+ *
+ * 和服务端 `functions/api/_lib/leaderboard.js` 的 `isValidEntry` 是同一条规则：
+ * 两边都拦，是因为只拦一边都会漏 —— 前端不拦会白发一次请求，
+ * 后端不拦则旧客户端仍然能塞进来。
+ */
+const hasScore = (e) => !!e && Number(e.score) > 0;
+
 function normalize(v) {
   const out = EMPTY();
   if (!v || typeof v !== 'object') return out;
-  if (v.days && typeof v.days === 'object') out.days = v.days;
-  if (Array.isArray(v.all)) out.all = v.all;
+  if (v.days && typeof v.days === 'object') {
+    // 清掉历史遗留的 0 分（老版本会把"开局即死"也写进本地榜）
+    out.days = {};
+    for (const [k, list] of Object.entries(v.days)) {
+      out.days[k] = Array.isArray(list) ? list.filter(hasScore) : [];
+    }
+  }
+  if (Array.isArray(v.all)) out.all = v.all.filter(hasScore);
   return out;
 }
 
 function readLocal() {
   try {
     const raw = localStorage.getItem(LB_KEY);
-    if (raw) return normalize(JSON.parse(raw));
+    if (raw) {
+      const obj = JSON.parse(raw);
+      const parsed = normalize(obj);
+      // 只有真的过滤掉了东西才写回。用条数比较而不是比较 JSON 字符串：
+      // 后者受键顺序、空字段影响，会变成"每次读都写一遍"。
+      const countIn = (d) => (Array.isArray(d?.all) ? d.all.length : 0)
+        + Object.values(d?.days || {}).reduce((n, l) => n + (Array.isArray(l) ? l.length : 0), 0);
+      if (countIn(obj) !== countIn(parsed)) writeLocal(parsed);
+      return parsed;
+    }
 
     // 旧版本数据一次性迁移（v3 → v4 只是多了挑战榜，结构兼容）
     // 老版本可能存了「训练榜 / 挑战榜」，这里只保留统一榜需要的部分
@@ -120,7 +144,7 @@ export function mergeEntry(list, entry) {
 export function mergeLists(remote = [], local = []) {
   let out = Array.isArray(remote) ? [...remote] : [];
   for (const e of Array.isArray(local) ? local : []) {
-    if (!e || !e.name || typeof e.score !== 'number') continue;
+    if (!e || !e.name || typeof e.score !== 'number' || !hasScore(e)) continue;
     out = mergeEntry(out, e);
   }
   return out.sort(sortDesc).slice(0, TOP_N);
@@ -190,6 +214,9 @@ export async function flushPending() {
   const left = [];
   let ok = 0;
   for (const item of list) {
+    // 队列里可能躺着老版本存下的 0 分成绩：服务端会拒（no-score），
+    // 留在队列里会每次启动都重试一遍，永远清不掉。直接丢弃。
+    if (!hasScore(item)) continue;
     const r = await postScore(item);
     if (r.ok) ok += 1;
     else left.push(item);
@@ -220,6 +247,19 @@ async function postScore(payload) {
  * @param {{date?, name, wave, kills, score, timeMs?, chassis?, weapon?, mods?, players?}} run
  */
 export async function submitScore(run) {
+  // 0 分：不写本地、不上传、不进补传队列。
+  // `remote: null` 让结算页显示"0 分不计入榜单"，而不是"云端同步失败"。
+  if (!hasScore(run)) {
+    const local = readLocal();
+    return {
+      list: local.days[todayKey()] || [],
+      all: local.all,
+      days: localDays(local),
+      remote: null,
+      reason: 'no-score',
+    };
+  }
+
   const pid = getPid();
   const payload = {
     date: run.date || todayKey(),

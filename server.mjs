@@ -16,12 +16,15 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 import { RoomRegistry } from './server/room.js';
-import { PROTOCOL_VERSION } from './src/core/protocol.js';
+import { PROTOCOL_VERSION, BUILD } from './src/core/protocol.js';
+import { normalizeChassisId } from './src/chassis.js';
 import { attachSession } from './server/session.js';
 import { FileStore, readBody } from './server/score-store.js';
+import { syncLegacyScores } from './server/legacy-scores.js';
+import { pruneInvalidScores } from './server/score-cleanup.js';
 import { handleGet, handlePost } from './functions/api/_lib/leaderboard.js';
 import {
-  normalizeRoomCode, MAX_PLAYERS,
+  normalizeRoomCode, ROOM_CODE_RE, MAX_PLAYERS,
 } from './src/core/protocol.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
@@ -58,23 +61,21 @@ const registry = new RoomRegistry();
 // ---------------- 静态文件 ----------------
 
 /**
- * 静态资源缓存策略。
+ * 静态资源缓存策略：**全部 no-cache（协商缓存）**。
  *
- * 早期这里是全局 no-cache，开发时方便，但生产上每次刷新都要把 three.module.js
- * （压缩后仍有 150KB+）整个重传一遍，首屏明显偏慢。
- * 现在改成协商缓存：带 ETag，命中就回 304（几十字节）。
+ * 曾经给 JS/CSS 设过 max-age=300 + must-revalidate，理由是 three.module.js
+ * 有 150KB+，每次刷新重传太慢。但那 5 分钟换来的是更贵的东西：
+ * 改完发版、刷新页面、看到的还是旧程序，然后开始怀疑"是不是没改对"——
+ * 这个项目为此浪费过整整一天。首屏那点流量不值得。
  *
- * HTML 仍然 no-cache —— 发版后必须立刻生效，否则用户会拿着旧 HTML 去引用旧 JS。
+ * no-cache ≠ 不缓存：浏览器仍然存，只是每次用之前必须回源验证。
+ * 文件没变就回 304（几十字节，不带 body），代价可以忽略。
+ * ETag 用 size + mtime 派生，覆盖文件必变，不会出现"改了但 ETag 没变"。
  */
 function cacheHeaders(filePath, stat) {
-  const ext = path.extname(filePath).toLowerCase();
   const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
-  if (ext === '.html' || ext === '') {
-    return { 'Cache-Control': 'no-cache', ETag: etag };
-  }
   return {
-    // 5 分钟内直接用本地缓存；超过就用 ETag 找服务器确认（通常回 304）
-    'Cache-Control': 'public, max-age=300, must-revalidate',
+    'Cache-Control': 'no-cache',
     ETag: etag,
     'Last-Modified': stat.mtime.toUTCString(),
   };
@@ -196,13 +197,14 @@ const server = createServer(async (req, res) => {
       // 之前排查"覆盖后仍提示客户端版本过旧"只能靠登服务器 ps/ls 猜，
       // 有了这个字段，浏览器直接打开 /healthz 就知道服务端到底加载了哪份代码。
       proto: PROTOCOL_VERSION,
+      build: BUILD,
       pid: process.pid,
       uptime: Math.round(process.uptime()),
       rooms: s.rooms,
       players: s.players,
-      // 地形强度：不设 TERRAIN 就是全平。排查"为什么地面没起伏"先看这里，
-      // 省得怀疑代码没覆盖成功。
-      terrain: process.env.TERRAIN || '0',
+      // 地表强度档：排查"为什么踩进沼泽不掉速"先看这里，
+      // 省得怀疑代码没覆盖成功（TERRAIN=off 时全部按草地算）。
+      terrain: process.env.TERRAIN || 'standard',
       rssMB: Math.round(process.memoryUsage().rss / 1048576),
     }));
     return;
@@ -258,7 +260,42 @@ const server = createServer(async (req, res) => {
       }
       return;
     }
+
     res.writeHead(405, { Allow: 'GET, POST' }).end();
+    return;
+  }
+
+  // 运营接口：手动重跑一次旧站成绩同步，并直接返回结果。
+  //
+  // 为什么需要：启动时的自动同步只会做一次，之后有人改过 .data、或者
+  // 换了快照文件，就需要一个"现在再导一次"的入口。以前只能登服务器跑脚本，
+  // 目录对不上就白忙一场；这个入口用的是进程内同一个 KV 实例，不会有歧义。
+  //
+  // 安全：写操作 + 会把榜单刷进日志，不是公开接口。
+  //   仅本机（127.0.0.1 / ::1，即 nginx 反代过来的请求一律拒绝）可调，
+  //   或在服务端设 LEGACY_SYNC_TOKEN，请求带 X-Sync-Token 头即可远程调用。
+  if (req.method === 'POST' && url.pathname === '/api/admin/legacy-sync') {
+    const token = process.env.LEGACY_SYNC_TOKEN || '';
+    const from = req.socket.remoteAddress || '';
+    const local = from === '127.0.0.1' || from === '::1' || from === '::ffff:127.0.0.1';
+    const authorized = token ? req.headers['x-sync-token'] === token : local;
+    if (!authorized) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        .end(JSON.stringify({ ok: false, reason: 'forbidden' }));
+      return;
+    }
+    try {
+      await pruneInvalidScores(scores, { log: (line) => console.log(line) });
+      const r = await syncLegacyScores(scores, {
+        force: url.searchParams.get('force') === '1' || process.env.LEGACY_SYNC === 'force',
+        log: (line) => console.log(line),
+      });
+      res.writeHead(r.ok ? 200 : 409, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        .end(JSON.stringify(r));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        .end(JSON.stringify({ ok: false, reason: 'sync-failed', message: e && e.message }));
+    }
     return;
   }
 
@@ -313,11 +350,21 @@ wss.on('connection', (socket) => {
   attachSession(socket, {
     join: (msg) => {
       const name = String(msg.name || '').trim().slice(0, 12) || '指挥官';
-      const chassis = ['balanced', 'light', 'heavy', 'hunter'].includes(msg.chassis)
-        ? msg.chassis : 'balanced';
+      // 车体只有一款「豹式」。这里用 normalizeChassisId 而不是白名单：
+      // 白名单一旦漏掉新 id（比如这次加 panther）就会静默降级成别名，
+      // 玩家在界面上选的和实际开出去的不是同一辆，而且完全没有报错。
+      const chassis = normalizeChassisId(msg.chassis);
 
       let room = null;
-      if (msg.code) {
+      // make=1 表示"用这个码建房"：输入框里填了房间码又点的是「创建房间」。
+      // 以前创建完全无视输入框，用户以为自己填的码生效了，把错的码报给朋友，
+      // 朋友按码加入只会收到"房间不存在"。现在填了码就照用户的来。
+      if (msg.code && msg.make) {
+        const custom = normalizeRoomCode(msg.code);
+        if (!ROOM_CODE_RE.test(custom)) return { deny: 'bad-code' };
+        if (registry.get(custom)) return { deny: 'room-taken' };
+        room = registry.create(custom);
+      } else if (msg.code) {
         room = registry.get(normalizeRoomCode(msg.code));
         // 给了房间码但不存在 → 拒绝，别偷偷建个新的（否则朋友永远进不到一起）
         if (!room) return { deny: 'no-room' };
@@ -348,6 +395,29 @@ server.listen(port, host, () => {
   console.log(`  健康：  ${scheme}://${shown}:${port}/healthz`);
   console.log('  榜单数据：.data/scores.json（与线上同一套规则）');
   console.log('');
+
+  // 旧站成绩自动并入。
+  //
+  // 放在 listen 之后：同步失败不能挡住开服，玩家该能进就进。
+  // LEGACY_SYNC=off 可以整体关掉（只想手动跑 tools/import-old-scores.mjs 时用）。
+  // 没带 tools/old-scores.json 时安静跳过，属于正常情况（比如只上传了源码）。
+  if (process.env.LEGACY_SYNC !== 'off') {
+    const t = setTimeout(async () => {
+      // 顺序要紧：先清洗、再导入。
+      // 反过来的话，导入过程中会重新读一遍带脏数据的列表、写回去，
+      // 虽然结果一样但要写两次盘；先洗一遍更省事，也更好读日志。
+      try {
+        await pruneInvalidScores(scores, { log: (line) => console.log(line) });
+      } catch (e) {
+        console.warn(`[clean] 清洗失败（不影响开服）：${e && e.message}`);
+      }
+      syncLegacyScores(scores, {
+        force: process.env.LEGACY_SYNC === 'force',
+        log: (line) => console.log(line),
+      }).catch((e) => console.warn(`[legacy] 同步失败（不影响开服）：${e && e.message}`));
+    }, 3000);
+    t.unref();
+  }
 });
 
 /**

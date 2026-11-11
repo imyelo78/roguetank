@@ -1,4 +1,7 @@
 import * as THREE from '../vendor/three.module.js';
+import { aimTurret, angleDiff } from './core/motion.js';
+import { TURRET_SNAP_RATE, normalizeChassisId } from './chassis.js';
+import { tankSkin } from './teams.js';
 
 // ======================================================================
 // 材质 / 几何体缓存
@@ -23,6 +26,19 @@ function geo(key, factory) {
     geoCache.set(key, g);
   }
   return g;
+}
+
+// 识别灯的灯珠：MeshBasicMaterial 不吃光照，颜色就是色板里的那个值。
+// 为什么不用高 emissive 的 Standard 材质：emissiveIntensity 一过 1，经过
+// ACES 色调映射会饱和成白点——敌我都是白点，等于没做区分（第一版实测就是这样）。
+const basicCache = new Map();
+function basicMat(color) {
+  let m = basicCache.get(color);
+  if (!m) {
+    m = new THREE.MeshBasicMaterial({ color });
+    basicCache.set(color, m);
+  }
+  return m;
 }
 
 const BOX = (w, h, d) => geo(`b:${w}:${h}:${d}`, () => new THREE.BoxGeometry(w, h, d));
@@ -61,11 +77,17 @@ function add(parent, geometry, material, x, y, z, rx = 0, ry = 0, rz = 0, shadow
 // ======================================================================
 // 车体尺寸表
 // ======================================================================
+// 车体尺寸。现在只有一款「豹式」，沿用原均衡型的比例。
+// 旧的 light / heavy / hunter 键保留成一模一样的数值别名：
+// 老版本客户端或老存档里可能还带这些 id，查不到就会退回第一项，
+// 车会凭空变大或变小——玩家看到的是"我的车不认识了"，很难归因。
+const PANTHER = { hw: 2.2, hh: 0.9, hl: 3.2, hy: 0.86, tw: 0.58, th: 0.66, tl: 3.45, tx: 1.06, n: 6, wr: 0.26, radius: 1.45 };
 const SIZE = {
-  balanced: { hw: 2.2, hh: 0.9, hl: 3.2, hy: 0.86, tw: 0.58, th: 0.66, tl: 3.45, tx: 1.06, n: 6, wr: 0.26, radius: 1.45 },
-  light: { hw: 1.9, hh: 0.7, hl: 2.9, hy: 0.74, tw: 0.46, th: 0.58, tl: 3.1, tx: 0.92, n: 4, wr: 0.3, radius: 1.32 },
-  heavy: { hw: 2.6, hh: 1.05, hl: 3.7, hy: 0.95, tw: 0.7, th: 0.74, tl: 3.95, tx: 1.2, n: 7, wr: 0.28, radius: 1.62 },
-  hunter: { hw: 2.15, hh: 0.78, hl: 3.3, hy: 0.84, tw: 0.55, th: 0.62, tl: 3.55, tx: 1.02, n: 6, wr: 0.26, radius: 1.45 },
+  panther: PANTHER,
+  balanced: PANTHER,
+  light: PANTHER,
+  heavy: PANTHER,
+  hunter: PANTHER,
 };
 
 function makeMats({ body, accent, metal }) {
@@ -176,191 +198,6 @@ function buildBalanced(group, s, mats, hi) {
 }
 
 // ======================================================================
-// 车体：轻装突击型 —— 低矮车体、大倾角楔形、外露大直径负重轮
-// ======================================================================
-function buildLight(group, s, mats, hi) {
-  const wheels = [];
-  addRunningGear(group, s, mats, hi, wheels);
-
-  add(group, BOX(s.hw, s.hh, s.hl), mats.body, 0, s.hy, 0, 0, 0, 0, true);
-  // 楔形首上：大倾角，视觉上非常"贴地"
-  add(group, BOX(s.hw - 0.06, 0.44, 1.22), mats.accent, 0, s.hy + 0.32, s.hl * 0.24, 0.74, 0, 0, true);
-  // 首下楔形
-  add(group, BOX(s.hw - 0.22, 0.34, 0.62), mats.accent, 0, s.hy - 0.22, s.hl * 0.44, -0.5);
-  // 侧面倾斜翼子板
-  for (const sd of [-1, 1]) {
-    add(group, BOX(0.3, 0.1, s.hl * 0.9), mats.accent, sd * (s.hw * 0.5 + 0.06), s.hy + s.hh * 0.42, 0, 0, 0, sd * -0.16);
-  }
-
-  // ---- 炮塔：六角小型塔，位置偏后 ----
-  const turret = new THREE.Group();
-  turret.position.set(0, s.hy + s.hh * 0.5 + 0.24, -0.12);
-  group.add(turret);
-
-  add(turret, CYLY(0.48, 0.6, 0.44, 6, Math.PI / 6), mats.body, 0, 0.04, 0, 0, 0, 0, true);
-  add(turret, CYLY(0.42, 0.48, 0.1, 6, Math.PI / 6), mats.accent, 0, 0.3, 0);
-  add(turret, BOX(0.44, 0.34, 0.26), mats.accent, 0, 0.06, 0.5, 0, 0, 0, true);
-  add(turret, CYLY(0.19, 0.22, 0.12, 10), mats.metal, -0.2, 0.36, -0.12);
-  if (hi) {
-    // 栅栏装甲：炮塔两侧细杆
-    for (const sd of [-1, 1]) {
-      for (let i = 0; i < 2; i++) {
-        add(turret, BOX(0.03, 0.5, 0.03), mats.metal, sd * 0.5, 0.2, 0.24 - i * 0.42);
-      }
-      add(turret, BOX(0.03, 0.03, 0.9), mats.metal, sd * 0.5, 0.42, 0);
-    }
-    // 烟幕弹发射器（斜置 3 联）
-    for (let i = 0; i < 3; i++) {
-      add(turret, CYLZ(0.05, 0.05, 0.22, 6), mats.dark, -0.5 + i * 0.1, 0.16, -0.28, -0.55, 0, 0);
-    }
-    // 细长天线（后倾）
-    add(turret, CYLZ(0.015, 0.015, 1.1, 5), mats.dark, -0.36, 0.33, -0.3, -0.26, 0, 0.1);
-    // 驾驶员潜望镜
-    add(group, BOX(0.34, 0.09, 0.12), mats.dark, 0.42, s.hy + s.hh * 0.5 + 0.06, s.hl * 0.3, 0.3);
-    add(group, BOX(0.3, 0.05, 0.03), mats.glass, 0.42, s.hy + s.hh * 0.5 + 0.11, s.hl * 0.3 + 0.04, 0.3);
-  }
-
-  // ---- 主炮：细长高初速 ----
-  const BARREL_LEN = 2.05;
-  add(turret, CYLZ(0.085, 0.105, BARREL_LEN, 10), mats.metal, 0, 0.06, 0.42, 0, 0, 0, true);
-  add(turret, BOX(0.22, 0.2, 0.24), mats.dark, 0, 0.06, 0.42 + BARREL_LEN - 0.12, 0, 0, 0, true);
-
-  const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.06, 0.42 + BARREL_LEN);
-  turret.add(muzzle);
-
-  return { turret, muzzle, wheels, wheelRadius: s.wr };
-}
-
-// ======================================================================
-// 车体：重装堡垒型 —— 宽大车体、附加装甲块、全包厚侧裙、双联机枪塔
-// ======================================================================
-function buildHeavy(group, s, mats, hi) {
-  const wheels = [];
-  addRunningGear(group, s, mats, hi, wheels);
-
-  add(group, BOX(s.hw, s.hh, s.hl), mats.body, 0, s.hy, 0, 0, 0, 0, true);
-  // 厚首上
-  add(group, BOX(s.hw - 0.02, 0.56, 1.1), mats.accent, 0, s.hy + 0.34, s.hl * 0.3, 0.42, 0, 0, true);
-  // 前部附加装甲块
-  for (const sd of [-1, 1]) {
-    add(group, BOX(0.46, 0.4, 0.95), mats.accent, sd * (s.hw * 0.5 - 0.3), s.hy + 0.16, s.hl * 0.36, 0.3);
-  }
-  // 全包厚侧裙
-  for (const sd of [-1, 1]) {
-    add(group, BOX(0.12, 0.62, s.hl * 0.92), mats.body, sd * (s.hw * 0.5 + 0.26), 0.7, 0);
-    if (hi) {
-      // 侧裙铆钉带
-      add(group, BOX(0.02, 0.08, s.hl * 0.9), mats.dark, sd * (s.hw * 0.5 + 0.33), 0.44, 0);
-    }
-  }
-  // 尾部配重 / 格栅
-  add(group, BOX(s.hw - 0.34, 0.1, 0.44), mats.dark, 0, s.hy + s.hh * 0.5 + 0.02, -s.hl * 0.36);
-  add(group, BOX(s.hw - 0.5, 0.3, 0.34), mats.metal, 0, s.hy - 0.1, -s.hl * 0.5, 0, 0, 0, true);
-
-  // ---- 炮塔：大型八角塔 ----
-  const turret = new THREE.Group();
-  turret.position.y = s.hy + s.hh * 0.5 + 0.32;
-  group.add(turret);
-
-  add(turret, CYLY(0.8, 1.04, 0.72, 8, Math.PI / 8), mats.body, 0, 0.06, 0, 0, 0, 0, true);
-  add(turret, CYLY(0.74, 0.82, 0.12, 8, Math.PI / 8), mats.accent, 0, 0.48, 0);
-  // 塔前脸附加装甲
-  add(turret, BOX(1.3, 0.56, 0.26), mats.accent, 0, 0.06, 0.86, 0, 0, 0, true);
-  // 尾部储物篮
-  add(turret, BOX(1.1, 0.36, 0.22), mats.metal, 0, 0.02, -0.95, 0, 0, 0, true);
-  // 双舱盖
-  for (const sd of [-1, 1]) {
-    add(turret, CYLY(0.24, 0.26, 0.1, 10), mats.accent, sd * 0.3, 0.54, -0.24);
-  }
-  if (hi) {
-    // 12.7 机枪塔
-    add(turret, CYLY(0.2, 0.24, 0.26, 10), mats.accent, 0.56, 0.54, 0.02);
-    add(turret, CYLZ(0.05, 0.05, 1.0, 7), mats.dark, 0.56, 0.7, 0.02);
-    add(turret, CYLZ(0.02, 0.02, 1.2, 5), mats.dark, -0.7, 0.52, -0.46, -0.18, 0, 0.12);
-    // 烟幕弹
-    for (let i = 0; i < 2; i++) {
-      add(turret, CYLZ(0.07, 0.07, 0.28, 6), mats.dark, -0.72 - i * 0.0, 0.24, 0.4 + i * 0.24, -0.4, 0, 0);
-    }
-    // 探照灯
-    add(turret, CYLX(0.15, 0.15, 0.18, 8), mats.lamp, -0.78, 0.3, 0.3);
-  }
-
-  // ---- 主炮：粗短大口径 ----
-  const BARREL_LEN = 2.35;
-  add(turret, CYLZ(0.17, 0.21, BARREL_LEN, 12), mats.metal, 0, 0.08, 0.8, 0, 0, 0, true);
-  add(turret, CYLZ(0.235, 0.235, 0.4, 10), mats.dark, 0, 0.08, 1.35);
-  // 大型制退器
-  add(turret, BOX(0.46, 0.4, 0.42), mats.dark, 0, 0.08, 0.8 + BARREL_LEN - 0.2, 0, 0, 0, true);
-  add(turret, BOX(0.52, 0.1, 0.1), mats.dark, 0, 0.08, 0.8 + BARREL_LEN - 0.2);
-
-  const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.08, 0.8 + BARREL_LEN);
-  turret.add(muzzle);
-
-  return { turret, muzzle, wheels, wheelRadius: s.wr };
-}
-
-// ======================================================================
-// 车体：猎手型 —— 无炮塔式坦克歼击车（后置固定战斗室 + 超长身管）
-// ======================================================================
-function buildHunter(group, s, mats, hi) {
-  const wheels = [];
-  addRunningGear(group, s, mats, hi, wheels);
-
-  add(group, BOX(s.hw, s.hh, s.hl), mats.body, 0, s.hy, 0, 0, 0, 0, true);
-  // 大倾角首上
-  add(group, BOX(s.hw - 0.04, 0.5, 1.25), mats.accent, 0, s.hy + 0.26, s.hl * 0.26, 0.66, 0, 0, true);
-  // 侧裙
-  for (const sd of [-1, 1]) {
-    add(group, BOX(0.06, 0.42, s.hl * 0.88), mats.accent, sd * (s.hw * 0.5 + 0.21), 0.7, 0);
-  }
-  // 前部备用履带板
-  for (let i = 0; i < 3; i++) {
-    add(group, BOX(0.5, 0.07, 0.16), mats.dark, -0.5 + i * 0.5, s.hy + 0.42, s.hl * 0.44, 0.66);
-  }
-
-  // ---- 战斗室（作为炮塔组，可随瞄准转动）----
-  const turret = new THREE.Group();
-  turret.position.set(0, s.hy + s.hh * 0.5 + 0.2, -0.3);
-  group.add(turret);
-
-  add(turret, BOX(1.42, 0.56, 1.5), mats.body, 0, 0.06, 0, 0, 0, 0, true);
-  // 顶盖斜甲
-  add(turret, BOX(1.46, 0.12, 1.42), mats.accent, 0, 0.38, -0.04, -0.1);
-  // 前脸倾斜装甲
-  add(turret, BOX(1.3, 0.46, 0.3), mats.accent, 0, 0.02, 0.78, 0.42, 0, 0, true);
-  // 炮盾
-  add(turret, BOX(0.5, 0.34, 0.32), mats.accent, 0, 0.06, 0.86, 0, 0, 0, true);
-  if (hi) {
-    // 车顶潜望镜
-    add(turret, BOX(0.28, 0.1, 0.16), mats.dark, -0.34, 0.48, 0.1);
-    add(turret, BOX(0.24, 0.05, 0.02), mats.glass, -0.34, 0.5, 0.19);
-    // 天线
-    add(turret, CYLZ(0.016, 0.016, 1.15, 5), mats.dark, -0.62, 0.42, -0.58, -0.15, 0, 0.12);
-    // 伪装沙袋（车体前部）
-    for (let i = 0; i < 3; i++) {
-      const bag = add(group, SPH(0.2), mats.accent, -0.42 + i * 0.42, s.hy + 0.48, s.hl * 0.42 + (i % 2) * 0.06);
-      bag.scale.set(1.5, 0.6, 1.1);
-    }
-    // 观察镜（战斗室侧后方）
-    add(turret, BOX(0.14, 0.1, 0.14), mats.glass, 0.62, 0.42, -0.2);
-  }
-
-  // ---- 超长身管 ----
-  const BARREL_LEN = 2.95;
-  add(turret, CYLZ(0.1, 0.12, BARREL_LEN, 12), mats.metal, 0, 0.06, 0.8, 0, 0, 0, true);
-  add(turret, CYLZ(0.155, 0.155, 0.42, 10), mats.dark, 0, 0.06, 1.55);
-  add(turret, BOX(0.26, 0.24, 0.26), mats.dark, 0, 0.06, 0.8 + BARREL_LEN - 0.13, 0, 0, 0, true);
-
-  const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.06, 0.8 + BARREL_LEN);
-  turret.add(muzzle);
-
-  return { turret, muzzle, wheels, wheelRadius: s.wr };
-}
-
-// ======================================================================
 // 通用（敌方）车体：介于均衡型与简化之间，保证多敌人时开销可控
 // ======================================================================
 function buildStandard(group, s, mats, hi) {
@@ -389,12 +226,58 @@ function buildStandard(group, s, mats, hi) {
   return { turret, muzzle, wheels, wheelRadius: s.wr };
 }
 
+// 只有一款车：豹式。
+//
+// ⚠ 这里踩过一个很贵的坑：BUILDERS 原来只有 balanced/light/heavy/hunter 四个键，
+//   而合并车体后客户端传的是 'panther'，查不到就落到 buildStandard（敌人用的极简模型）。
+//   结果"合并成豹式"在数据层是对的，玩家看到的却是一辆没有侧裙、没有炮盾、
+//   没有车长塔的简模——看起来就像"根本没人处理这件事"。
+//   现在键就是 'panther'，并且缺失时**必须报错式回退到豹式**，别再静默降级。
 const BUILDERS = {
-  balanced: buildBalanced,
-  light: buildLight,
-  heavy: buildHeavy,
-  hunter: buildHunter,
+  panther: buildBalanced,
 };
+
+// ======================================================================
+// 射界扇面：无炮塔车在地上画出"炮口能扫到的那 30°"
+//
+// 为什么值得单独画：轻装/猎手是四台车里玩法差异最大的两台，但限制本身
+// 看不见——玩家只会觉得"准星对着人却不掉血"。把扇面铺在地上，
+// 一眼就能读懂"炮口只能在这个锥形里，要打车就得转车身"。
+// 全向炮塔不画（没有边界可画）。
+// ======================================================================
+const FAN_RADIUS = 6;
+
+function makeTraverseFan(limit) {
+  const g = new THREE.Group();
+
+  // CircleGeometry 在 XY 平面、theta 从 +X 起算；绕 X 转 -90° 后 +Y 落到 -Z。
+  // 想让扇面中心指向局部 +Z（车头），theta 基准要放在 -PI/2。
+  const fill = new THREE.Mesh(
+    new THREE.CircleGeometry(FAN_RADIUS, 26, -Math.PI / 2 - limit, limit * 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xffc266, transparent: true, opacity: 0.07,
+      depthWrite: false, side: THREE.DoubleSide,
+    })
+  );
+  fill.rotation.x = -Math.PI / 2;
+  fill.position.y = 0.05;
+  g.add(fill);
+
+  const pts = [];
+  for (const a of [-limit, limit]) {
+    const th = -Math.PI / 2 + a;
+    pts.push(0, 0, 0, Math.cos(th) * FAN_RADIUS, 0, -Math.sin(th) * FAN_RADIUS);
+  }
+  const eg = new THREE.BufferGeometry();
+  eg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const lines = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({
+    color: 0xffc266, transparent: true, opacity: 0.24, depthWrite: false,
+  }));
+  lines.position.y = 0.06;
+  g.add(lines);
+
+  return g;
+}
 
 // ======================================================================
 export class Tank {
@@ -410,16 +293,31 @@ export class Tank {
     this.odometer = 0;
     this._lastOdo = 0;
 
-    const chassisId = opts.chassis && BUILDERS[opts.chassis] ? opts.chassis : 'standard';
+    // 炮塔参数：与联机端 core/motion.js 的 aimTurret 共用一套语义
+    //   rate  —— 角速度上限（rad/s），TURRET_SNAP_RATE 等于"瞬间对准"
+    //   limit —— 相对车头的射界半角（rad），π 为全向
+    // 默认值保持旧行为（全向瞬间），不传的车（敌人、队友）不受影响。
+    this.turretRate = opts.turretRate ?? TURRET_SNAP_RATE;
+    this.turretLimit = opts.turretLimit ?? Math.PI;
+    // 传了 chassis = 玩家车（含老客户端发来的 balanced/light/heavy/hunter），
+    // 一律归一化成豹式；没传 = 敌人，用它们自己的低模。
+    const chassisId = opts.chassis ? normalizeChassisId(opts.chassis) : 'standard';
     this.chassisId = chassisId;
-    const s = SIZE[chassisId] || SIZE.balanced;
+    const s = SIZE[chassisId] || SIZE.panther || SIZE.balanced || Object.values(SIZE)[0];
     this.radius = opts.radius ?? s.radius;
 
-    const mats = makeMats({
-      body: opts.body ?? 0x5f7a3c,
-      accent: opts.accent ?? 0x3a4a24,
-      metal: opts.metal ?? 0x2a2f36,
+    // 阵营配色统一从 teams.js 取：显式传的优先，没传按 team 落到阵营色。
+    // 这里以前是 body ?? 0x5f7a3c —— "缺省绿"让组队模式的玩家和敌人同色。
+    const skin = tankSkin({
+      team: this.team,
+      type: opts.type,
+      body: opts.body,
+      accent: opts.accent,
+      metal: opts.metal,
+      lamp: opts.lamp,
     });
+    this.skin = skin;
+    const mats = makeMats({ body: skin.body, accent: skin.accent, metal: skin.metal });
 
     this.group = new THREE.Group();
     this.group.position.set(opts.x ?? 0, 0, opts.z ?? 0);
@@ -428,7 +326,10 @@ export class Tank {
 
     // 细节档位：玩家 high（负重轮、机枪、天线、烟幕弹等），敌人 low
     const hi = opts.detail !== 'low';
-    const builder = BUILDERS[chassisId] || buildStandard;
+    // 敌人（chassisId === 'standard'）走低模；其余一律豹式。
+    // 注意兜底是 buildBalanced 而不是 buildStandard：宁可多画几个零件，
+    // 也不能让玩家的车悄悄变成一个"不是设计稿里那辆"的简模。
+    const builder = chassisId === 'standard' ? buildStandard : (BUILDERS[chassisId] || BUILDERS.panther);
     const parts = builder(this.group, s, mats, hi);
 
     this.turret = parts.turret;
@@ -438,15 +339,63 @@ export class Tank {
     // 炮塔静止位置（后座动画以此为基准；猎手型战斗室本身有 z 偏移）
     this.turretBaseZ = this.turret.position.z;
 
+    // ---- 阵营识别灯 ----
+    // 车体色负责"大色块敌我"，但草绿地形 + 黄昏侧光下，敌军铁锈红有时会
+    // 读成"深绿"。炮塔顶这根灯杆是自发光的（emissive 不吃光照），
+    // 远距离就是一个色点：青绿=自己、青蓝=队友、血红=敌人。
+    //
+    // 用一根短杆而不是浮空球：玩家高模炮塔顶在 0.48、敌人低模在 0.34，
+    // 固定高度的球会在一半车上悬空；杆子从 0.17 起，两种车都是"插在顶上"。
+    // 材质走共享缓存，N 辆敌人也只多两个 draw call（杆 + 灯头）。
+    this.lampColor = skin.lamp;
+    add(this.turret, CYLY(0.05, 0.05, 0.46, 6), mats.metal, 0, 0.40, -0.48);
+    this.lamp = add(this.turret, SPH(0.19), basicMat(skin.lamp), 0, 0.60, -0.48);
+
+    // 有射界的车（轻装 / 猎手）在地上铺一层扇面，让"炮口只能扫这么宽"看得见
+    this.traverseFan = null;
+    if (this.turretLimit < Math.PI - 1e-3) {
+      this.traverseFan = makeTraverseFan(this.turretLimit);
+      this.group.add(this.traverseFan);
+    }
+
     this.tmpV = new THREE.Vector3();
   }
 
   /** 车头朝向（弧度，局部 +Z 为前） */
   get yaw() { return this.group.rotation.y; }
 
+  /** 世界坐标（模拟层 aimTurret 要读 body.x / body.z） */
+  get x() { return this.group.position.x; }
+  get z() { return this.group.position.z; }
+
+  /** 直接指定炮塔世界朝向（快照/服务端权威值，不做平滑也不夹射界） */
   setAim(yaw) {
     this.turretYaw = yaw;
-    this.turret.rotation.y = yaw - this.group.rotation.y;
+    // 同步基准车头角：aimTurret 靠这个差值算"车体带炮塔转了多少"。
+    // 不同步的话，下一帧会把"服务端给的角度 - 旧车头"当成一次车体转向，
+    // 炮口会凭空多转一段，射击方向就飘了。
+    this._aimYaw = this.group.rotation.y;
+    this._syncTurret();
+  }
+
+  /**
+   * 朝世界坐标瞄准，走 core/motion.js 的 aimTurret —— 与联机端**同一份实现**。
+   *
+   * 两端各写一套炮塔逻辑的后果和运动学一样：单机瞬狙、联机 10 rad/s，
+   * 同一个玩家换个模式就得重新练一遍手感；加了射界之后还会出现
+   * "单机能打到、联机打不到"这种更难查的不一致。
+   */
+  aimAt(aimX, aimZ, dt) {
+    aimTurret(this, aimX, aimZ, dt, this.turretRate, this.turretLimit);
+    this.turret.rotation.y = angleDiff(this.turretYaw, this.group.rotation.y);
+  }
+
+  /** 把炮塔相对车头的角度收进射界，并刷到可视对象上 */
+  _syncTurret() {
+    // 直接借 core 的实现做"车体带动 + 射界夹紧"，不在这里再写一遍：
+    // 两份夹紧逻辑一旦有一行不同，单机炮口和联机炮口就会对不上。
+    aimTurret(this, undefined, undefined, 0, this.turretRate, this.turretLimit);
+    this.turret.rotation.y = angleDiff(this.turretYaw, this.group.rotation.y);
   }
 
   /** 炮塔平滑转向目标（用于 AI） */
@@ -494,8 +443,8 @@ export class Tank {
     let diff = yaw - this.group.rotation.y;
     diff = Math.atan2(Math.sin(diff), Math.cos(diff));
     this.group.rotation.y += Math.sign(diff) * Math.min(Math.abs(diff), rate);
-    // 炮塔是世界空间朝向，车体转动后需要补偿
-    this.turret.rotation.y = this.turretYaw - this.group.rotation.y;
+    // 炮塔是世界空间朝向，车体转动后要跟着补偿，并夹回射界
+    this._syncTurret();
   }
 
   update(dt) {

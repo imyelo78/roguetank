@@ -11,8 +11,9 @@
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "build": "node build.mjs",
-    "test": "node test/rng.test.mjs && node test/scores.test.mjs && node test/world.test.mjs && node test/level.test.mjs && node test/motion.test.mjs && node test/collide.test.mjs && node test/terrain.test.mjs",
-    "test:net": "node test/net.test.mjs"
+    "test": "node test/rng.test.mjs && node test/scores.test.mjs && node test/world.test.mjs && node test/level.test.mjs && node test/motion.test.mjs && node test/collide.test.mjs && node test/terrain.test.mjs && node test/turret.test.mjs && node test/snapcadence.test.mjs && node test/roomlife.test.mjs && node test/home.test.mjs && node test/panther.test.mjs && node test/idle.test.mjs && node test/jitter.test.mjs && node test/snapreset.test.mjs && node test/legacy.test.mjs && node test/zeroscore.test.mjs && node test/coopcards.test.mjs && node test/teamcolor.test.mjs && node test/camerafollow.test.mjs && node test/coopminimap.test.mjs && node test/bossshot.test.mjs",
+    "test:net": "node test/net.test.mjs",
+    "test:room": "node test/roomcode.test.mjs"
   },
   "dependencies": {
     "ws": "^8.22.1"

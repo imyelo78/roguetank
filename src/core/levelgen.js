@@ -26,7 +26,23 @@ export const SPAWNS = [
 /** 出生点周围必须留空的半径：否则玩家一落地就卡在箱子里 */
 const SPAWN_CLEAR = 14;
 
+/**
+ * 手工摆放的掩体只提供"骨架"，真正的坐标按这个种子扰动。
+ *
+ * 为什么不再直接用固定坐标：原来 `MAP_SEED` 是常量，每一局掩体位置一模一样，
+ * 打到第 3 局玩家就在背板（哪个楼角能卡视线、哪条路能绕后）。
+ *
+ * 扰动幅度刻意压得小（±5 米左右），因为这一批只解决"每局换图"，
+ * 不解决"地图长得像不像"——地图形状的多样性留给第四批（纵向推进 + 分段生成）。
+ * 力度太大的话，固定掩体之间的战术距离会失效（比如中央两道矮墙本来是
+ * 对称的掩体，挪散了反而变弱）。
+ */
 const MAP_SEED = 20261029;
+
+/** 种子 → 0..1 随机源。与 level.js 的 mulberry32 同款，两端结果必然一致 */
+function seeded(seed) {
+  return mulberry32((Math.imul(seed | 0, 2654435761) ^ 0x9e3779b9) >>> 0);
+}
 
 function mulberry32(a) {
   return function () {
@@ -70,12 +86,37 @@ const CLEAR_POINTS = [
 
 /**
  * 生成整张地图的箱体。
+ *
+ * @param {number} seed 局种子。同一局（房间）里服务端与客户端必须传同一个值，
+ *   否则会出现"你看得见墙、服务端没有"的假墙——这正是这个文件开头记的那次事故。
+ *   缺省值 0 表示"不扰动"，固定掩体回到历史坐标（老单测、回放、调试用）。
  * @returns {{x:number,z:number,w:number,h:number,d:number,color:string}[]}
  */
-export function generateBoxes() {
-  const boxes = FIXED.map(([x, z, w, h, d, color]) => ({ x, z, w, h, d, color }));
+export function generateBoxes(seed = 0) {
+  // 1) 固定骨架：先按种子轻微抖动位置与宽深
+  //
+  // 抖动用独立的随机源，与下面"随机建筑"的随机数完全隔离：
+  // 两者共用一个序列时，改随机建筑的数量会连带改变固定掩体的位置，
+  // 以后想调随机建筑密度就得重新验证整张图。
+  const sk = seed >>> 0;
+  const jit = seeded(sk);
+  const boxes = FIXED.map(([x, z, w, h, d, color]) => {
+    if (!sk) return { x, z, w, h, d, color };
+    const dx = (jit() * 2 - 1) * 6;
+    const dz = (jit() * 2 - 1) * 6;
+    const k = 0.85 + jit() * 0.3;
+    return {
+      x: Math.max(-HALF + 8, Math.min(HALF - 8, x + dx)),
+      z: Math.max(-HALF + 8, Math.min(HALF - 8, z + dz)),
+      w: Math.max(4, w * k),
+      h,
+      d: Math.max(4, d * (0.85 + jit() * 0.3)),
+      color,
+    };
+  });
 
-  const rnd = mulberry32(MAP_SEED);
+  // 2) 随机建筑：每次换局重新撒
+  const rnd = seeded((sk ^ 0x51ed270b) >>> 0);
   const placed = [];
   let guard = 0;
 
@@ -131,11 +172,22 @@ export function resolveMultiSpawns(boxes) {
     if (!blockedAt(boxes, px, pz, 1.9)) return [px, pz];
 
     const len = Math.hypot(px, pz) || 1;
+    // 沿径向向外找空位，找不到就沿"绕圈"再找一轮：
+    // 换种子后固定掩体的位置会抖动，单纯向外挪可能一整条线上都是墙。
     for (let d = 1; d <= SPAWN_CLEAR - 1; d += 1) {
       const qx = px + (px / len) * d;
       const qz = pz + (pz / len) * d;
       if (Math.abs(qx) > HALF - 4 || Math.abs(qz) > HALF - 4) break;
       if (!blockedAt(boxes, qx, qz, 1.9)) return [qx, qz];
+    }
+    for (let r = 2; r <= SPAWN_CLEAR; r += 2) {
+      for (let a = 0; a < 12; a++) {
+        const th = (a / 12) * Math.PI * 2;
+        const qx = px + Math.cos(th) * r;
+        const qz = pz + Math.sin(th) * r;
+        if (Math.abs(qx) > HALF - 4 || Math.abs(qz) > HALF - 4) continue;
+        if (!blockedAt(boxes, qx, qz, 1.9)) return [qx, qz];
+      }
     }
     return [px, pz];
   });

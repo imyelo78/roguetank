@@ -96,6 +96,24 @@ export async function commit(kv, key, entry, tries = 3) {
   return null;
 }
 
+/**
+ * 成绩是否算数。
+ *
+ * 0 分不是"打得很差"，而是**这局根本没发生**：开局就被撞毁、或者点了开始
+ * 立刻退出。它上榜有两个害处：占掉名额、让榜尾看起来"有人 0 分也能进"。
+ * 线上真的出现过一条 `gunner / 0 分 / 第 1 波 / 0 杀` 压在总榜最后。
+ *
+ * 只拦 0 分，不设更高的门槛：1 分也是真实打出来的（旧站那条 selftest 就是），
+ * 门槛一抬高就会开始误杀真正的残局。
+ *
+ * 注意：**只在入口和读取处用**，不要塞进 `mergeEntry` —— 那是个纯合并函数，
+ * 测试里拿 0 分当序号用（`score: i`），加了过滤会连带改变合并语义。
+ */
+export const isValidEntry = (e) => !!e && Number(e.score) > 0;
+
+/** 去掉不合格条目（读接口用）。非法输入一律回空数组，不让 undefined 传到前端 */
+export const liveEntries = (list) => (Array.isArray(list) ? list.filter(isValidEntry) : []);
+
 /** 规范化一条成绩，过滤非法/越界字段 */
 export function normalizeEntry(body) {
   const name = String(body.name || '').trim().slice(0, 12);
@@ -139,27 +157,34 @@ export async function handleGet(kv, url) {
 
   // ---- 诊断：今日榜与总榜条数、最后写入时间 ----
   if (view === 'stats') {
-    const [dayList, allList, days] = await Promise.all([
+    const [dayList, allList, days, legacy] = await Promise.all([
       getJSON(kv, `${DAY_PREFIX}${todayKey()}`, []),
       getJSON(kv, ALL_KEY, []),
       getJSON(kv, DAYS_KEY, []),
+      getJSON(kv, 'meta:legacy', null),
     ]);
     const stamp = (l) => (l.length ? Math.max(...l.map((e) => e.t || 0)) : 0);
+    // 过滤后的条数才是"榜上有几个人"，storage 里可能还躺着历史 0 分记录
+    const dayLive = liveEntries(dayList);
+    const allLive = liveEntries(allList);
     return {
       status: 200,
       body: {
         ok: true,
         today: todayKey(),
-        day: { count: dayList.length, lastAt: stamp(dayList) },
-        all: { count: allList.length, lastAt: stamp(allList) },
+        day: { count: dayLive.length, lastAt: stamp(dayLive) },
+        all: { count: allLive.length, lastAt: stamp(allLive) },
         days: days.length,
+        // 旧站成绩是否已并入（没同步过是 null）。排查"榜上怎么没有旧数据"先看这里
+        legacy: legacy || null,
+        imported: allLive.filter((e) => e && e.importedFrom).length,
       },
     };
   }
 
   // ---- 总榜 ----
   if (view === 'all') {
-    return { status: 200, body: { ok: true, all: await getJSON(kv, ALL_KEY, []) } };
+    return { status: 200, body: { ok: true, all: liveEntries(await getJSON(kv, ALL_KEY, [])) } };
   }
 
   // ---- 今日榜（date 参数仅供客户端兜底，正常不传）----
@@ -167,7 +192,7 @@ export async function handleGet(kv, url) {
   if (!DATE_RE.test(date)) return { status: 400, body: { ok: false, reason: 'bad-date' } };
   return {
     status: 200,
-    body: { ok: true, date, list: await getJSON(kv, `${DAY_PREFIX}${date}`, []) },
+    body: { ok: true, date, list: liveEntries(await getJSON(kv, `${DAY_PREFIX}${date}`, [])) },
   };
 }
 
@@ -182,6 +207,9 @@ export async function handlePost(kv, body) {
 
   const entry = normalizeEntry(body);
   if (!entry) return { status: 400, body: { ok: false, reason: 'no-name' } };
+  // 0 分不是一局成绩（开局即毁 / 直接退），不上榜。
+  // 与读取处的过滤同一条规则，避免"提交成功但榜上没有"这种更难看的情况。
+  if (!isValidEntry(entry)) return { status: 400, body: { ok: false, reason: 'no-score' } };
 
   const date = DATE_RE.test(body.date || '') ? body.date : todayKey();
   // 防止伪造历史战绩：只收今天 / 昨天
@@ -204,4 +232,5 @@ export async function handlePost(kv, body) {
 
 export const __test = {
   mergeEntry, mergeLists, normalizeEntry, sortDesc, identOf, dateAllowed, todayKey,
+  isValidEntry, liveEntries,
 };

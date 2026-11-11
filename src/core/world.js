@@ -12,27 +12,59 @@ import { HALF, generateBoxes, resolveMultiSpawns } from './levelgen.js';
 import { stepBody, aimTurret, angleDiff } from './motion.js';
 // 圆-矩形碰撞：与客户端 level.js、地图生成共用，避免三处判定各写一套
 import { deepestHit, hitsAny, slideCircle, pushOut } from './collide.js';
-// 地形高度场：两端同源的坡度函数（scale=0 时完全退化成平地）
-import { slopeFactor } from './terrain.js';
+// 地表类型场：两端同源的速度系数（地形为空时完全退化成 1.0）
+import { buildTerrain, speedAt, presetK } from './terrain.js';
 import {
   createPlayer, updateRevive, scaleForPlayers,
-  emptyInput, DOWN_TIME, RESPAWN_DELAY,
+  emptyInput, DOWN_TIME, RESPAWN_DELAY, newStats,
 } from './players.js';
 import { R, Rng } from '../rng.js';
+// 弹道拦截（提前量）：和单机共用同一份解算，别再两处各写一套弹道数学
+import { solveIntercept } from './aim.js';
+// 车体数值：从 UI 那份定义直接派生，不在这里再抄一遍。
+// 抄两份的代价不是"维护麻烦"，是联机手感 —— 一边 20 一边 19.5，
+// 每帧 0.5 m/s 的位移差都会进残差，攒几帧后被硬校正，玩家感觉车在拖拽。
+import { CHASSIS_TABLE, normalizeChassisId } from '../chassis.js';
+// 局内成长（抽卡/应用）：纯函数，单机与联机共用同一份卡池与权重
+import { createStats } from '../upgrades.js';
+import { rollForPlayer, applyCard } from './progression.js';
 
 export { HALF };
+
+/**
+ * 下发给客户端的成长字段。
+ *
+ * 只挑模拟需要的，别把整个 stats 塞进协议：kills/score/damage 这些是战绩
+ * 计数器，走快照和结算，混进成长同步里会让"这波打了多少"和"我拿了哪些卡"
+ * 两件事互相干扰。counts / weaponMods 是对象，必须浅拷贝，否则序列化时
+ * 会把内部字段一起漏出去。
+ *
+ * 两个地方用：中途加入的 welcome（重建成长），以及每波发卡的 CARDS
+ * （客户端据此修正本地预测的速度/血量，见 coop._syncCards）。
+ */
+export function syncedStats(s) {
+  return {
+    damageMul: s.damageMul,
+    fireRateMul: s.fireRateMul,
+    bulletSpeedMul: s.bulletSpeedMul,
+    splashDamageMul: s.splashDamageMul,
+    damageTakenMul: s.damageTakenMul,
+    speed: s.speed,
+    maxHp: s.maxHp,
+    multishot: s.multishot,
+    pierce: s.pierce,
+    explosive: s.explosive,
+    waveHeal: s.waveHeal,
+    killHeal: s.killHeal,
+    weaponId: s.weaponId,
+    counts: { ...s.counts },
+  };
+}
 
 // ---------------- 数值表（与单机保持一致） ----------------
 
 /** 敌人车体转向速率（rad/s）。给足 3.0，否则急转时车头追不上行进方向就一直原地打圈 */
 const TURN_RATE = 3.0;
-
-const CHASSIS_TABLE = {
-  balanced: { hp: 120, speed: 15, turn: 3.0, dmgMul: 1, takenMul: 1 },
-  light: { hp: 90, speed: 19.5, turn: 3.6, dmgMul: 1, takenMul: 1 },
-  heavy: { hp: 170, speed: 11.5, turn: 2.4, dmgMul: 1, takenMul: 0.85 },
-  hunter: { hp: 110, speed: 14, turn: 3.2, dmgMul: 1, takenMul: 1, killHeal: 3 },
-};
 
 /** 敌人模板：只保留模拟需要的字段，渲染层按 type 自己建模型 */
 export const ENEMY_TYPES = {
@@ -43,8 +75,10 @@ export const ENEMY_TYPES = {
   turret: { hp: 2.2, speed: 0, radius: 1.3, damage: 9, range: 46, fireCd: [2.4, 3.2], bulletSpeed: 55, score: 25, scale: 0.95, static: true },
   support: { hp: 1.4, speed: 0.95, radius: 1.5, damage: 0, range: 0, healAura: 8, score: 30, scale: 1.05 },
   shield: { hp: 1.3, speed: 0.9, radius: 1.55, damage: 6, range: 28, fireCd: [2.2, 3.6], bulletSpeed: 44, score: 20, scale: 1.12, frontArmor: 0.45 },
-  boss_breaker: { hp: 24, speed: 7.2, radius: 2.5, damage: 11, range: 34, fireCd: [1.8, 3.0], bulletSpeed: 46, score: 300, scale: 1.75, boss: true },
-  boss_prism: { hp: 20, speed: 9.2, radius: 2.1, damage: 6, range: 40, fireCd: [1.3, 2.2], bulletSpeed: 52, score: 300, scale: 1.45, boss: true },
+  // Boss 弹速从 46/52 提到 58/62：加了提前量之后，飞行时间仍是命中率的主导项，
+  // 34m 外 46 m/s 要飞 0.74 秒，玩家挪 11 米，预判误差被放大到躲不躲都随缘。
+  boss_breaker: { hp: 24, speed: 7.2, radius: 2.5, damage: 11, range: 34, fireCd: [1.8, 3.0], bulletSpeed: 58, score: 300, scale: 1.75, boss: true },
+  boss_prism: { hp: 20, speed: 9.2, radius: 2.1, damage: 6, range: 40, fireCd: [1.3, 2.2], bulletSpeed: 62, score: 300, scale: 1.45, boss: true },
 };
 
 /**
@@ -70,7 +104,7 @@ export const PLAYER_WEAPON = {
 };
 
 /** 障碍物：服务端也必须有静态碰撞表，否则敌人会穿墙 */
-export function buildStaticWorld(terrainScale = 0) {
+export function buildStaticWorld(terrain = null, seed = 0) {
   // 地图数据只在 core/levelgen.js 生成一次，客户端建 mesh、这里建碰撞表。
   //
   // 为什么不再手抄一份：线上出过事故——两边各写一套生成循环，客户端为了建
@@ -78,13 +112,13 @@ export function buildStaticWorld(terrainScale = 0) {
   // 错位；固定掩体里还把渲染高度 h 当成深度 d 抄了过来。结果是"客户端有墙、
   // 服务端没有"，玩家一进房就撞假墙，速度每帧乘 0.3 压到 0.8 米/秒，
   // 表现就是油门踩到底车不动，同时服务端位置正常推进又被拽回去。
-  const boxes = generateBoxes().map((b) => [b.x, b.z, b.w, b.d]);
+  const boxes = generateBoxes(seed).map((b) => [b.x, b.z, b.w, b.d]);
 
   return {
     half: HALF,
     boxes,
-    // 地形强度。stepBody 用它决定要不要按坡度改速度；为 0 时完全走旧路径。
-    terrainScale,
+    // 地表类型场。stepBody 用它查脚下的速度倍率；为 null 时恒等 1.0（旧路径）。
+    terrain,
     /**
      * 圆形与箱体的碰撞。
      * 真实圆-矩形判定（角上是圆弧）。原来把半径直接加到矩形两边，
@@ -138,8 +172,23 @@ function segCircle(ax, az, bx, bz, cx, cz, r) {
 
 /** 出生点：四角 + 四边中点，多人时错开 */
 
-/** 4 人出生点：生成地图后立刻校验，避免被固定掩体压住 */
-const MULTI_SPAWNS = resolveMultiSpawns(generateBoxes());
+/**
+ * 4 人出生点：生成地图后立刻校验，避免被固定掩体压住。
+ *
+ * 现在建筑按局种子变化，出生点也必须跟着算——常量表是上一版（地图固定）
+ * 留下的，换种子后会有人直接出生在墙里。按 seed 缓存，同一局只算一次。
+ */
+const SPAWN_CACHE = new Map();
+function spawnsFor(seed) {
+  const k = seed >>> 0;
+  let v = SPAWN_CACHE.get(k);
+  if (!v) {
+    v = resolveMultiSpawns(generateBoxes(k));
+    if (SPAWN_CACHE.size > 64) SPAWN_CACHE.clear();
+    SPAWN_CACHE.set(k, v);
+  }
+  return v;
+}
 
 let NEXT_ID = 1;
 const nextId = () => NEXT_ID++;
@@ -151,15 +200,34 @@ const nextId = () => NEXT_ID++;
  * 规则本身（波次公式、敌人类型、伤害数值）与单机一致。
  */
 export class World {
-  constructor({ code, seed = 1, maxPlayers = 4, terrainScale = 0 } = {}) {
+  constructor({ code, seed = 1, maxPlayers = 4, terrain = null, terrainPreset = 'standard' } = {}) {
     this.code = code || 'LOCAL';
     this.seed = seed >>> 0;
     this.maxPlayers = Math.max(1, Math.min(4, maxPlayers));
-    // 地形强度由房间配置决定，随 WELCOME 下发给客户端，保证四个人看到的是同一张地。
-    this.terrainScale = Math.max(0, Number(terrainScale) || 0);
+
+    // ---- 地表类型场 ----
+    //
+    // 由种子完全决定：同一个房间 seed 派生同一张地形图，
+    // 客户端只收 seed，自己重建一份，不需要传 27×27 的格点数组。
+    //
+    // seed 异或一个常数，是为了让"地形图案"和"波次随机序列"不共用一个流——
+    // 否则改一下地形生成算法的步数，整局的出怪顺序也跟着变。
+    //
+    // 出生点保护圈由 terrain.js 内部按 levelgen.SPAWNS 自动铺，这里不传——
+    // 传了服务端的一份（resolveMultiSpawns 挪过位）而客户端传默认清单，
+    // 同一 seed 就会生成两张不同的图。
+    this.terrainPreset = terrainPreset;
+    this.terrain = terrain || buildTerrain(
+      (this.seed ^ 0x7e3a91) >>> 0,
+      HALF,
+      { k: presetK(terrainPreset) },
+    );
 
     this.rng = new Rng(this.seed);
-    this.static = buildStaticWorld(this.terrainScale);
+    // 建筑布局也由种子决定：同一房间所有人拿到同一张图。
+    // 客户端不自己生成一份再对比，而是直接收 fullState().boxes ——
+    // 生成算法哪怕只差一个随机数，后果都是"你看得见墙、服务端没有"。
+    this.static = buildStaticWorld(this.terrain, this.seed);
 
     this.players = [];
     this.enemies = [];
@@ -175,6 +243,108 @@ export class World {
     this.state = 'lobby';         // lobby | playing | over
     this.enemiesLeft = 0;
     this.mods = null;
+
+    // ---- 局内成长 ----
+    //
+    // 每波清完后，每个活着的玩家各自 3 选 1：卡池来自 core/progression.js，
+    // 服务端在这里生成并保管"他这一波能看到哪三张"，客户端只是把它渲染出来。
+    // 为什么不信任客户端上报的卡：作弊是次要的，主要是重连。
+    //   断线回来的人必须看到**同一批**没选完的卡，否则他会发现自己"错过了一波"。
+    this.cards = new Map();     // id → { wave, options[], picked }
+    this.pickWindow = 12;       // 秒；超时默认拿第一张（不能让一个人拖住全队）
+    this.picksOpen = false;
+  }
+
+  /** 波间选卡是否还开着（有任何人没选完） */
+  get awaitingPicks() {
+    if (!this.picksOpen) return false;
+    for (const p of this.players) {
+      if (!p.alive || p.down) continue;
+      const c = this.cards.get(p.id);
+      if (c && !c.picked) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 给每个玩家发一组卡。只在清波时调用一次。
+   * @returns {{id:string, wave:number, options:object[], stats:object}[]} 每人一份，调用方负责发出去
+   */
+  _dealCards() {
+    const out = [];
+    this.cards.clear();
+    const rnd = () => this.rng.spawn();
+    for (const p of this.players) {
+      if (!p.alive || p.down) continue;
+      const options = rollForPlayer(p.stats, p.stats.counts, rnd, {
+        armory: this._armoryDue(p),
+      });
+      if (!options.length) continue;   // 全部满级：这一波直接跳过
+      this.cards.set(p.id, { wave: this.wave, options, picked: false });
+      // 附上他此刻的成长数值：客户端拿不到每帧成长的同步（快照只发位置血量），
+      // 不在这里对齐，他会一直按"上一波开头的速度/血量"做本地预测 ——
+      // 选了速度卡之后服务端变快、客户端还慢，每帧都被拉回一截，手感变拖。
+      out.push({ id: p.id, wave: this.wave, options, stats: syncedStats(p.stats) });
+    }
+    this.picksOpen = out.length > 0;
+    this.pickT = this.pickWindow;
+    return out;
+  }
+
+  /** 军械库：联机目前只有突击炮，等有第二门炮再开这条分支 */
+  _armoryDue() {
+    return false;
+  }
+
+  /**
+   * 选卡。校验"这张卡确实在他的选项里"，然后应用到玩家身上。
+   * @returns {{ ok:boolean, reason?:string, hp?:number, maxHp?:number }}
+   */
+  pickCard(id, cardId) {
+    const p = this.players.find((q) => q.id === id);
+    const c = this.cards.get(id);
+    if (!p || !c) return { ok: false, reason: 'undefined' };
+    if (c.picked) return { ok: false, reason: 'already' };
+    if (!c.options.some((o) => o.id === cardId)) return { ok: false, reason: 'not-offered' };
+
+    const r = applyCard(p, cardId);
+    if (!r.ok) {
+      // 军械卡在联机里尚未开放：当作"跳过"，否则玩家会卡在选卡界面
+      if (r.reason === 'armory') {
+        c.picked = true;
+        this._pushEvent({ kind: 'pick', id, card: cardId, skipped: true });
+        return { ok: true, skipped: true };
+      }
+      return r;
+    }
+    c.picked = true;
+    this._pushEvent({ kind: 'pick', id, card: cardId });
+    return r;
+  }
+
+  /** 波间推进：所有人选完 / 超时后关窗 */
+  _updatePicks(dt) {
+    if (!this.picksOpen) return;
+    this.pickT -= dt;
+    if (this.awaitingPicks && this.pickT > 0) return;
+
+    // 超时：没选的人默认拿第一张。不罚、不跳过，避免"去倒杯水回来整波收益没了"
+    if (this.awaitingPicks) {
+      for (const [id, c] of this.cards) {
+        if (c.picked) continue;
+        const p = this.players.find((q) => q.id === id);
+        if (p && c.options.length) this.pickCard(id, c.options[0].id);
+      }
+    }
+    this.picksOpen = false;
+    // 必须告诉客户端"窗口关了"。
+    //
+    // 之前服务端到点自己替玩家选完、直接推进波次，客户端那边一无所知：
+    // `net.cards` 还留着，面板就一直停着，副标题从「12 秒」数到「0 秒后自动选择」
+    // 之后再也不动，整个画面被盖住。玩家感受到的是"打完第一波就进不去，
+    // 点什么都没反应"——而服务端其实已经开到第二波了。
+    this._pushEvent({ kind: 'picksClosed', wave: this.wave });
+    this.waveGap = 1.2;   // 选完卡再短暂缓冲，避免"刚点完就贴脸"
   }
 
   // ---------------- 玩家进出 ----------------
@@ -182,16 +352,21 @@ export class World {
   /** 加人。返回 player 或 null（满了） */
   addPlayer({ id, name, chassisId }) {
     if (this.players.length >= this.maxPlayers) return null;
-    const c = CHASSIS_TABLE[chassisId] || CHASSIS_TABLE.balanced;
+    // 车体 id 必须先归一化：历史 id（light/heavy/hunter/balanced）都要落到豹式上。
+    // 直接把原始字符串存进 p.chassis 的话，客户端拿到的就是"未知车体"，
+    // 尺寸表查不到会退回默认尺寸，各端看到的大车小车还不一致。
+    const cid = normalizeChassisId(chassisId);
+    const c = CHASSIS_TABLE[cid];
     const pid = id || `p${nextId()}`;
     const idx = this.players.length;
     // 出生点由 levelgen 校验过，保证不与掩体重叠（否则一落地就卡墙）
-    const [sx, sz] = MULTI_SPAWNS[idx % MULTI_SPAWNS.length];
+    const spawns = spawnsFor(this.seed);
+    const [sx, sz] = spawns[idx % spawns.length];
 
     const p = createPlayer({
       id: pid,
       name,
-      chassisId,
+      chassisId: cid,
       x: sx,
       z: sz,
       hp: c.hp,
@@ -201,6 +376,20 @@ export class World {
     p.turnBase = c.turn;
     p.takenMul = c.takenMul;
     p.killHeal = c.killHeal || 0;
+    // 记下出生点：联机里"全员阵亡但房间还在"时要原地满血重开（见 room.js）。
+    // 不记的话复活点只能猜，很容易把车放进掩体里卡死。
+    p._spawnX = sx;
+    p._spawnZ = sz;
+    p._spawnYaw = p.yaw;
+    // 局内成长：与单机 createStats 同一份结构（联机以前没有 stats，
+    // 于是第 8 波和第一波操作完全一样，这是两种模式体验割裂的根源）。
+    // 注意合并顺序：createPlayer 已经塞了 newStats()（score/kills 这些战斗统计），
+    // createStats 是成长数值，两者**都要**——直接覆盖会把 score 抹成 undefined，
+    // 击杀加分时 NaN 会顺着协议扩散到所有人的计分板。
+    p.stats = { ...newStats(), ...createStats(p.chassis) };
+    // 炮塔参数同样来自 CHASSIS_TABLE，客户端预测读的是同一份数值
+    p.turretRate = c.turretRate;
+    p.turretLimit = c.turretLimit;
     p.aimX = p.x;
     p.aimZ = p.z - 10;
     p.joinedAt = this.time;
@@ -217,10 +406,55 @@ export class World {
 
   /**
    * 开始这一局。人数变化时重新计算缩放，所以"3 人等 4 人"也能直接开始。
+   *
+   * ⚠ 必须**清场**再开。这里曾经只写了 state / tick / startWave(1)：
+   *   房间在"全员阵亡 → 回大厅"或"结算重开"时会再次调到 start()，
+   *   而上一局的敌人、子弹、待入场队列全都原封不动地留着。
+   *   于是新一局一开始就顶着上一局的血量：第 1 波刷出来的怪和上一局残党
+   *   叠在一起，`enemiesLeft` 永远清不到 0 → `cleared` 不触发 → 选卡不弹 →
+   *   波次卡死。表现就是"通关后进不了下一关""打着打着敌人越打越多"。
    */
   start() {
     if (this.state === 'playing') return false;
     if (this.players.length === 0) return false;
+
+    // ---- 清场：上一局的一切都不该带进新一局 ----
+    this.enemies.length = 0;
+    if (this.bullets) this.bullets.length = 0;
+    this.pending.length = 0;
+    this.events.length = 0;
+    this.waveActive = false;
+    this.waveGap = 0;
+    this.left = 0;
+    this.picksOpen = false;
+    this.picks = null;
+    this.enemiesLeft = 0;
+
+    // 玩家回出生点满血，输入清空（不然上一帧按着 W 会直接被带进新局）
+    for (const p of this.players) {
+      // 出生点是 addPlayer 时记下的 _spawnX/_spawnZ，**不是** _spawn 对象。
+      // 早先这里写成 p._spawn（不存在），会把车"传送"到它当前的位置再拿 yaw 当坐标，
+      // 一旦有人照着改就是车飞到地图角落。
+      if (Number.isFinite(p._spawnX)) {
+        p.x = p._spawnX;
+        p.z = p._spawnZ;
+      }
+      if (Number.isFinite(p._spawnYaw)) p.yaw = p._spawnYaw;
+      p.turretYaw = p.yaw;
+      p.hp = p.maxHp;
+      p.alive = true;
+      p.down = false;
+      p.downT = 0;
+      p.reviveT = 0;
+      p.speed = 0;
+      p.fireCd = 0;
+      p.overheated = false;
+      p.heat = 0;
+      p.input = null;
+      p.aimX = p.x;
+      p.aimZ = p.z - 10;
+    }
+
     this.state = 'playing';
     this.tick = 0;
     this.time = 0;
@@ -282,10 +516,23 @@ export class World {
       // 客户端预测调的是同一个函数（两端各写一套出过两次线上事故）。
       p.turnBase = p.turnBase || 3.0;
       p.speedBase = p.speedBase || 15;
+      const ox = p.x;
+      const oz = p.z;
       stepBody(p, inp, dt, this.static, HALF);
+      // 本 tick 的实际速度（撞墙、地形减速都会体现）。
+      // Boss 主炮的提前量必须用它——用输入方向乘最高速会预判到"你以为会到的地方"。
+      const invDt = 1 / Math.max(dt, 1e-4);
+      p.vx = (p.x - ox) * invDt;
+      p.vz = (p.z - oz) * invDt;
 
-      // 炮塔：朝鼠标指向的世界坐标转（转速 10 rad/s ≈ 0.6 秒转 180°）
-      aimTurret(p, inp.aimX, inp.aimZ, dt, 10);
+      // 炮塔：朝鼠标指向的世界坐标转。
+      // 转速与射界都来自车体。现在只有一款豹式：全向 + 瞬间对准。
+      if (p.turretRate === undefined) {
+        const ct = CHASSIS_TABLE[normalizeChassisId(p.chassis)];
+        p.turretRate = ct.turretRate;
+        p.turretLimit = ct.turretLimit;
+      }
+      aimTurret(p, inp.aimX, inp.aimZ, dt, p.turretRate, p.turretLimit);
 
       // 开火
       p.fireCd = Math.max(0, p.fireCd - dt);
@@ -342,6 +589,20 @@ export class World {
       const dx = target.x - e.x;
       const dz = target.z - e.z;
       const aimYaw = Math.atan2(dx, dz);
+      // Boss 提前量：炮塔朝"你将要到的地方"转，而不是"你现在在的地方"。
+      // 之前就是纯直线瞄准，玩家一横移（15 m/s）就 100% 落空——
+      // 线上表现是"破城者主炮一点伤害都没有"。
+      let fireYaw = aimYaw;
+      if (e.boss) {
+        const sol = solveIntercept({
+          dx, dz,
+          vx: target.vx || 0,
+          vz: target.vz || 0,
+          speed: e.bulletSpeed,
+          lead: 0.92,
+        });
+        if (sol) fireYaw = Math.atan2(sol.x, sol.z);
+      }
       const reach = e.range > 0 ? e.range : 30;
 
       // ---- 移动：远则逼近，中距压上，近则拉开（炮台不动）----
@@ -404,9 +665,9 @@ export class World {
         const len = Math.hypot(e._mx, e._mz) || 1;
         const ux = e._mx / len;
         const uz = e._mz / len;
-        // 敌人也吃坡度：不然玩家上坡被减速、敌人不受影响，等于电脑开挂。
-        // 注意 _checkStuck 里仍用未减速的期望步长，避免上坡被误判成卡住。
-        const step = e.speed * dt * slopeFactor(e.x, e.z, ux, uz, this.terrainScale);
+        // 敌人也吃地表：不然玩家陷在沼泽里爬、敌人不受影响，等于电脑开挂。
+        // 注意 _checkStuck 里仍用未减速的期望步长，避免泥地里被误判成卡住。
+        const step = e.speed * dt * speedAt(this.terrain, e.x, e.z);
         const nx = e.x + ux * step;
         const nz = e.z + uz * step;
         const ox = e.x;
@@ -474,8 +735,8 @@ export class World {
         e.yaw += Math.sign(diff) * Math.min(Math.abs(diff), TURN_RATE * dt);
       }
 
-      // 炮塔跟随目标
-      const tdiff = angleDiff(aimYaw, e.turretYaw);
+      // 炮塔跟随目标（Boss 跟随提前量点）
+      const tdiff = angleDiff(fireYaw, e.turretYaw);
       e.turretYaw += Math.sign(tdiff) * Math.min(Math.abs(tdiff), 3.2 * dt);
 
       // 自爆兵贴近即引爆
@@ -484,8 +745,10 @@ export class World {
         continue;
       }
 
-      // 远程开火：射程内且炮塔大致对准
-      if (e.range > 0 && e.fireCd <= 0 && dist < e.range && Math.abs(tdiff) < 0.35) {
+      // 远程开火：射程内且炮塔确实指到"能打中"的位置（弧长判据：
+      // 角度 × 距离 < 1.2 米。裸角度 0.35 在 25 米处是 8.8 米偏差，
+      // 炮塔差着大半格就开炮，弹永远擦身而过）。
+      if (e.range > 0 && e.fireCd <= 0 && dist < e.range && Math.abs(tdiff) * dist < 1.2) {
         e.fireCd = e.fireCdRange[0] + this.rng.combat() * (e.fireCdRange[1] - e.fireCdRange[0]);
         // 命中率：给子弹一点散布，避免"弹弹必中"变成无解消耗
         const spread = 0.06;
@@ -502,6 +765,10 @@ export class World {
           damage: e.damage,
           life: 2.6,
         });
+        // 敌人开炮事件：只带 id（坐标客户端自己从实体上读，省字节）。
+        // 客户端拿它在小地图上闪一下——联机里没有炮口火光也没有音效，
+        // 这是玩家唯一能察觉"有人朝我开火"的信号。
+        this._pushEvent({ kind: 'eshot', id: e.id });
       }
 
       // 补给车治疗周围
@@ -687,9 +954,20 @@ export class World {
         }
       }
       this._pushEvent({ kind: 'cleared', wave: this.wave });
+
+      // 成长：发卡。cards 事件带"这一波每人能看到哪三张"，客户端负责渲染。
+      // 发在 cleared 之后：客户端要先把"第 N 波清除"的横幅播出来，再弹面板。
+      const dealt = this._dealCards();
+      if (dealt.length) {
+        this._pushEvent({ kind: 'cards', wave: this.wave, dealt, window: this.pickWindow });
+        // 选卡期间不计 waveGap：人还在看面板，怪就已经冲上来了
+        this.waveGap = 999;
+      }
     }
 
-    if (!this.waveActive) {
+    this._updatePicks(dt);
+
+    if (!this.waveActive && !this.picksOpen) {
       this.waveGap -= dt;
       if (this.waveGap <= 0) this.startWave(this.wave + 1);
     }
@@ -847,6 +1125,11 @@ export class World {
         yaw: p.yaw, turretYaw: p.turretYaw, hp: p.hp, maxHp: p.maxHp,
         alive: p.alive, down: p.down, downT: p.downT, reviveT: p.reviveT,
         score: p.stats.score, kills: p.stats.kills,
+        // 成长状态：重连的人要恢复"我已经拿了哪些卡"，
+        // 否则他会发现自己变回了第一波的白板车。
+        stats: syncedStats(p.stats),
+        // 还没选完的卡：重连后必须能继续选，不能让他白丢一波收益
+        cards: this.cards.get(p.id) || null,
       })),
       enemies: this.enemies.map((e) => ({
         id: e.id, type: e.type, x: e.x, z: e.z, yaw: e.yaw,
@@ -855,9 +1138,23 @@ export class World {
       wave: this.wave,
       state: this.state,
       tick: this.tick,
-      // 地形强度必须随全量状态下发：客户端要靠它把车贴到正确的坡面上。
-      // 交给 URL 参数或本地配置就会四人不同步——一个人看着在上坡、另一个是平地。
-      terrain: this.terrainScale,
+      // 地表类型场只下发"种子 + 档位"，客户端自己重建一份。
+      // 27×27 的格点阵列塞进 20Hz 快照是纯浪费，而且一旦两边版本不同
+      // 就会出现"你看着是公路、他跑的是沼泽"。
+      // k 也带上：强度档位变了，客户端要立刻按新档位改颜色，不能等下次重连。
+      terrain: {
+        seed: this.terrain.seed,
+        preset: this.terrainPreset,
+        k: this.terrain.k ?? 1,
+        tile: this.terrain.tile,
+      },
+      // 建筑：把服务端这份**权威坐标**直接下发，客户端不自己生成。
+      //
+      // 曾经两边各生成一份，客户端为了渲染多抽了一个随机数，于是第二个箱子
+      // 之后全部错位，玩家一进房就撞假墙。生成算法现在虽然两端同源，
+      // 但"同源"只能保证今天一致，改一次生成逻辑、发一次版就会有人踩到
+      // 页面缓存没更新的坑。约 44 个箱体 × 7 个数字，只在入场时发一次，值得。
+      boxes: this.static.boxes.map(([x, z, w, d]) => ({ x, z, w, d })),
     };
   }
 }

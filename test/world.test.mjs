@@ -8,6 +8,7 @@
 //   - 快照编解码可逆
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { World, CHASSIS_TABLE } from '../src/core/world.js';
 import { encodeSnapshot, decodeSnapshot, quantPos, dequantPos } from '../src/core/protocol.js';
 
@@ -42,8 +43,9 @@ function botInput(w, me) {
 
 function runGame(n, seconds, seed = 11) {
   const w = new World({ code: 'T', seed });
-  const chassis = ['balanced', 'light', 'heavy', 'hunter'];
-  for (let i = 0; i < n; i++) w.addPlayer({ id: `p${i}`, name: `P${i}`, chassisId: chassis[i] });
+  // 车体已合并成一款豹式；这里仍轮换历史 id，顺便验证服务端会把它们归一化。
+  const chassis = ['panther', 'balanced', 'light', 'heavy', 'hunter'];
+  for (let i = 0; i < n; i++) w.addPlayer({ id: `p${i}`, name: `P${i}`, chassisId: chassis[i % chassis.length] });
   w.start();
 
   const log = { downs: 0, revives: 0, kills: 0, maxWave: 0, cleared: 0 };
@@ -208,7 +210,42 @@ console.log('\n[7] 四车体数值齐全');
   for (const [id, c] of Object.entries(CHASSIS_TABLE)) {
     assert.ok(c.hp > 0 && c.speed > 0 && c.turn > 0, id);
   }
-  ok('4 种车体都有完整数值');
+  ok('车体表里每款车都有完整数值');
+}
+
+console.log('\n[8] 车体数值只有一份来源');
+{
+  // 历史上 chassis.js 和 world.js 各有一份 CHASSIS_TABLE。
+  // 只改一处的话，联机时客户端按新车速预测、服务端按旧车速算权威位置，
+  // 每帧的位移差都会进残差、被硬校正拉回，手感变成"拖拽"。
+  // 现在 world.js 直接 import chassis.js，这条断言防的是"以后有人又抄一份"。
+  const src = readFileSync(new URL('../src/core/world.js', import.meta.url), 'utf8');
+  assert.ok(
+    /import\s*\{[^}]*CHASSIS_TABLE[^}]*\}\s*from\s*'\.\.\/chassis\.js'/.test(src),
+    'world.js 必须从 ../chassis.js import CHASSIS_TABLE',
+  );
+  assert.ok(!/^const CHASSIS_TABLE\s*=/m.test(src), 'world.js 里不许再自己定义 CHASSIS_TABLE');
+
+  // 派生出来的表和 UI 那份必须逐字段相等（不是"看着差不多"）
+  const { CHASSIS_TABLE: ui } = await import('../src/chassis.js');
+  for (const [id, a] of Object.entries(ui)) {
+    const b = CHASSIS_TABLE[id];
+    assert.ok(b, `服务端缺少车体 ${id}`);
+    for (const k of ['hp', 'speed', 'turn', 'takenMul', 'killHeal']) {
+      assert.equal(b[k], a[k], `${id}.${k}：UI=${a[k]} 服务端=${b[k]}`);
+    }
+  }
+  ok('world.js 从 chassis.js 派生，各车体 × 5 个字段逐项相等');
+
+  // 服务端真正建出来的玩家也要用上新数值
+  const w = new World({ code: 'T', seed: 1 });
+  for (const [id, a] of Object.entries(ui)) {
+    const p = w.addPlayer({ name: id, chassisId: id });
+    assert.equal(p.speedBase, a.speed, `${id} 速度没进模拟`);
+    assert.equal(p.maxHp, a.hp, `${id} 血量没进模拟`);
+    assert.equal(p.takenMul, a.takenMul, `${id} 减伤没进模拟`);
+  }
+  ok('新建玩家读到的是同一份数值');
 }
 
 console.log(`\n全部通过：${pass} 项\n`);

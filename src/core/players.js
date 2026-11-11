@@ -34,7 +34,7 @@ export function createPlayer({ id, name, chassisId, x = 0, z = 0, hp = 120, maxH
   return {
     id,
     name: (name || '指挥官').slice(0, 12),
-    chassis: chassisId || 'balanced',
+    chassis: chassisId || 'panther',
     x,
     z,
     yaw: Math.PI,          // 车体朝向
