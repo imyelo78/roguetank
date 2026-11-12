@@ -19,7 +19,7 @@ export const PROTOCOL_VERSION = 3;
  * 排查方向直接跑偏。页面会把本地 BUILD 和服务端 /healthz 的 build 对比，
  * 不一致就在左上角红条提示；房间码旁边也会显示当前构建号，截图即可确认版本。
  */
-export const BUILD = 'r29';
+export const BUILD = 'r30';
 export const TICK_RATE = 30;
 /**
  * 快照率。**必须能整除 TICK_RATE**，否则相邻快照的 tick 差会在两个值之间锯齿，
@@ -78,6 +78,8 @@ export const DENY_TEXT = {
   // 注：这里曾经有 in-game / not-started 两条文案，但服务端从来不返回它们。
   // 中途加入对局是**有意的设计**（朋友打一半进来接着打），不存在"开始了就不让进"。
   // 留着会让人以为有这条规则，反而误导，所以删掉。
+  // 同理 r30 里那条 'server-busy' 也删了：服务端没有任何地方发送这个 code，
+  // 留着就是一条永远不会出现的"规则"。
 };
 
 /** 房间码：4 位，去掉了容易看错的 0/O/1/I */

@@ -26,6 +26,7 @@ import { aimTurret, angleDiff } from './core/motion.js';
 import { createNav } from './nav.js';
 import { NetClient, predict, TICK_RATE } from './net.js';
 import { buildTerrain, TERRAIN } from './core/terrain.js';
+import { NetDebug } from './debug.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -183,6 +184,8 @@ export class CoopMode {
     this._bound = false;
     this._cd = 0;               // 本地射击冷却（只用于表现）
     this._bossId = null;
+    // F3 诊断面板（纯只读，不开销渲染性能；见 src/debug.js 顶部说明）
+    this.debug = new NetDebug();
   }
 
   // ---------------- 生命周期 ----------------
@@ -244,6 +247,9 @@ export class CoopMode {
 
     if (this._aimMarker && this.scene) this.scene.remove(this._aimMarker);
     this._aimMarker = null;
+    // 特效对象池里的材质要显式释放（GC 不会回收 WebGL 显存）
+    this.effects?.dispose();
+    this.debug?.destroy();
     this.scene = null;
     this.effects = null;
     this.net = null;
@@ -470,6 +476,12 @@ export class CoopMode {
         // Esc 由 Game 统一处理（关大厅 / 退出组队），这里不重复
         return;
       }
+      // F3：抖动诊断面板开关（preventDefault 挡掉浏览器默认的"查找"）
+      if (e.code === 'F3') {
+        e.preventDefault();
+        this.debug?.toggle();
+        return;
+      }
       this.keys.add(e.code);
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
         e.preventDefault();
@@ -556,7 +568,16 @@ export class CoopMode {
     // speed 是上一次 predict 写下的，倒下后没人清它，渲染外推还拿它当
     // "仍在行驶"，于是车每帧被往前画 0.3~0.5 米、下一帧又被拉回来——
     // 用户看到的就是"不按方向键，坦克自己在抖动着移动"。
-    if (!this.me.alive || this.me.down) this.me.speed = 0;
+    if (!this.me.alive || this.me.down) {
+      this.me.speed = 0;
+      // ⚠ _vel 也必须清零。渲染外推（_disp 前馈）和残差消化都用它，
+      // 倒下后 predict 不再执行，_vel 会残留倒下前的行驶速度：
+      // _disp 每帧按旧速度前冲 → 软约束拉回 → 再前冲，倒下的车（以及
+      // 跟着它的相机）就自己"滑来滑去"。上面只清 speed 是修了一半。
+      this._vel.x = 0;
+      this._vel.z = 0;
+      this._yawVel = 0;
+    }
     if (this.me.alive && !this.me.down) {
       // 预测必须按服务端 tick 走，不能按渲染帧走。
       // 服务端固定 30Hz 推进，60fps 下如果每帧都 predict 一次，
@@ -647,6 +668,15 @@ export class CoopMode {
     this._syncBoss();
     this._updateTerrainChip(dt);
     this._updateMinimap(dt);
+
+    // 诊断面板：只读快照，4Hz 刷 DOM，不参与任何游戏逻辑
+    this.debug?.frame(dt, {
+      net: this.net,
+      me: this.me,
+      myId: this.myId,
+      disp: this._disp,
+      vel: this._vel,
+    });
 
     this.renderer.render(this.scene, this.camera);
   }

@@ -137,6 +137,9 @@ export function updateRevive(players, dt) {
  *
  * Boss 血量也吃 hpMul：以前 Boss 完全不随人数缩放，4 人打 Boss
  * 等于 4 倍 DPS 打同一个血条，是联机里最大的白给点。
+ *
+ * 注：远端 r30 曾在 startWave 里额外乘一个常量 CS=0.6，那是"固定乘数"
+ * 不是"指数 0.6"——2 人只多 8% 的敌人，和本意相反。这里统一用指数。
  */
 export function scaleForPlayers(n) {
   const c = Math.max(1, Math.min(4, n));
