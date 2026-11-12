@@ -113,6 +113,16 @@ export class Game {
 
     this.hud = new HUD();
 
+    // 浏览器自动播放策略：把"任意一次点击/按键"都当成解锁音频的时机。
+    // 联机进房走的是 WebSocket 回调（不是用户手势），只靠"出击"按钮那一次
+    // 手势偶尔解不开，表现就是"单机有音乐、组队没有"。
+    const unlockAudio = () => this.sound.unlock();
+    window.addEventListener('pointerdown', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+
+    // 切到后台就停配乐调度并挂起音频时钟（省电，也避免回来时那一串补排的音符）
+    document.addEventListener('visibilitychange', () => this.sound.setHidden(document.hidden));
+
     // 团队邀请链接里带 ?room=XXXX：打开后自动填好人呼号就能一键进房。
     // 只做"预填"，不自动连——朋友可能想先换车体。
     const inviteRoom = new URLSearchParams(location.search).get('room');
@@ -304,7 +314,7 @@ export class Game {
         const muted = this.sound.toggleMute();
         this.sound.unlock();
         if (this.state === 'playing' || this.state === 'menu') {
-          this.hud.showMessage(muted ? '音效 关' : '音效 开', 0.8);
+          this.hud.showMessage(muted ? '声音 关' : '声音 开', 0.8);
         }
         e.preventDefault();
         return;
@@ -538,6 +548,8 @@ export class Game {
     this._applyTerrain(seed);
     this._applyLayout(seed);
     this.sound.unlock();
+    this.sound.startMusic();
+    this.sound.fanfare();
     this._clearField();
     this._resetRun();
 
@@ -579,6 +591,17 @@ export class Game {
     this.start(this.chassisId, { name: this.callsign });
   }
 
+  /**
+   * 音效空间化的"耳朵"：相机位置 + 朝向（投到 XZ 平面）。
+   * 只交出纯数字，sound.js 因此不必 import THREE，测试里也能直接喂假坐标。
+   * 联机模式下 CoopMode 复用同一个相机，直接调 game.listener() 即可。
+   */
+  listener() {
+    const c = this.camera.position;
+    const f = this.camLook;
+    return { x: c.x, z: c.z, fx: f.x - c.x, fz: f.z - c.z };
+  }
+
   startWave(n) {
     this.wave = n;
     const bossWave = n % 5 === 0;
@@ -588,6 +611,9 @@ export class Game {
     const hp = Math.round((55 + n * 14) * this.mods.enemyHpMul);
     const speed = 8.5 + Math.min(4.5, n * 0.6);
     const chargers = n >= 2 && !bossWave ? Math.min(6, Math.floor(n / 2)) : 0;
+
+    // 配乐随波次加压：开场 0.45，常规波最高 0.72，Boss 波 0.95
+    this.sound.setMusicIntensity(bossWave ? 0.95 : Math.min(0.72, 0.42 + n * 0.03));
 
     this.waveActive = true;
     this.waveTime = 0;
@@ -860,7 +886,7 @@ export class Game {
     this.hud.setKills(this.kills);
     this.hud.setScore(this.score);
     this.effects.explosion(pos.clone().setY(1), 0xff9a3d, 26, 1.3);
-    this.sound.explosion(1.2);
+    this.sound.explosionAt(pos, 1.2, this.listener());
     this.shake = Math.max(this.shake, 0.4);
 
     const p = this.player.group.position;
@@ -1115,7 +1141,7 @@ export class Game {
     );
 
     this.effects.explosion(pos.clone().setY(Math.max(0.4, pos.y)), 0xffb040, 16 + level * 6, 1.05 + level * 0.15);
-    this.sound.explosion(0.8 + level * 0.25);
+    this.sound.explosionAt(pos, 0.8 + level * 0.25, this.listener());
 
     for (const e of victims) {
       const died = e.tank.takeDamage(damage);
@@ -1206,7 +1232,7 @@ export class Game {
     const enemy = this.enemies[idx];
     this.enemies.splice(idx, 1);
     this.effects.explosion(enemy.position.clone().setY(1.1), 0xff8a3d, enemy.isBoss ? 48 : 20, enemy.isBoss ? 1.9 : 1.15);
-    this.sound.explosion(enemy.isBoss ? 1.9 : enemy.isElite ? 1.2 : 0.9);
+    this.sound.explosionAt(enemy.position, enemy.isBoss ? 1.9 : enemy.isElite ? 1.2 : 0.9, this.listener());
     this.scene.remove(enemy.tank.group);
     if (enemy.sight) this.scene.remove(enemy.sight);
     this.kills += 1;
@@ -1249,8 +1275,9 @@ export class Game {
     this._clearHazards();
     this.hud.hideBossBar();
     this.effects.explosion(this.player.group.position.clone().setY(1), 0xffb347, 30, 1.5);
-    this.sound.explosion(1.6);
+    this.sound.explosionAt(this.player.group.position, 1.6, this.listener());
     this.sound.hurt();
+    this.sound.stopMusic(1.4);
     this.shake = 0.8;
     this.hud.showMessage('装甲被击穿', 1.6);
     this.hud.setHealth(0, this.player.maxHp);
@@ -1307,6 +1334,8 @@ export class Game {
       return;
     }
     this.sound.clear();
+    // 战斗间隙把配乐收一档：连打十波时，一直顶在 0.72 会让"下一波要来了"变得没有对比
+    this.sound.setMusicIntensity(0.42);
     this.hud.showRewards(this.wave, this.choices, this.upgradeCounts);
   }
 
@@ -1860,6 +1889,7 @@ export class Game {
     // 先切模式再断线：net 的 close 回调看到 mode==='solo' 就不会再弹"与服务器断开"
     this.mode = 'solo';
     this.state = 'menu';
+    this.sound.stopMusic(0.5);
     this.coop?.exit();
     // 必须真的断开。早期只切了本地状态，人还留在房间里：
     // 队友那边会一直看到一台"幽灵坦克"，本机也会继续收快照与事件。

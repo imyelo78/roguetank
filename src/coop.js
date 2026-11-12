@@ -15,7 +15,6 @@ import { Tank } from './Tank.js';
 import { Bullet } from './Bullet.js';
 import { createLevel, PLAYER_START, HALF } from './level.js';
 import { Effects } from './Effects.js';
-import { Sound } from './sound.js';
 import { CHASSIS, CHASSIS_TABLE, normalizeChassisId } from './chassis.js';
 import { SELF_SKIN, MATE_SKIN, enemySkin } from './teams.js';
 import { followStep, validateFollow } from './core/camera.js';
@@ -160,7 +159,9 @@ export class CoopMode {
     this.camera = null;
     this.renderer = null;
     this.effects = null;
-    this.sound = new Sound();
+    // 和单机共用同一个 Sound（同一个 AudioContext / 静音开关 / 配乐）。
+    // 以前这里 new Sound()：联机时按 M 只静音了单机那一套，组队里毫无反应。
+    this.sound = game.sound;
 
     this.stats = createStats();
     this.runTime = 0;
@@ -230,12 +231,16 @@ export class CoopMode {
 
     this.game.hud.showMessage(`组队出击 · ${list.length}/4 人 · 房间 ${this.code}`, 3);
     this.sound.unlock();
+    this.sound.startMusic();
+    this.sound.setMusicIntensity(this.wave % 5 === 0 ? 0.95 : Math.min(0.72, 0.42 + this.wave * 0.03));
+    this.sound.fanfare();
   }
 
   exit() {
     if (!this.active) return;
     this.active = false;
     this._unbindInput();
+    this.sound.stopMusic(1.2);
 
     for (const t of this.tanks.values()) t.dispose(this.scene);
     for (const t of this.enemies.values()) t.dispose(this.scene);
@@ -1445,7 +1450,8 @@ export class CoopMode {
         }
         case 'kill': {
           this.effects.explosion(new THREE.Vector3(e.x, 1.1, e.z), e.boss ? 0xff8a3d : 0xffb06a, e.boss ? 46 : 14, e.boss ? 1.8 : 1);
-          this.sound.explosion(e.boss ? 1.4 : 0.8);
+          // 远处队友/敌人被击毁按距离衰减：4 人局里到处在炸，不衰减就只剩一堵噪声墙
+          this.sound.explosionAt({ x: e.x, z: e.z }, e.boss ? 1.4 : 0.8, this.game.listener());
           if (e.by === this.myId) this.kills += 1;
           break;
         }
@@ -1470,9 +1476,14 @@ export class CoopMode {
           break;
         case 'wave':
           this.game.hud.showMessage(e.boss ? `第 ${e.wave} 波 · BOSS 来袭` : `第 ${e.wave} 波 来袭`, 1.8);
+          // 配乐跟着波次加压（单机同款曲线，见 Game.startWave）
+          this.sound.setMusicIntensity(e.boss ? 0.95 : Math.min(0.72, 0.42 + (e.wave || 1) * 0.03));
+          if (e.boss) this.sound.bossIn();
           break;
         case 'cleared':
           this.game.hud.showMessage(`第 ${e.wave} 波清除 · 全员补血`, 1.6);
+          // 选卡间隙收一档，下一波再压上来（单机同款处理，见 Game._showReward）
+          this.sound.setMusicIntensity(0.42);
           break;
         case 'picksClosed':
           // 服务端关窗（全员选完 / 超时替选）。以前没有这条消息，没在 12 秒内
@@ -1481,7 +1492,7 @@ export class CoopMode {
           break;
         case 'boom':
           this.effects.explosion(new THREE.Vector3(e.x, 1, e.z), 0xff5a2a, 18, 1);
-          this.sound.explosion(1.2);
+          this.sound.explosionAt({ x: e.x, z: e.z }, 1.2, this.game.listener());
           break;
         case 'join':
           if (e.id !== this.myId) this.game.hud.showMessage(`${e.name || '队友'} 加入了战斗`, 2);
