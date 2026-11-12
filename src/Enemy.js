@@ -3,6 +3,7 @@ import { Tank } from './Tank.js';
 import { R } from './rng.js';
 import { enemySkin } from './teams.js';
 import { solveIntercept, AIM_DEFAULTS, flatPitch, dirFrom } from './core/aim.js';
+import { createPatrolState, stepPatrol, wakePatrol, sendHunting, PATROL } from './core/patrol.js';
 
 const BAR_W = 2.24;
 const LOS_INTERVAL = 0.2;
@@ -42,7 +43,7 @@ const BOSS_INFO = {
 const tmpGoal = new THREE.Vector3();
 
 export class Enemy {
-  constructor(scene, { x, z, hp = 60, speed = 9, camera, type = 'gunner', damage }) {
+  constructor(scene, { x, z, hp = 60, speed = 9, camera, type = 'gunner', damage, patrolRoute = null }) {
     const charger = type === 'charger';
     const elite = type === 'elite';
     const bossInfo = BOSS_INFO[type];
@@ -150,6 +151,12 @@ export class Enemy {
 
     this.state = 'patrol';
     this.target = null;
+    // 巡逻/驻军状态。没有路线就是猎杀队，沿用原来的追击 AI。
+    // offset 用固定随机流，保证单机每局路线一致（方便复现问题）。
+    this.patrol = patrolRoute ? createPatrolState(patrolRoute, () => R.stream('patrol')()) : null;
+    // 挨打时叫醒自己和附近同伴。挂在 tank 上，子弹结算不必知道 Enemy。
+    this.tank.onDamaged = () => this._onDamaged();
+    this._ctx = null;
     this.fireCd = 1.2 + R.combat() * 1.6;
     this.spawnShield = 0.9;   // 出场保护，避免刚出生就被秒
     this.stuckT = 0;          // 卡住计时
@@ -288,10 +295,28 @@ export class Enemy {
     return advanced;
   }
 
+  /** 残局兜底：巡逻队转猎杀（由 Game 在一波快结束时调用） */
+  sendHunting() {
+    sendHunting(this.patrol);
+  }
+
+  /** 被玩家命中：自己和 26 米内的同伴从巡逻转入追击 */
+  _onDamaged() {
+    if (!this.patrol) return;
+    wakePatrol(this.patrol);
+    const ctx = this._ctx;
+    if (!ctx || !ctx.enemies) return;
+    for (const o of ctx.enemies) {
+      if (o === this || !o.alive || !o.patrol) continue;
+      if (o.position.distanceTo(this.position) < PATROL.callR) wakePatrol(o.patrol);
+    }
+  }
+
   update(dt, ctx) {
     const tank = this.tank;
     if (!tank.alive) return;
 
+    this._ctx = ctx;
     tank.update(dt);
     this.fireCd -= dt;
     this.flankT -= dt;
@@ -337,9 +362,30 @@ export class Enemy {
       return;
     }
 
+    // ---- 巡逻 / 驻军：警戒圈外走固定路线，不追玩家 ----
+    // 和联机服务端调的是同一个 stepPatrol，避免"单机能巡逻、联机还追人"。
+    let forcedChase = false;
+    if (this.patrol) {
+      const dec = stepPatrol(this.patrol, dt, dist, p);
+      if (dec && dec.mode !== 'chase') {
+        this.state = 'patrol';
+        if (dec.mode !== 'hold') {
+          this._navigate(dt, ctx, dec.tx, dec.tz, dec.speedMul ?? 0.6);
+          // 炮塔朝行进方向：玩家从背后接近可以先手，站着不动的车不再送分
+          tank.aimTowards(Math.atan2(dec.tx - p.x, dec.tz - p.z), dt, 3);
+        }
+        this._updateBar();
+        return;
+      }
+      forcedChase = true;
+    }
+
     // ---- 状态机 ----
     if (this.charger) {
       this.state = this.los ? 'chase' : 'flank';
+    } else if (forcedChase) {
+      // 已经被巡逻警戒圈唤醒：不再退回"围着玩家绕圈"的旧 patrol 状态
+      this.state = dist < 16 && this.los ? 'attack' : 'chase';
     } else if (dist < 16 && this.los) this.state = 'attack';
     else if (dist > 58 && this.noLosT > 2) this.state = 'patrol';
     else if (this.los) this.state = 'chase';
@@ -542,6 +588,21 @@ export class Enemy {
     // 保持距离 + 侧移
     const near = breaker ? 13 : 17;
     const far = breaker ? 21 : 27;
+
+    // 区域压制：被拉出锚点太远就回防，不再从地图一头追到另一头。
+    // Boss 用的是和杂兵同一份 core/patrol.js（kind='boss' 有独立的警戒/leash）。
+    if (this.patrol) {
+      const dec = stepPatrol(this.patrol, dt, dist, p);
+      if (dec && dec.mode !== 'chase') {
+        if (dec.mode !== 'hold') {
+          this._navigate(dt, ctx, dec.tx, dec.tz, dec.speedMul ?? 0.8);
+          tank.aimTowards(Math.atan2(dec.tx - p.x, dec.tz - p.z), dt, 3);
+        }
+        this._updateBar();
+        return;
+      }
+    }
+
     if (!this.los || dist > far) {
       this._navigate(dt, ctx, player.x, player.z, 0.72);
     } else if (dist < near) {

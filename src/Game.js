@@ -15,12 +15,13 @@ import { HIT_TOP, AIM_BODY_Y, FLAT_SLOPE } from './core/aim.js';
 import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
 import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
-import { R, randomSeed } from './rng.js';
+import { R, Rng, randomSeed } from './rng.js';
 import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
 import { CoopMode } from './coop.js';
 import { NetClient } from './net.js';
 import { angleDiff } from './core/motion.js';
+import { buildPatrolRoutes, anchorRoute } from './core/patrol.js';
 
 const TMP = new THREE.Vector3();
 const TMP2 = new THREE.Vector3();
@@ -186,6 +187,7 @@ export class Game {
     this.mapSeedFixed = tq.get('map') === 'old' ? 0 : null;
     this.world = createLevel(this.scene, null); // 先建空图，start() 里按种子铺地表
     this.nav = createNav(this.world);
+    this.patrolRoutes = [];
     this.effects = new Effects(this.scene);
 
     // 小地图（静态障碍烘焙一次）
@@ -506,6 +508,16 @@ export class Game {
     const mid = this.mapSeedFixed != null ? this.mapSeedFixed : seed;
     this.world.setLayout(generateBoxes(mid));
     this.nav = createNav(this.world);
+    // 巡逻路线：种子生成，单机每局不同；同一局内所有驻军共用这几条线。
+    // 用独立的 Rng 实例，不消耗 R 的 spawn/combat 流，刷怪序列不受影响。
+    const pr = new Rng((mid ^ 0x2f7a31c5) >>> 0);
+    this.patrolRoutes = buildPatrolRoutes(() => pr.spawn(), {
+      half: HALF,
+      blocked: (x, z, r) => this.world.blocked(x, z, r),
+      avoid: [{ ...PLAYER_START, r: 30 }],
+      count: 10,
+      minGap: 26,
+    });
     this.minimap?.invalidate?.();
     return mid;
   }
@@ -579,6 +591,7 @@ export class Game {
 
     this.waveActive = true;
     this.waveTime = 0;
+    this.huntSent = false;
     this.pending = [];
     this.playerCd = 0;
     this.heat = 0;
@@ -774,10 +787,27 @@ export class Game {
     });
   }
 
+  /**
+   * 单机编成：约 2/3 的常规敌人是驻守/巡逻，其余猎杀。
+   * Boss 用单点锚位（守区域、有限追击）；自爆兵/无人机/补给车保持猎杀。
+   */
+  _patrolRouteFor(type, x, z) {
+    if (type.startsWith('boss_')) return anchorRoute('boss', x, z);
+    if (type === 'charger' || type === 'drone' || type === 'support' || type === 'turret') return null;
+    if (!this.patrolRoutes || !this.patrolRoutes.length) return null;
+    const pr = R.stream('patrolRoles');
+    if (pr() >= 0.66) return null;
+    return this.patrolRoutes[Math.min(
+      this.patrolRoutes.length - 1,
+      Math.floor(pr() * this.patrolRoutes.length)
+    )];
+  }
+
   _spawnEnemyAt(hp, speed, x, z, type) {
     const enemy = new Enemy(this.scene, {
       x, z, hp, speed, type,
       camera: this.camera,
+      patrolRoute: this._patrolRouteFor(type, x, z),
     });
     this.enemies.push(enemy);
     this.effects.explosion(new THREE.Vector3(x, 1, z), 0xff7a3d, 8, 0.7);
@@ -1391,6 +1421,15 @@ export class Game {
     }
 
     this._updateWarnings(dt);
+
+    // 残局兜底：只剩最后几只、或这一波打了 75 秒，巡逻队全部转猎杀。
+    // 否则玩家要在 200×200 的地图上追着最后一辆绕圈的车跑。
+    if (this.waveActive && !this.huntSent &&
+        (this.enemies.length + this.pending.length + this.warnings.length <= 3 ||
+         this.waveTime > 75)) {
+      this.huntSent = true;
+      for (const e of this.enemies) e.sendHunting?.();
+    }
 
     this.hud.setLeft(this.enemies.length + this.pending.length + this.warnings.length);
 

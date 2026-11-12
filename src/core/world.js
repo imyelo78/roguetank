@@ -14,10 +14,13 @@ import { stepBody, aimTurret, angleDiff } from './motion.js';
 import { deepestHit, hitsAny, slideCircle, pushOut } from './collide.js';
 // 地表类型场：两端同源的速度系数（地形为空时完全退化成 1.0）
 import { buildTerrain, speedAt, presetK } from './terrain.js';
-import {
-  createPlayer, updateRevive, scaleForPlayers,
+import { createPlayer, updateRevive, scaleForPlayers,
   emptyInput, DOWN_TIME, RESPAWN_DELAY, newStats,
 } from './players.js';
+import {
+  buildPatrolRoutes, createPatrolState, anchorRoute, stepPatrol,
+  wakePatrol, sendHunting, PATROL,
+} from './patrol.js';
 import { R, Rng } from '../rng.js';
 // 弹道拦截（提前量）：和单机共用同一份解算，别再两处各写一套弹道数学
 import { solveIntercept } from './aim.js';
@@ -228,6 +231,19 @@ export class World {
     // 客户端不自己生成一份再对比，而是直接收 fullState().boxes ——
     // 生成算法哪怕只差一个随机数，后果都是"你看得见墙、服务端没有"。
     this.static = buildStaticWorld(this.terrain, this.seed);
+
+    // ---- 巡逻路线：种子生成，不通过网络同步 ----
+    //
+    // 放在 static 之后建：航点要避墙，必须拿得到碰撞表。
+    // 用独立随机流，避免"多生成 8 条路线"把刷怪/弹道序列整体带偏。
+    const patrolRng = new Rng((this.seed ^ 0x2f7a31c5) >>> 0);
+    this.patrolRoutes = buildPatrolRoutes(() => patrolRng.spawn(), {
+      half: HALF,
+      blocked: (x, z, r) => this.static.blocked(x, z, r),
+      avoid: spawnsFor(this.seed).map(([x, z]) => ({ x, z, r: 26 })),
+      count: 10,
+      minGap: 26,
+    });
 
     this.players = [];
     this.enemies = [];
@@ -588,7 +604,7 @@ export class World {
       const dist = Math.max(0.01, bestD);
       const dx = target.x - e.x;
       const dz = target.z - e.z;
-      const aimYaw = Math.atan2(dx, dz);
+      let aimYaw = Math.atan2(dx, dz);
       // Boss 提前量：炮塔朝"你将要到的地方"转，而不是"你现在在的地方"。
       // 之前就是纯直线瞄准，玩家一横移（15 m/s）就 100% 落空——
       // 线上表现是"破城者主炮一点伤害都没有"。
@@ -605,6 +621,25 @@ export class World {
       }
       const reach = e.range > 0 ? e.range : 30;
 
+      // ---- 巡逻 / 驻军决策（与单机共用 core/patrol.js）----
+      //
+      // 没有巡逻状态、或者已经转入追击的，继续走原来的追击 AI。
+      // 巡逻中的车不朝玩家开火、炮塔朝行进方向——玩家从背后接近可以先手，
+      // 这是"地图上有驻军"和"地图上全是追兵"的区别。
+      const pat = e.patrol ? stepPatrol(e.patrol, dt, dist, e) : null;
+      const passive = !!pat && pat.mode !== 'chase';
+      if (passive) {
+        if (pat.mode === 'hold') {
+          fireYaw = e.turretYaw;              // 站桩警戒：炮塔保持原朝向
+        } else {
+          const pdx = (pat.tx ?? e.x) - e.x;
+          const pdz = (pat.tz ?? e.z) - e.z;
+          if (Math.hypot(pdx, pdz) > 0.1) aimYaw = Math.atan2(pdx, pdz);
+          fireYaw = aimYaw;                   // 炮塔跟着行进方向
+        }
+        aimYaw = fireYaw;
+      }
+
       // ---- 移动：远则逼近，中距压上，近则拉开（炮台不动）----
       //
       // 用户反馈："敌方坦克围过来的时候还是无法靠近，只会围绕着我的坦克转圈"。
@@ -615,10 +650,19 @@ export class World {
       // 现在除"太近要退开"之外，径向一律朝里压：侧移只用来找角度，
       // 不允许盖过收拢。同时给转向留出"对准时间"：车头没对准就降速，
       // 避免一边扭一边挪造成的原地画圈观感。
-      if (!e.static) {
+      if (!e.static && !(passive && pat.mode === 'hold')) {
         let mx = 0;
         let mz = 0;
-        if (dist > reach * 0.85) {
+        let moveMul = 1;
+        if (passive) {
+          // 巡逻 / 回防：朝航点走，不追玩家
+          const pdx = (pat.tx ?? e.x) - e.x;
+          const pdz = (pat.tz ?? e.z) - e.z;
+          const pl = Math.hypot(pdx, pdz) || 1;
+          mx = pdx / pl;
+          mz = pdz / pl;
+          moveMul = pat.speedMul ?? PATROL.routeSpeed;
+        } else if (dist > reach * 0.85) {
           mx = dx / dist; mz = dz / dist;                       // 远：直线逼近
         } else if (dist < reach * 0.45) {
           mx = -dx / dist; mz = -dz / dist;                     // 太近：退开
@@ -667,7 +711,8 @@ export class World {
         const uz = e._mz / len;
         // 敌人也吃地表：不然玩家陷在沼泽里爬、敌人不受影响，等于电脑开挂。
         // 注意 _checkStuck 里仍用未减速的期望步长，避免泥地里被误判成卡住。
-        const step = e.speed * dt * speedAt(this.terrain, e.x, e.z);
+        const step = e.speed * moveMul * dt * speedAt(this.terrain, e.x, e.z);
+        e._moveMul = moveMul;
         const nx = e.x + ux * step;
         const nz = e.z + uz * step;
         const ox = e.x;
@@ -748,7 +793,7 @@ export class World {
       // 远程开火：射程内且炮塔确实指到"能打中"的位置（弧长判据：
       // 角度 × 距离 < 1.2 米。裸角度 0.35 在 25 米处是 8.8 米偏差，
       // 炮塔差着大半格就开炮，弹永远擦身而过）。
-      if (e.range > 0 && e.fireCd <= 0 && dist < e.range && Math.abs(tdiff) * dist < 1.2) {
+      if (!passive && e.range > 0 && e.fireCd <= 0 && dist < e.range && Math.abs(tdiff) * dist < 1.2) {
         e.fireCd = e.fireCdRange[0] + this.rng.combat() * (e.fireCdRange[1] - e.fireCdRange[0]);
         // 命中率：给子弹一点散布，避免"弹弹必中"变成无解消耗
         const spread = 0.06;
@@ -857,6 +902,15 @@ export class World {
     }
 
     e.hp -= damage;
+    // 挨打就醒：命中会让这一队（以及 26 米内的同伴）从巡逻转入追击。
+    // 没有这条，"打巡逻队"会变成单方面点名——后面的车还在原地绕圈。
+    if (e.patrol) {
+      wakePatrol(e.patrol);
+      for (const o of this.enemies) {
+        if (o === e || !o.alive || !o.patrol) continue;
+        if (Math.hypot(o.x - e.x, o.z - e.z) < PATROL.callR) wakePatrol(o.patrol);
+      }
+    }
     const owner = this.players.find((p) => p.id === ownerId);
     if (owner) {
       owner.stats.damage += Math.min(damage, Math.max(0, e.hp + damage));
@@ -899,12 +953,18 @@ export class World {
 
     this.waveActive = true;
     this.pending = [];
+    // 残局兜底用：一波打太久、或只剩几只时，把还在巡逻的车全部转成猎杀，
+    // 否则玩家要在 200×200 的地图上满地图找最后一辆绕圈的车。
+    this.waveClock = 0;
+    this.huntSent = false;
 
     if (bossWave) {
       const breaker = Math.floor(n / 5) % 2 === 1;
-      this.pending.push({ t: 0.7, type: breaker ? 'boss_breaker' : 'boss_prism', hpScale: 1300 + n * 300 });
+      // Boss 血量吃人数缩放：以前 4 个人打同一个血条，等于 4 倍 DPS 白给
+      const bossHp = Math.round((1300 + n * 300) * this.scale.hpMul);
+      this.pending.push({ t: 0.7, type: breaker ? 'boss_breaker' : 'boss_prism', hpScale: bossHp });
       for (let i = 0; i < 3 + Math.floor(n / 4); i++) {
-        this.pending.push({ t: 1.7 + i * 0.9, type: 'gunner', hp });
+        this.pending.push({ t: 1.7 + i * 0.9, type: 'gunner', hp: Math.round(hp * 0.8) });
       }
     } else {
       if (eliteWave) {
@@ -925,6 +985,8 @@ export class World {
   }
 
   _updateWaves(dt) {
+    this.waveClock = (this.waveClock || 0) + dt;
+
     // 待入场
     for (let i = this.pending.length - 1; i >= 0; i--) {
       const it = this.pending[i];
@@ -936,6 +998,13 @@ export class World {
     }
 
     this.enemiesLeft = this.enemies.length + this.pending.length;
+
+    // 残局兜底：只剩最后几只，或这一波已经打了 75 秒，巡逻队转猎杀
+    if (this.waveActive && !this.huntSent && this.enemiesLeft > 0 &&
+        (this.enemiesLeft <= 3 || this.waveClock > 75)) {
+      this.huntSent = true;
+      for (const e of this.enemies) if (e.patrol) sendHunting(e.patrol);
+    }
 
     const anyAlive = this.players.some((p) => p.alive);
     if (!anyAlive) {
@@ -973,11 +1042,51 @@ export class World {
     }
   }
 
+  /**
+   * 这一只敌人是"守/巡逻"还是"猎杀"。
+   *
+   * 编成目标：60~70% 驻守/巡逻，其余猎杀。全是巡逻会变成清据点，
+   * 全是猎杀就是改之前那样"整张图一起追玩家"。
+   * 自爆兵/无人机/补给车保留猎杀，炮台原地驻守，Boss 守区域。
+   */
+  _patrolKindFor(type, tpl) {
+    if (tpl.static) return null;
+    if (tpl.boss) return 'boss';
+    if (type === 'charger' || type === 'drone' || type === 'support') return null;
+    if (!this.patrolRoutes.length) return null;
+    return this.rng.spawn() < 0.66 ? 'route' : null;
+  }
+
+  /** 巡逻队优先在自己航线的锚点附近入场，别全从玩家对面涌过来 */
+  _routeSpawnPoint(anchor) {
+    for (let i = 0; i < 8; i++) {
+      const a = this.rng.spawn() * Math.PI * 2;
+      const r = i === 0 ? 0 : 3 + this.rng.spawn() * 9;
+      const x = anchor.x + Math.sin(a) * r;
+      const z = anchor.z + Math.cos(a) * r;
+      if (Math.abs(x) > HALF - 8 || Math.abs(z) > HALF - 8) continue;
+      if (this.static.blocked(x, z, 2.4)) continue;
+      if (this.players.some((p) => Math.hypot(p.x - x, p.z - z) < 30)) continue;
+      return { x, z };
+    }
+    return null;
+  }
+
   _spawn(it) {
     const tpl = ENEMY_TYPES[it.type];
     if (!tpl) return;
 
-    const pt = this._spawnPoint();
+    const kind = this._patrolKindFor(it.type, tpl);
+    let route = null;
+    let pt = null;
+    if (kind === 'route') {
+      route = this.patrolRoutes[Math.floor(this.rng.spawn() * this.patrolRoutes.length)];
+      pt = this._routeSpawnPoint(route.anchor);
+    }
+    if (!pt) {
+      pt = this._spawnPoint();
+      if (kind === 'boss') route = anchorRoute('boss', pt.x, pt.z);
+    }
     const hp = it.hpScale || it.hp || 60;
 
     const e = {
@@ -1010,6 +1119,8 @@ export class World {
       strafeSide: this.rng.combat() > 0.5 ? 1 : -1,
       blockedT: 0,
       typeCode: Object.keys(ENEMY_TYPES).indexOf(it.type) + 1,
+      // 巡逻状态只存在于服务端模拟里；快照不传航点，客户端也看不到
+      patrol: route ? createPatrolState(route, () => this.rng.spawn()) : null,
     };
     e.turretYaw = e.yaw;
     this.enemies.push(e);
@@ -1052,7 +1163,7 @@ export class World {
   _checkStuck(dt) {
     for (const e of this.enemies) {
       if (e.static || !e.speed) continue;
-      const step = e.speed * dt;
+      const step = e.speed * (e._moveMul ?? 1) * dt;
       const moved = e._px === undefined
         ? step
         : Math.hypot(e.x - e._px, e.z - e._pz);

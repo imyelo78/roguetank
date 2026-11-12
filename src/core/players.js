@@ -126,13 +126,23 @@ export function updateRevive(players, dt) {
 
 /**
  * 人数缩放。线性放大会变成推墙，不放大会变成切菜，所以：
- *   敌人血量 sqrt(n)，数量 n^0.85。4 人时血量 ×2、数量 ×3.2。
+ *   敌人血量 sqrt(n)，数量 n^0.6。
+ *
+ * 数量指数从 0.85 降到 0.6 是 r30 的核心平衡改动：
+ *   - 0.85 时 4 人第 12 波是 122 只 / 5.3 万血，玩家只有 4 倍火力，
+ *     实际打起来是"清不完、只能一直跑"；
+ *   - 0.6 时 4 人数量 ×2.30（3 人 ×1.93），总血量约为单人的 4.6 倍，
+ *     和 4 倍火力基本对齐。
+ * 省下来的数量预算不靠堆血量补，而是交给巡逻/驻军质量（core/patrol.js）。
+ *
+ * Boss 血量也吃 hpMul：以前 Boss 完全不随人数缩放，4 人打 Boss
+ * 等于 4 倍 DPS 打同一个血条，是联机里最大的白给点。
  */
 export function scaleForPlayers(n) {
   const c = Math.max(1, Math.min(4, n));
   return {
     hpMul: Math.sqrt(c),
-    countMul: Math.pow(c, 0.85),
+    countMul: Math.pow(c, 0.6),
     scoreMul: Math.sqrt(c), // 得分同步放大，跨人数才勉强可比
   };
 }

@@ -465,6 +465,7 @@ export class Tank {
   takeDamage(amount) {
     if (!this.alive) return false;
     this.hp = Math.max(0, this.hp - amount);
+    if (this.onDamaged) this.onDamaged(amount);
     if (this.hp <= 0) {
       this.alive = false;
       return true;
