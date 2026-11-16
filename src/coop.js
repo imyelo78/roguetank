@@ -27,6 +27,7 @@ import { NetClient, predict, TICK_RATE } from './net.js';
 import { buildTerrain, TERRAIN } from './core/terrain.js';
 import { NetDebug } from './debug.js';
 import { assistAim, AIM_RANGE } from './input/touch.js';
+import { FOG_BASE } from './core/quality.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -278,13 +279,15 @@ export class CoopMode {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x172430);
-    this.scene.fog = new THREE.Fog(0x172430, 95, 215);
+    // 画质档位由 Game 定（进入联机不会重开页面），雾和阴影跟单机同一套系数
+    const q = g.quality;
+    this.scene.fog = new THREE.Fog(0x172430, FOG_BASE.near * q.fogMul, FOG_BASE.far * q.fogMul);
 
     const hemi = new THREE.HemisphereLight(0xcfe4f5, 0x4a5240, 1.25);
     this.scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xfff3dd, 2.2);
     sun.position.set(46, 78, 30);
-    sun.castShadow = true;
+    sun.castShadow = q.shadows;
     sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.left = -120;
     sun.shadow.camera.right = 120;
@@ -298,6 +301,7 @@ export class CoopMode {
     // 地表场只收到"种子 + 档位"，本地重建一份；进房前不知道，所以只在此时建图。
     this.world = createLevel(this.scene, this._buildTerrain());
     this.effects = new Effects(this.scene);
+    this.effects.budget = q.particles;
 
     // 瞄准环
     const ring = new THREE.Mesh(

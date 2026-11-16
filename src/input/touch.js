@@ -15,6 +15,11 @@
 //   - 新增 8° 辅助吸附（assistAim，可在开始界面关掉），只吸附 46m 内的目标，
 //     并且在吸附窗口边缘平滑过渡，不会出现"锁上/脱锁"的跳变。
 //   - 两根摇杆都有可视浮层（走位是青绿、瞄准是橙），按下即出现。
+//
+// 首次进战斗会弹一次双区引导（左推 / 右按），碰过两个区或 5 秒后消失，
+// 只弹一次（localStorage 记账）， prefs.js 负责读写。
+
+import { loadGuideSeen, saveGuideSeen } from './prefs.js';
 
 /** 走位摇杆外圈半径（px）：拇指走到这里算推满 */
 export const STICK_RADIUS = 62;
@@ -65,8 +70,7 @@ export function aimAngle(dx, dy) {
   return Math.atan2(dx, dy);
 }
 
-/** 屏幕坐标 → 归一化设备坐标（与 mousemove 那条路径完全一致） */
-export function toNDC(clientX, clientY, rect) {
+/** 屏幕坐标 → 归一化设备坐标（与 mousemove 那条路径完全一致） */export function toNDC(clientX, clientY, rect) {
   const r = rect || { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
   const w = Math.max(1, r.width);
   const h = Math.max(1, r.height);
@@ -149,6 +153,10 @@ export class TouchControls {
     this._aimEl = null;
     this._aimKnob = null;
     this._hint = null;
+    this._guide = null;         // 首次引导浮层
+    this._guideTimer = 0;
+    this._guidedMove = false;   // 引导期间碰过左区吗
+    this._guidedAim = false;    // 引导期间碰过右区吗
     this._bound = false;
 
     this._onDown = (e) => this._handleDown(e);
@@ -185,11 +193,13 @@ export class TouchControls {
     this._el?.remove();
     this._aimEl?.remove();
     this._hint?.remove();
+    this._guide?.remove();
     this._el = null;
     this._knob = null;
     this._aimEl = null;
     this._aimKnob = null;
     this._hint = null;
+    this._guide = null;
   }
 
   /** 切换接收方。进入 / 退出组队时由 CoopMode 调用 */
@@ -212,6 +222,9 @@ export class TouchControls {
    */
   refresh() {
     if (!this.active) this._stopAll();
+    // 引导跟着"进入战斗"走：开局弹出，退出战斗（选卡/阵亡/回菜单）时收掉
+    if (this.active) this._maybeGuide();
+    else this._dismissGuide();
     this._checkOrientation();
   }
 
@@ -238,6 +251,7 @@ export class TouchControls {
       this.origin.y = e.clientY;
       this._showStick(e.clientX, e.clientY);
       this.target.move?.(0, 0);
+      this._guidedMove = true;
     } else {
       if (this.aimPointer !== null) return;
       this.aimPointer = e.pointerId;
@@ -245,7 +259,10 @@ export class TouchControls {
       this.aimOrigin.y = e.clientY;
       this._showAimStick(e.clientX, e.clientY);
       this.target.fire?.(true);
+      this._guidedAim = true;
     }
+    // 两个区都碰过 → 已经会玩了，立刻收掉引导
+    if (this._guide && this._guidedMove && this._guidedAim) this._dismissGuide();
   }
 
   _handleMove(e) {
@@ -315,6 +332,52 @@ export class TouchControls {
     this.aimPointer = null;
     this._hideAimStick();
     this.target?.fire?.(false);
+  }
+
+  // ---------------- 首次引导 ----------------
+
+  /**
+   * 第一次进战斗时弹双区提示。不挡操作（pointer-events: none）：
+   * 会玩的人直接开打，碰过两个区就提前收掉；5 秒后也自动收。
+   */
+  _maybeGuide() {
+    if (this._guide || this._guideTimer || loadGuideSeen() || !this.doc) return;
+    const touch = window.matchMedia?.('(pointer: coarse)')?.matches
+      || (navigator.maxTouchPoints || 0) > 0;
+    if (!touch) return;   // 鼠标用户用不着，别闪一下烦人
+
+    const el = this.doc.createElement('div');
+    el.className = 'touch-guide';
+    const mk = (cls, title, sub) => {
+      const card = this.doc.createElement('div');
+      card.className = `touch-guide-card ${cls}`;
+      const b = this.doc.createElement('b');
+      b.textContent = title;
+      const s = this.doc.createElement('span');
+      s.textContent = sub;
+      card.appendChild(b);
+      card.appendChild(s);
+      el.appendChild(card);
+    };
+    mk('left', '左手', '推动驾驶');
+    mk('right', '右手', '按住瞄准开火 · 松手停火');
+    this.doc.body.appendChild(el);
+    this._guide = el;
+    this._guidedMove = false;
+    this._guidedAim = false;
+    this._guideTimer = setTimeout(() => this._dismissGuide(), 5000);
+  }
+
+  _dismissGuide() {
+    if (this._guideTimer) {
+      clearTimeout(this._guideTimer);
+      this._guideTimer = 0;
+    }
+    if (!this._guide) return;
+    this._guide.remove();
+    this._guide = null;
+    // 弹过一次就算见过：哪怕 5 秒到了还没碰右区，也别每局都唠叨
+    saveGuideSeen();
   }
 
   // ---------------- 覆盖层 ----------------

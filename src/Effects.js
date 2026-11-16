@@ -35,6 +35,9 @@ export class Effects {
     // 对象池：按特效类型回收 mesh（连同伴生材质）。
     // 池自然收敛到"历史同时存在的最大数量"，游戏内同时存在的特效就几十个，无泄漏风险。
     this._pool = { particle: [], ring: [], flash: [], muzzle: [] };
+    // 粒子预算（0~1）：由画质档位设置。低配设备同一次爆炸只发一半碎片——
+    // 爆炸的观感主要靠火环和闪光，碎片减半几乎看不出，省下的填充率很实在。
+    this.budget = 1;
   }
 
   /** 从池里取一个 mesh；池空才新建。颜色由调用方随后设置。 */
@@ -65,6 +68,7 @@ export class Effects {
 
   /** 爆炸：碎片 + 冲击环 */
   explosion(pos, color = 0xffa040, count = 14, power = 1) {
+    count = Math.max(4, Math.round(count * this.budget));
     for (let i = 0; i < count; i++) {
       const m = this._acquire('particle');
       m.material.color.setHex(Math.random() > 0.45 ? color : 0x2b2b2b);
@@ -120,7 +124,8 @@ export class Effects {
 
   /** 装甲被击中的火花 */
   spark(pos) {
-    for (let i = 0; i < 6; i++) {
+    const n = Math.max(3, Math.round(6 * this.budget));
+    for (let i = 0; i < n; i++) {
       const m = this._acquire('particle');
       m.material.color.setHex(0xffe6a8);
       m.material.opacity = 1;

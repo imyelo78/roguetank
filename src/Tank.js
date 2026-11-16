@@ -423,7 +423,9 @@ export class Tank {
     if (len < 0.001) return false;
     dx /= len; dz /= len;
 
-    const step = this.speed * dt;
+    // 模拟量：向量长度当油门（0~1）。键盘分量是 ±1、斜推 len=1.41，
+    // 钳到 1 后与旧行为完全一致；触屏摇杆轻推就是慢走。
+    const step = this.speed * dt * Math.min(1, len);
     const p = this.group.position;
     const ox = p.x, oz = p.z;
     let moved = false;

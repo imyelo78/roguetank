@@ -69,11 +69,16 @@ export function stepBody(body, input, dt, col, half) {
   // 恒速：不插值、不趋近。原来用 dt*8 的速度斜坡，松键后还会滑 0.2~0.3 秒，
   // 叠加网络延迟与预测校正，体感就是"按了没反应、松了还在动"。
   //
+  // 模拟量：输入向量长度 0~1 直接当油门（触屏摇杆轻推 = 慢走）。
+  // 键盘是 ±1 分量，斜着按 len=1.41，钳到 1 —— 和以前完全一致。
+  // 两端跑的是这一个函数，预测不会因此纠偏。
+  //
   // 地表：只有"目标速度"乘地形系数，位移仍是一步到位。
   // 不能让位移本身依赖地形做积分——两端浮点差会随帧累积成可见漂移。
   // col.terrain 为空（旧地图 / 没开地形的房间）时完全走原路径。
   const baseSpeed = body.speedBase || 15;
-  body.speed = col?.terrain ? baseSpeed * speedAt(col.terrain, body.x, body.z) : baseSpeed;
+  body.speed = (col?.terrain ? baseSpeed * speedAt(col.terrain, body.x, body.z) : baseSpeed)
+    * Math.min(1, len);
 
   // 车头追移动方向。位移是立即生效的，所以方向感不受转速影响。
   const want = Math.atan2(ux, uz);

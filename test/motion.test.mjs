@@ -177,5 +177,33 @@ console.log('\n[8] 敌人车头始终朝着行进方向（不许绕圈）');
   ok(`${angs.length} 个移动样本中只有 ${(over45 * 100).toFixed(0)}% 车头明显偏离行进方向`);
 }
 
+console.log('\n[9] 模拟量：输入向量长度当油门（触屏摇杆轻推 = 慢走）');
+{
+  const mk = () => ({ x: 0, z: 0, yaw: 0, speed: 0, speedBase: 15 });
+
+  // 轻推一半：速度和位移都按 0.5 缩放
+  const half = mk();
+  stepBody(half, { mx: 0.5, mz: 0 }, DT, null, HALF);
+  assert.ok(Math.abs(half.speed - 7.5) < 1e-9, `半推速度应 7.5（实际 ${half.speed}）`);
+  assert.ok(Math.abs(half.x - 7.5 * DT) < 1e-9, `半推位移应 7.5×dt（实际 ${half.x}）`);
+
+  // 键盘斜推 len=1.41 → 钳到 1，与旧行为一致（不许变慢）
+  const diag = mk();
+  stepBody(diag, { mx: 1, mz: 1 }, DT, null, HALF);
+  assert.ok(Math.abs(diag.speed - 15) < 1e-9, `键盘斜推速度应 15（实际 ${diag.speed}）`);
+  assert.ok(Math.abs(Math.hypot(diag.x, diag.z) - 15 * DT) < 1e-9, '斜推位移长度不变');
+
+  // 摇杆推满：和键盘一样满速
+  const full = mk();
+  stepBody(full, { mx: 0.9256, mz: 0.3784 }, DT, null, HALF); // len ≈ 0.9999
+  assert.ok(full.speed > 14.9, `摇杆推满应接近满速（实际 ${full.speed.toFixed(2)}）`);
+
+  // 极小输入回落到"静止"分支
+  const rest = mk();
+  stepBody(rest, { mx: 0.0005, mz: 0 }, DT, null, HALF);
+  assert.equal(rest.speed, 0, '小于阈值应视为静止');
+  ok('半推半速、键盘斜推满速、推满满速、微推静止');
+}
+
 console.log(`\n运动学测试全部通过（${pass} 项）\n`);
 console.log(`（车体跟随移动方向的转速 TURN_TO_RATE = ${TURN_TO_RATE} rad/s，与单机 Tank.move 的 dt*8 一致）`);

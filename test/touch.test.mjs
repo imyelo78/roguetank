@@ -236,4 +236,45 @@ saveAssist(true);
 assert.equal(loadAssist(), true, '再打开应持久化为开');
 ok('偏好默认开、可持久化关闭');
 
+console.log('\n[10] 首次触屏引导');
+
+// 记录 createElement 产物与 remove 调用，好断言"弹了/收了"
+const created = [];
+globalThis.document.createElement = (tag) => {
+  const el = mkEl();
+  el.tag = tag;
+  el.remove = () => { el.removed = true; };
+  created.push(el);
+  return el;
+};
+store.clear();   // 假装是第一次玩（复用 [9] 的假 localStorage）
+
+const gcalls = { move: [], aim: [], fire: [] };
+const tc3 = new TouchControls();
+tc3.setTarget({
+  enabled: () => true,
+  move: (x, z) => gcalls.move.push([x, z]),
+  aim: (a) => gcalls.aim.push(a),
+  fire: (on) => gcalls.fire.push(on),
+});
+tc3.refresh();   // 进入战斗（active）→ 应弹引导
+const guide = created.find((el) => el.className === 'touch-guide');
+assert.ok(guide, '首次进战斗应创建引导浮层');
+assert.equal(store.get('tank3d.touchGuide.v1'), undefined, '还没见过就不该记账');
+
+listeners.get('pointerdown')(ev({ pointerId: 31, clientX: 120, clientY: 300 }));  // 左区
+listeners.get('pointerdown')(ev({ pointerId: 32, clientX: 700, clientY: 300 }));  // 右区
+assert.ok(guide.removed, '两个区都碰过应立刻收掉引导');
+assert.equal(store.get('tank3d.touchGuide.v1'), '1', '收掉引导时记一次账');
+assert.ok(gcalls.fire.includes(true), '引导期间操作照常生效（引导不挡操作）');
+
+// 见过之后不再弹
+created.length = 0;
+const tc4 = new TouchControls();
+tc4.setTarget({ enabled: () => true, move: () => {}, aim: () => {}, fire: () => {} });
+tc4.refresh();
+assert.ok(!created.some((el) => el.className === 'touch-guide'), '见过一次就不再弹');
+tc4._dismissGuide();   // 清掉可能挂着的定时器，别拖慢测试进程
+ok('首战弹引导、双区碰过即收、只弹一次');
+
 console.log(`\n触屏输入 ${pass} 项通过\n`);

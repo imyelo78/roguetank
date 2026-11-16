@@ -20,6 +20,7 @@ import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
 import { TouchControls, assistAim, AIM_RANGE } from './input/touch.js';
 import { loadAssist } from './input/prefs.js';
+import { createQuality, FOG_BASE } from './core/quality.js';
 import { CoopMode } from './coop.js';
 import { NetClient } from './net.js';
 import { angleDiff } from './core/motion.js';
@@ -144,18 +145,65 @@ export class Game {
       this.hud.inviteRoom = this.inviteRoom;
     }
 
+    // 画质档位要在建 renderer 之前定：antialias / 像素比 / 阴影都是建的时候就生效的
+    this.quality = createQuality();
+
     this._initRenderer();
     this._initScene();
     this._initInput();
     this._resetPlayer();
   }
 
+  /**
+   * FPS 巡检：每 2.5 秒算一次平均帧率，连续不达标就自动降一档画质。
+   * 只在 high / mid 档生效（low 已是最低），且页面在前台——后台标签页
+   * requestAnimationFrame 被浏览器节流，会把"没人看"误判成"跑不动"。
+   */
+  _qualityWatch(dt) {
+    if (this.noGL || this.quality.tier === 'low') return;
+    this._fpsT = (this._fpsT || 0) + dt;
+    this._fpsN = (this._fpsN || 0) + 1;
+    if (this._fpsT < 2.5) return;
+    const fps = this._fpsN / this._fpsT;
+    this._fpsT = 0;
+    this._fpsN = 0;
+    if (fps >= 30 || document.visibilityState !== 'visible') return;
+    const tier = this.quality.stepDown();
+    if (!tier) return;
+    this._applyQuality();
+    this.hud.showMessage(`已自动降低画质（${Math.round(fps)} fps）`, 2.5);
+  }
+
+  /** 把当前画质档位落到渲染器 / 阴影 / 雾 / 粒子上（降档或初始化时调） */
+  _applyQuality() {
+    const q = this.quality;
+    if (!this.noGL) {
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pixelRatio));
+      this.renderer.shadowMap.enabled = q.shadows;
+      if (this._sun) this._sun.castShadow = q.shadows;
+      // 阴影开关变了以后，编译好的材质还带着旧的 shader 变体，
+      // 不标记 needsUpdate 的话场景会有一半黑一块白的残留
+      this.scene.traverse((o) => {
+        if (o.material) {
+          for (const m of Array.isArray(o.material) ? o.material : [o.material]) m.needsUpdate = true;
+        }
+      });
+    }
+    if (this.effects) this.effects.budget = q.particles;
+    if (this.scene?.fog) {
+      this.scene.fog.near = FOG_BASE.near * q.fogMul;
+      this.scene.fog.far = FOG_BASE.far * q.fogMul;
+    }
+  }
+
   // ------------------------------------------------------------------
   _initRenderer() {
+    const q = this.quality;
     try {
       this.renderer = new THREE.WebGLRenderer({
         canvas: this.canvas,
-        antialias: true,
+        // 低配档关抗锯齿：手机上 MSAA 的填充率开销比它省下的锯齿显眼得多
+        antialias: q.tier !== 'low',
         powerPreference: 'high-performance',
       });
     } catch (e) {
@@ -165,8 +213,8 @@ export class Game {
       this.renderer = makeNullRenderer();
       console.warn('WebGL 不可用，已进入仅界面模式：', e && e.message);
     }
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pixelRatio));
+    this.renderer.shadowMap.enabled = q.shadows;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -174,9 +222,11 @@ export class Game {
   }
 
   _initScene() {
+    const q = this.quality;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x172430);
-    this.scene.fog = new THREE.Fog(0x172430, 95, 215);
+    // 雾随档位拉近：手机上远处本来就看不清，拉到 150 既省填充率又不影响玩法
+    this.scene.fog = new THREE.Fog(0x172430, FOG_BASE.near * q.fogMul, FOG_BASE.far * q.fogMul);
 
     this.camera = new THREE.PerspectiveCamera(52, 1, 0.1, 420);
     this.camera.position.set(0, CAM_HEIGHT + 1, 52);
@@ -186,7 +236,7 @@ export class Game {
 
     const sun = new THREE.DirectionalLight(0xfff3dd, 2.2);
     sun.position.set(46, 78, 30);
-    sun.castShadow = true;
+    sun.castShadow = q.shadows;
     sun.shadow.mapSize.set(2048, 2048);
     sun.shadow.camera.left = -100;
     sun.shadow.camera.right = 100;
@@ -198,6 +248,7 @@ export class Game {
     sun.shadow.normalBias = 0.03;
     this.scene.add(sun);
     this.scene.add(sun.target);
+    this._sun = sun;   // 自动降档时要联动 castShadow
 
     // 单机版没有服务端下发，地形由本局种子派生（每局一张新地表）。
     //   ?terrain=off|light|standard|harsh  改强度档
@@ -212,6 +263,7 @@ export class Game {
     this.nav = createNav(this.world);
     this.patrolRoutes = [];
     this.effects = new Effects(this.scene);
+    this.effects.budget = q.particles;
 
     // 小地图（静态障碍烘焙一次）
     const mapEl = document.getElementById('minimap');
@@ -571,12 +623,13 @@ export class Game {
     // 本局挑战词条
     this.mods = rollModifier();
     this.stats.fireRateMul *= this.mods.fireRateMul;
+    // 词条改的是雾的"基准距离"，画质档位再乘系数——两层互不覆盖
     if (this.mods.fogNear) {
-      this.scene.fog.near = this.mods.fogNear;
-      this.scene.fog.far = this.mods.fogFar;
+      this.scene.fog.near = this.mods.fogNear * this.quality.fogMul;
+      this.scene.fog.far = this.mods.fogFar * this.quality.fogMul;
     } else {
-      this.scene.fog.near = 95;
-      this.scene.fog.far = 215;
+      this.scene.fog.near = FOG_BASE.near * this.quality.fogMul;
+      this.scene.fog.far = FOG_BASE.far * this.quality.fogMul;
     }
     this.hud.setModifier(this.mods);
 
@@ -1121,8 +1174,9 @@ export class Game {
     if (this.keys.has('d') || this.keys.has('arrowright')) mx += 1;
 
     // 触屏摇杆叠加在键盘之上（平板接键盘 + 触屏可以同时用）。
-    // Tank.move() 内部会归一化，这里夹到单位圆只是为了"斜推不超速"这件事在
-    // 上游就是对的，免得以后有人改成按 |v| 缩放速度。
+    // 向量长度就是油门（0~1）：Tank.move / stepBody 按长度缩放步长，
+    // 键盘分量是 ±1 所以斜推照样满速。这里只把合成结果钳在单位圆内，
+    // 保证"键盘 + 摇杆同方向"不会超速。
     if (this.touchMove.x || this.touchMove.z) {
       mx += this.touchMove.x;
       mz += this.touchMove.z;
@@ -1734,6 +1788,7 @@ export class Game {
 
   update(dt) {
     this.hud.update(dt);
+    this._qualityWatch(dt);
     this._updateNetDebug(dt);
 
     // 组队模式下，整个世界由服务端驱动，这里只画
