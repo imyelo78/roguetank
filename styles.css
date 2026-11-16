@@ -23,9 +23,122 @@ html, body {
 
 #app { position: fixed; inset: 0; }
 #app.playing { cursor: none; }
-#scene { display: block; width: 100%; height: 100%; }
+/* touch-action: none —— 手指在画布上拖动时不能滚页 / 触发下拉刷新 */
+#scene { display: block; width: 100%; height: 100%; touch-action: none; }
 
 .hidden { display: none !important; }
+
+/* ---------- 触屏控件（P0：左半屏走位，右半屏瞄准 + 按住连发） ---------- */
+
+.touch-stick {
+  position: fixed;
+  width: 124px;
+  height: 124px;
+  /* 以"按下点"为中心：负 margin 抵掉一半尺寸 */
+  margin: -62px 0 0 -62px;
+  border-radius: 50%;
+  border: 1px solid rgba(93, 202, 165, .45);
+  background: rgba(4, 52, 44, .22);
+  display: none;
+  /* 覆盖层不吃事件：位置全靠 pointer 坐标算，指针滑出去也不会丢 */
+  pointer-events: none;
+  z-index: 25;
+}
+
+.touch-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 50px;
+  height: 50px;
+  margin: -25px 0 0 -25px;
+  border-radius: 50%;
+  background: rgba(29, 158, 117, .78);
+  border: 1px solid rgba(159, 225, 203, .85);
+  will-change: transform;
+}
+
+/* 瞄准摇杆：比走位小一圈、用橙色区分。两根手指同时在屏幕上时，
+   颜色是唯一能立刻分清"哪根管走、哪根管打"的东西。 */
+.touch-stick--aim {
+  width: 116px;
+  height: 116px;
+  margin: -58px 0 0 -58px;
+  border-color: rgba(255, 166, 61, .42);
+  background: rgba(58, 34, 8, .2);
+  /* 中间那圈是 22% 死区：拇指停在里面朝向不变 */
+  background-image: radial-gradient(circle at center, rgba(255, 166, 61, .16) 0 13px, transparent 13px);
+}
+
+.touch-stick-knob--aim {
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  background: rgba(255, 166, 61, .72);
+  border-color: rgba(255, 214, 160, .9);
+}
+
+/* 开始界面上的触屏选项（辅助瞄准开关）。桌面上 display:none，
+   由 HUD 判断到触屏后再加 .show。 */
+.touch-opts {
+  display: none;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.touch-opts.show { display: flex; }
+
+.touch-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 44px 是触屏最小点击热区，低于这个数拇指很容易点空 */
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: 12.5px;
+  letter-spacing: .04em;
+  color: var(--muted);
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 22px;
+}
+
+.touch-opt b {
+  font-weight: 700;
+  color: rgba(255, 166, 61, .85);
+  min-width: 1em;
+}
+
+.touch-opt.on {
+  border-color: rgba(255, 166, 61, .45);
+  background: rgba(255, 166, 61, .1);
+}
+
+/* 竖屏时挡一层：俯视战场竖屏会切掉左右视野，侧后包抄完全看不见 */
+.touch-rotate-hint {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 9, 12, .9);
+  z-index: 9000;
+}
+
+.touch-rotate-box {
+  text-align: center;
+  color: var(--ink);
+  font-size: 15px;
+  letter-spacing: .04em;
+}
+
+.touch-rotate-icon {
+  width: 64px;
+  height: 40px;
+  margin: 0 auto 14px;
+  border: 2px solid rgba(255, 166, 61, .8);
+  border-radius: 6px;
+}
 
 /* ---------- 受击红晕 ---------- */
 #vignette {

@@ -18,6 +18,8 @@ import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
 import { R, Rng, randomSeed } from './rng.js';
 import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
+import { TouchControls, assistAim, AIM_RANGE } from './input/touch.js';
+import { loadAssist } from './input/prefs.js';
 import { CoopMode } from './coop.js';
 import { NetClient } from './net.js';
 import { angleDiff } from './core/motion.js';
@@ -122,6 +124,17 @@ export class Game {
 
     // 切到后台就停配乐调度并挂起音频时钟（省电，也避免回来时那一串补排的音符）
     document.addEventListener('visibilitychange', () => this.sound.setHidden(document.hidden));
+
+    // ---- 触屏：左半屏走位、右半屏瞄准（浮动方向摇杆）+ 按住连发 ----
+    // 触摸不直接进战斗逻辑，先翻译成与键鼠同款的 keys / firing / 瞄准朝向，
+    // 这样单机和联机共用一份输入语义，不会出现"组队里触屏没反应"的分叉。
+    this.touchMove = { x: 0, z: 0 };
+    this.touchAimAngle = null;      // 触屏瞄准朝向（null = 走鼠标那条路）
+    this.aimAssist = loadAssist();  // 8° 辅助吸附，开始界面可关
+    this._assistBuf = [];           // 吸附用的目标缓冲（每帧复用，避免分配）
+    this.touch = new TouchControls();
+    this.touch.setTarget(this.soloTouchTarget());
+    this.hud.onAimAssist = (on) => { this.aimAssist = on; };
 
     // 团队邀请链接里带 ?room=XXXX：打开后自动填好人呼号就能一键进房。
     // 只做"预填"，不自动连——朋友可能想先换车体。
@@ -377,6 +390,8 @@ export class Game {
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     window.addEventListener('mousemove', (e) => {
+      // 鼠标一动就把瞄准从触屏手里接回来（平板接鼠标 / 触屏本很常见）
+      this.touchAimAngle = null;
       this.mouseNDC.x = (e.clientX / window.innerWidth) * 2 - 1;
       this.mouseNDC.y = -(e.clientY / window.innerHeight) * 2 + 1;
       this.hud.moveCrosshair(e.clientX, e.clientY);
@@ -579,6 +594,10 @@ export class Game {
 
     this.hud.startPlaying();
     this.state = 'playing';
+    // 新一局从"没有触屏朝向"开始：否则上一局最后指的方向会带进来，
+    // 开局第一炮就朝一个玩家没选过的角度
+    this.touchAimAngle = null;
+    this.touch.refresh();
     this.aimMarker.visible = true;
     this.camera.lookAt(this.camLook);
     const c = CHASSIS[this.chassisId];
@@ -600,6 +619,48 @@ export class Game {
     const c = this.camera.position;
     const f = this.camLook;
     return { x: c.x, z: c.z, fx: f.x - c.x, fz: f.z - c.z };
+  }
+
+  /**
+   * 单机模式的触屏接收方：只写现有的三个输入字段（keys 之外的 touchMove /
+   * mouseNDC / firing），战斗逻辑一行不改。
+   *
+   * enabled() 卡在"正在战斗"：选卡、结算、菜单里摇杆一律不响应——
+   * 否则点卡片那一下会被当成开火，或者手指压在屏幕上就把坦克推走了。
+   */
+  soloTouchTarget() {
+    return {
+      enabled: () => this.state === 'playing',
+      move: (x, z) => { this.touchMove.x = x; this.touchMove.z = z; },
+      // 只交朝向：瞄准点由 _updateAim 按固定半径算，手指不会挡住目标
+      aim: (angle) => { this.touchAimAngle = angle; },
+      fire: (on) => { this.firing = on && this.state === 'playing'; },
+    };
+  }
+
+  /**
+   * 触屏瞄准：朝向 + 可选吸附 → 坦克周围固定半径上的世界点。
+   * 半径不参与弹道，只决定准心环画在哪，所以 17m 纯粹是个手感数字。
+   */
+  _aimFromTouch(out) {
+    const p = this.player.group.position;
+    let ang = this.touchAimAngle;
+    if (this.aimAssist && this.enemies.length) {
+      // 缓冲每帧复用：一帧几百个敌人也不产生垃圾
+      const buf = this._assistBuf;
+      let n = 0;
+      for (const e of this.enemies) {
+        if (!e.alive) continue;
+        const q = e.position;
+        const t = buf[n] || (buf[n] = { x: 0, z: 0 });
+        t.x = q.x;
+        t.z = q.z;
+        n++;
+      }
+      ang = assistAim(ang, p.x, p.z, buf, { count: n }).angle;
+    }
+    out.set(p.x + Math.sin(ang) * AIM_RANGE, 0.06, p.z + Math.cos(ang) * AIM_RANGE);
+    return out;
   }
 
   startWave(n) {
@@ -729,6 +790,7 @@ export class Game {
     }
 
     this.state = 'playing';
+    this.touch.refresh();
     this.hud.setWave(n);
   }
 
@@ -974,21 +1036,32 @@ export class Game {
   }
 
   _updateAim() {
+    // 触屏朝向一旦确立就一直有效，直到鼠标动一下把它接回去（见 _initInput）。
+    // 抬手不清朝向，因为炮塔有转速，回弹手感很别扭。
+    if (this.touchAimAngle !== null && this.player?.alive) {
+      this._aimFromTouch(TMP);
+      this._applyAim(TMP.x, TMP.z, true);
+      return;
+    }
     this.aimRay.setFromCamera(this.mouseNDC, this.camera);
     const hit = this.aimRay.ray.intersectPlane(this.groundPlane, TMP);
     if (!hit) return;
-    this.aimPoint.copy(TMP);
+    this._applyAim(TMP.x, TMP.z, false);
+  }
+
+  _applyAim(x, z, projectCrosshair) {
+    this.aimPoint.set(x, 0, z);
 
     // 指示环跟随**炮口实际指向**，不是鼠标。
     // 炮塔转速有限（轻装 / 猎手 170°/s），鼠标已经甩到侧面时炮口还在半路——
     // 环如果挂在鼠标上，玩家会以为"瞄准了却打不中"。
     // 现在环会停在炮口真正能到的位置并变红，转到位后自动变回正常色。
-    let mx = TMP.x;
-    let mz = TMP.z;
+    let mx = x;
+    let mz = z;
     const p = this.player;
     if (p && p.alive) {
-      const dx0 = TMP.x - p.x;
-      const dz0 = TMP.z - p.z;
+      const dx0 = x - p.x;
+      const dz0 = z - p.z;
       const dist = Math.hypot(dx0, dz0);
       if (dist > 1.2) {
         const off = angleDiff(Math.atan2(dx0, dz0), p.turretYaw);
@@ -1003,6 +1076,16 @@ export class Game {
       }
     }
     this.aimMarker.position.set(mx, 0.06, mz);
+
+    // 触屏模式下准心跟着这个环走，而不是跟着手指 —— 屏幕上手指压住的位置
+    // 通常是"目标所在"，准心再画在那里就等于没有。
+    if (projectCrosshair) {
+      const v = TMP3.set(mx, 0.06, mz).project(this.camera);
+      this.hud.moveCrosshair(
+        (v.x * 0.5 + 0.5) * window.innerWidth,
+        (-v.y * 0.5 + 0.5) * window.innerHeight,
+      );
+    }
   }
 
   /** 顶部地表指示：0.12 秒刷一次就够，玩家看不出差别，还省 DOM 重排 */
@@ -1036,6 +1119,16 @@ export class Game {
     if (this.keys.has('s') || this.keys.has('arrowdown')) mz += 1;
     if (this.keys.has('a') || this.keys.has('arrowleft')) mx -= 1;
     if (this.keys.has('d') || this.keys.has('arrowright')) mx += 1;
+
+    // 触屏摇杆叠加在键盘之上（平板接键盘 + 触屏可以同时用）。
+    // Tank.move() 内部会归一化，这里夹到单位圆只是为了"斜推不超速"这件事在
+    // 上游就是对的，免得以后有人改成按 |v| 缩放速度。
+    if (this.touchMove.x || this.touchMove.z) {
+      mx += this.touchMove.x;
+      mz += this.touchMove.z;
+      const mlen = Math.hypot(mx, mz);
+      if (mlen > 1) { mx /= mlen; mz /= mlen; }
+    }
 
     if (mx || mz) player.move(mx, mz, dt, this.world);
 
@@ -1269,6 +1362,7 @@ export class Game {
 
   _onPlayerDeath() {
     this.state = 'over';
+    this.touch.refresh();
     this.overTimer = 1.5;
     this.aimMarker.visible = false;
     this.firing = false;
@@ -1298,6 +1392,7 @@ export class Game {
     if (this.state !== 'playing' || !this.player.alive) return;
     this.waveActive = false;
     this.state = 'cleared';
+    this.touch.refresh();
     this.clearedTimer = 1.1;
     this._clearHazards();
     this.hud.hideBossBar();
@@ -1328,6 +1423,7 @@ export class Game {
     });
     this.state = 'reward';
     this.firing = false;
+    this.touch.refresh();
     if (this.choices.length === 0) {
       // 所有强化都满级：直接进入下一波
       this.startWave(this.wave + 1);
@@ -1889,6 +1985,7 @@ export class Game {
     // 先切模式再断线：net 的 close 回调看到 mode==='solo' 就不会再弹"与服务器断开"
     this.mode = 'solo';
     this.state = 'menu';
+    this.touch.refresh();
     this.sound.stopMusic(0.5);
     this.coop?.exit();
     // 必须真的断开。早期只切了本地状态，人还留在房间里：

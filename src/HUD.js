@@ -2,6 +2,7 @@ import { RARITY } from './upgrades.js';
 import { CHASSIS_LIST, CHASSIS, normalizeChassisId } from './chassis.js';
 import { loadCallsign, saveCallsign, todayKey, fetchAll, fetchDay, getPid } from './daily.js';
 import { BUILD } from './core/protocol.js';
+import { loadAssist, saveAssist } from './input/prefs.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -168,6 +169,15 @@ export class HUD {
     $('key-help-head')?.addEventListener('click', () => {
       this.keyHelp?.classList.toggle('collapsed');
     });
+  }
+
+  /** 辅助瞄准开关的显示与状态（状态同时留在 this.aimAssist 上，Game 读它） */
+  _renderAssist(on) {
+    this.aimAssist = !!on;
+    if (!this.assistBtn) return;
+    this.assistBtn.classList.toggle('on', !!on);
+    this.assistBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (this.assistVal) this.assistVal.textContent = on ? '开' : '关';
   }
 
   /**
@@ -587,6 +597,25 @@ export class HUD {
       const name = ensureName();
       if (name) onStart(this.selectedChassis, { name });
     });
+
+    // ---- 触屏选项（辅助瞄准）----
+    // 只在触屏设备上露出来：鼠标玩家用不到这项，菜单里多一个按钮只是噪音。
+    // 判定不能只看 pointer: coarse —— 带触摸屏的 Windows 本主指针是鼠标，
+    // 但 maxTouchPoints > 0，那种机器上也该显示。
+    this.assistBtn = $('touch-assist');
+    this.assistVal = $('touch-assist-val');
+    if (this.assistBtn) {
+      const touch = window.matchMedia?.('(pointer: coarse)')?.matches
+        || (navigator.maxTouchPoints || 0) > 0;
+      this.assistBtn.parentElement?.classList.toggle('show', !!touch);
+      this._renderAssist(loadAssist());
+      this.assistBtn.addEventListener('click', () => {
+        const next = !this.aimAssist;
+        this._renderAssist(next);
+        saveAssist(next);
+        this.onAimAssist?.(next);
+      });
+    }
     if (this.callsignEl) {
       this.callsignEl.addEventListener('change', () => {
         const v = this.callsignEl.value.trim();

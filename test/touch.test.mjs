@@ -1,0 +1,239 @@
+// 触屏输入的离线测试：只钉纯函数（摇杆向量换算、方位角、辅助吸附）和事件接线，
+// 真机手感仍然只能在设备上验。
+//
+// 这里最值得钉的是"方向约定"：屏幕上方 = 世界 -Z，且方位角与 core/motion.js 的
+// turretYaw 同一套（atan2(x, z)）。这条一旦反了，手机上按上坦克会往下开，
+// 或者炮塔永远朝反方向——都是"一眼能看出、但代码里看不出"的 bug。
+
+import assert from 'node:assert/strict';
+import {
+  stickVector, aimVector, aimAngle, assistAim, toNDC,
+  STICK_RADIUS, AIM_RADIUS, AIM_ASSIST_ANGLE,
+} from '../src/input/touch.js';
+
+let pass = 0;
+const ok = (name) => { pass++; console.log(`  · ${name}`); };
+const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
+// 角度比较要考虑 ±π 环绕
+const angNear = (a, b, eps = 1e-6) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) <= eps;
+
+console.log('\n[1] 走位死区');
+
+assert.deepEqual(stickVector(0, 0), { x: 0, z: 0, mag: 0 }, '静止应返回零向量');
+const tiny = stickVector(4, 0);
+assert.equal(tiny.mag, 0, '半径 14% 以内不应该有位移');
+assert.equal(tiny.x, 0);
+ok('死区内不动（避免拇指轻放就漂移）');
+
+console.log('\n[2] 方向约定：屏幕上方 = 世界 -Z');
+
+const up = stickVector(0, -STICK_RADIUS);
+assert.ok(near(up.z, -1), `向上推应该 z=-1（实际 ${up.z}）`);
+assert.ok(near(up.x, 0));
+const down = stickVector(0, STICK_RADIUS);
+assert.ok(near(down.z, 1), '向下推应该 z=+1');
+const right = stickVector(STICK_RADIUS, 0);
+assert.ok(near(right.x, 1), '向右推应该 x=+1');
+const left = stickVector(-STICK_RADIUS, 0);
+assert.ok(near(left.x, -1), '向左推应该 x=-1');
+ok('四个方向的符号都与世界坐标一致');
+
+console.log('\n[3] 走位幅度与截断');
+
+const half = stickVector(STICK_RADIUS / 2, 0);
+assert.ok(half.x > 0.4 && half.x < 0.65, `半程应在 0.5 附近（实际 ${half.x}）`);
+const over = stickVector(STICK_RADIUS * 3, 0);
+assert.ok(near(over.x, 1, 1e-9), '推出边界应截断到 1');
+assert.ok(over.mag <= 1);
+const diag = stickVector(STICK_RADIUS, STICK_RADIUS);
+assert.ok(Math.hypot(diag.x, diag.z) <= 1 + 1e-9, '斜推长度不能超过 1');
+assert.ok(diag.x > 0.7 && diag.z > 0.7, '斜推应保持 45° 方向');
+ok('半程线性、超界截断、斜推长度不超 1');
+
+console.log('\n[4] 瞄准只是方位：长度无关');
+
+// 拇指推 20px 和推 200px，只要方向一样，朝向就必须一样 ——
+// 这正是"手指不必压在目标上"能被实现的原因。
+const short = aimVector(0, -20);
+const long = aimVector(0, -200);
+assert.ok(near(short.x, long.x) && near(short.z, long.z), '同方向不同行程应给出同一朝向北');
+assert.ok(near(Math.hypot(long.x, long.z), 1, 1e-9), '方向向量必须是单位向量');
+assert.equal(aimVector(0, -4).mag, 0, '22% 死区内不给方向');
+ok('方向与行程解耦，死区内保持静默（朝向不变）');
+
+console.log('\n[5] 方位角与 turretYaw 同约定');
+
+assert.ok(angNear(aimAngle(0, 1), 0), '屏幕下方（世界 +Z）应为 0');
+assert.ok(angNear(aimAngle(0, -1), Math.PI), '屏幕上方（世界 -Z）应为 ±π');
+assert.ok(angNear(aimAngle(1, 0), Math.PI / 2), '屏幕右方应为 +π/2');
+assert.ok(angNear(aimAngle(-1, 0), -Math.PI / 2), '屏幕左方应为 -π/2');
+ok('四个方向的方位角与炮塔角度约定一致');
+
+console.log('\n[6] 辅助吸附');
+
+const near8 = AIM_ASSIST_ANGLE * 0.5;   // 4°，窗口中心附近
+const t1 = [{ x: Math.sin(near8) * 20, z: Math.cos(near8) * 20 }];  // 正前方 +4°
+const r1 = assistAim(0, 0, 0, t1);
+assert.ok(r1.snapped, '4° 应该吸上');
+// 窗口中心权重 1、边缘 0：4° 处权重正好 0.5，修正量 = 0.5 × 0.9 × 4°
+assert.ok(angNear(r1.angle, near8 * 0.9 * 0.5, 1e-6), `应把角度往目标拉（实际 ${r1.angle}）`);
+
+const far = [{ x: Math.sin(0.35) * 20, z: Math.cos(0.35) * 20 }];   // 20°，窗口外
+assert.ok(!assistAim(0, 0, 0, far).snapped, '窗口外不吸');
+assert.equal(assistAim(0, 0, 0, far).angle, 0);
+
+const distant = [{ x: 0, z: 60 }];                                   // 60m，超距离
+assert.ok(!assistAim(0, 0, 0, distant).snapped, '超过 46m 不吸');
+
+const adjacent = [{ x: 0, z: 1 }];                                   // 贴脸 1m
+assert.ok(!assistAim(0, 0, 0, adjacent).snapped, '贴脸不吸（怎么瞄都能中，吸了反而妨碍转火');
+
+// 窗口边缘要连续：修正量 = 角差 × 权重，边缘权重趋 0，所以 7.99° 的修正
+// 必须近乎 0 —— 否则玩家刚进入吸附范围就会被"抢一下"准心。
+const at = (a, r = 20) => [{ x: Math.sin(a) * r, z: Math.cos(a) * r }];
+const edge = assistAim(0, 0, 0, at(AIM_ASSIST_ANGLE * 0.995));
+const mid = assistAim(0, 0, 0, at(AIM_ASSIST_ANGLE * 0.5));
+const out = assistAim(0, 0, 0, at(AIM_ASSIST_ANGLE * 1.02));
+assert.ok(edge.angle < 2e-3, `窗口边缘修正量应趋近 0（实际 ${edge.angle}）`);
+assert.ok(mid.angle > edge.angle * 10, '窗口中间的修正量应明显大于边缘');
+assert.equal(out.angle, 0, '出窗口立刻不吸（而边缘本就≈0，所以不会跳变）');
+ok('只吸窗口内的敌人，修正量随角差线性衰减');
+
+// 两个目标：取角差更小的那个
+const two = assistAim(0, 0, 0, [
+  { x: Math.sin(0.12) * 20, z: Math.cos(0.12) * 20 },   // 6.9°
+  { x: Math.sin(0.03) * 20, z: Math.cos(0.03) * 20 },   // 1.7°
+]);
+assert.ok(two.angle < 0.05, `应吸更近的那个（实际 ${two.angle}）`);
+
+// ±π 环绕：玩家朝 -179°，敌人在 +179°，最短路径是跨过 ±π
+const wrapAim = assistAim(Math.PI - 0.02, 0, 0, [{ x: Math.sin(-Math.PI + 0.03) * 20, z: Math.cos(-Math.PI + 0.03) * 20 }]);
+assert.ok(Math.abs(wrapAim.angle) > Math.PI - 0.1, '跨 ±π 的吸附不能绕远路转一圈');
+ok('多目标取最近角、跨 ±π 走最短路径');
+
+console.log('\n[7] 屏幕坐标 → NDC');
+
+const rect = { left: 0, top: 0, width: 800, height: 400 };
+const center = toNDC(400, 200, rect);
+assert.ok(near(center.x, 0) && near(center.y, 0), '中心应为 (0,0)');
+const topLeft = toNDC(0, 0, rect);
+assert.ok(near(topLeft.x, -1) && near(topLeft.y, 1), '左上应为 (-1, 1)');
+const bottomRight = toNDC(800, 400, rect);
+assert.ok(near(bottomRight.x, 1) && near(bottomRight.y, -1), '右下应为 (1, -1)');
+const offset = toNDC(200, 200, { left: 100, top: 100, width: 200, height: 200 });
+assert.ok(near(offset.x, 0) && near(offset.y, 0), '带偏移的画布应按 rect 归零');
+ok('NDC 换算与 mousemove 那条路径一致');
+
+console.log('\n[8] 事件接线（假 DOM）');
+
+// 只验"谁调了谁"：触摸落到左半屏 → 移动；右半屏 → 瞄准朝向 + 扳机；鼠标不接管
+const listeners = new Map();
+globalThis.window = {
+  innerWidth: 800,
+  innerHeight: 400,
+  addEventListener: (t, fn) => { listeners.set(t, fn); },
+  removeEventListener: () => {},
+  matchMedia: () => ({ matches: true }),
+};
+const mkEl = () => ({
+  style: {}, className: '', textContent: '',
+  appendChild() {}, setAttribute() {}, remove() {},
+  classList: { toggle() {}, add() {}, contains: () => false },
+});
+globalThis.document = {
+  getElementById: () => ({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 400 }) }),
+  createElement: mkEl,
+  body: { appendChild() {} },
+};
+
+const { TouchControls } = await import('../src/input/touch.js');
+const calls = { move: [], aim: [], fire: [] };
+const tc = new TouchControls();
+tc.setTarget({
+  enabled: () => true,
+  move: (x, z) => calls.move.push([x, z]),
+  aim: (a) => calls.aim.push(a),
+  fire: (on) => calls.fire.push(on),
+});
+
+calls.move.length = 0;
+calls.aim.length = 0;
+calls.fire.length = 0;
+
+const ev = (over) => ({ pointerType: 'touch', preventDefault() {}, target: null, ...over });
+
+listeners.get('pointerdown')(ev({ pointerId: 11, clientX: 120, clientY: 300 }));  // 左半屏
+assert.deepEqual(calls.fire, [], '左半屏按下不该开火');
+
+listeners.get('pointerdown')(ev({ pointerId: 12, clientX: 700, clientY: 300 }));  // 右半屏
+assert.deepEqual(calls.fire, [true], '右半屏按下应开火');
+assert.equal(calls.aim.length, 0, '刚按下还没方向，不该立刻给朝向');
+
+// 上推 60px：方向 = 屏幕上方 = 世界 -Z
+listeners.get('pointermove')(ev({ pointerId: 12, clientX: 700, clientY: 240 }));
+assert.equal(calls.aim.length, 1, '出死区后应给一次朝向');
+assert.ok(angNear(calls.aim[0], Math.PI), `上推应为 ±π（实际 ${calls.aim[0]}）`);
+
+// 回到死区（位移 4px）：朝向保持不变，也不再上报
+listeners.get('pointermove')(ev({ pointerId: 12, clientX: 702, clientY: 302 }));
+assert.equal(calls.aim.length, 1, '死区内不应该改写朝向');
+assert.ok(angNear(tc.aimAngle, Math.PI), '朝向应停留在最后一次有效方向');
+
+// 再拉到右侧：朝向变 +π/2
+listeners.get('pointermove')(ev({ pointerId: 12, clientX: 760, clientY: 300 }));
+assert.ok(angNear(calls.aim.at(-1), Math.PI / 2), '右推应为 +π/2');
+
+listeners.get('pointermove')(ev({ pointerId: 11, clientX: 120, clientY: 240 }));  // 左摇杆上推 60px
+const lastMove = calls.move.at(-1);
+assert.ok(lastMove[1] < 0, `上推应得到 z<0（实际 ${lastMove[1]}）`);
+assert.ok(Math.abs(lastMove[0]) < 1e-6, '纯上推不该有横向分量');
+
+listeners.get('pointerup')(ev({ pointerId: 12 }));
+assert.deepEqual(calls.fire, [true, false], '抬手应松开扳机');
+assert.ok(angNear(tc.aimAngle, Math.PI / 2), '抬手后朝向保留（炮塔不回弹）');
+
+// 鼠标（pointerType mouse）必须留给原来的 mousemove/mousedown 路径
+const fireBefore = calls.fire.length;
+listeners.get('pointerdown')({ pointerType: 'mouse', pointerId: 99, preventDefault() {}, target: null });
+assert.equal(calls.fire.length, fireBefore, '鼠标事件不能被触屏接管');
+
+// 界面按钮上的触摸不能被当成摇杆
+const moveBefore = calls.move.length;
+listeners.get('pointerdown')(ev({
+  pointerId: 21, clientX: 120, clientY: 300,
+  target: { closest: (sel) => (sel === '.no-touch' ? {} : null) },
+}));
+assert.equal(calls.move.length, moveBefore, '点在按钮上不该推坦克');
+
+// 面板打开（enabled 变 false）后再动手指：推杆要被清零
+let allowed = true;
+tc.setTarget({
+  enabled: () => allowed,
+  move: (x, z) => calls.move.push([x, z]),
+  aim: () => {},
+  fire: (on) => calls.fire.push(on),
+});
+listeners.get('pointerdown')(ev({ pointerId: 13, clientX: 120, clientY: 300 }));
+allowed = false;
+calls.move.length = 0;
+listeners.get('pointermove')(ev({ pointerId: 13, clientX: 200, clientY: 300 }));
+assert.deepEqual(calls.move[0], [0, 0], '不可操作时应把推杆清零而不是继续推');
+ok('左右分区、朝向粘性、扳机、鼠标隔离、按钮隔离、面板打开即松杆');
+
+console.log('\n[9] 辅助瞄准偏好');
+
+// localStorage 只在调用时读，所以这里才装假实现（import 时不能碰真 storage）
+const store = new Map();
+globalThis.localStorage = {
+  getItem: (k) => (store.has(k) ? store.get(k) : null),
+  setItem: (k, v) => store.set(k, v),
+};
+const { loadAssist, saveAssist } = await import('../src/input/prefs.js');
+assert.equal(loadAssist(), true, '默认应开启（手机上 8° 吸附能明显减少打偏）');
+saveAssist(false);
+assert.equal(loadAssist(), false, '关掉后应持久化为关');
+saveAssist(true);
+assert.equal(loadAssist(), true, '再打开应持久化为开');
+ok('偏好默认开、可持久化关闭');
+
+console.log(`\n触屏输入 ${pass} 项通过\n`);

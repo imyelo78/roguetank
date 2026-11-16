@@ -122,6 +122,13 @@
         <button id="start-btn">开始冲锋</button>
       </div>
 
+      <!-- 只在触屏设备显示（HUD.bind 里判断 pointer: coarse）。鼠标玩不需要这项。 -->
+      <div class="touch-opts">
+        <button id="touch-assist" class="touch-opt no-touch" type="button" aria-pressed="true">
+          辅助瞄准<b id="touch-assist-val">开</b>
+        </button>
+      </div>
+
       <p class="tip">
         <span id="best" class="best hidden">最佳 <b id="best-text">—</b></span>
         <a id="lb-open" class="link">排行榜</a>

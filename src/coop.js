@@ -26,6 +26,7 @@ import { createNav } from './nav.js';
 import { NetClient, predict, TICK_RATE } from './net.js';
 import { buildTerrain, TERRAIN } from './core/terrain.js';
 import { NetDebug } from './debug.js';
+import { assistAim, AIM_RANGE } from './input/touch.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -152,6 +153,9 @@ export class CoopMode {
     this.keys = new Set();
     this.firing = false;
     this.mouseNDC = new THREE.Vector2();
+    // 触屏摇杆的世界方向向量（由 Game 的 TouchControls 写入）
+    this.touchMove = { x: 0, z: 0 };
+    this.touchAimAngle = null;   // 触屏朝向（null = 走鼠标 raycast）
     this.aimRay = null;
     this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this.aimPoint = new THREE.Vector3();
@@ -234,6 +238,10 @@ export class CoopMode {
     this.sound.startMusic();
     this.sound.setMusicIntensity(this.wave % 5 === 0 ? 0.95 : Math.min(0.72, 0.42 + this.wave * 0.03));
     this.sound.fanfare();
+
+    // 触屏接管：联机时触摸写进 CoopMode 自己的输入字段（keys 是 KeyCode 风格、
+    // mouseNDC 用的是画布矩形），不能沿用单机那份 target。
+    this.game.touch?.setTarget(this.touchTarget());
   }
 
   exit() {
@@ -241,6 +249,9 @@ export class CoopMode {
     this.active = false;
     this._unbindInput();
     this.sound.stopMusic(1.2);
+    this.touchAimAngle = null;
+    // 交还给单机（enabled() 会立刻变成 false，菜单里摇杆不响应）
+    this.game.touch?.setTarget(this.game.soloTouchTarget());
 
     for (const t of this.tanks.values()) t.dispose(this.scene);
     for (const t of this.enemies.values()) t.dispose(this.scene);
@@ -494,6 +505,8 @@ export class CoopMode {
     };
     this._onKeyUp = (e) => this.keys.delete(e.code);
     this._onMouseMove = (e) => {
+      // 鼠标一动就把瞄准从触屏手里接回来
+      this.touchAimAngle = null;
       const el = this.renderer.domElement;
       const r = el.getBoundingClientRect();
       this.mouseNDC.x = ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1;
@@ -525,6 +538,21 @@ export class CoopMode {
     window.removeEventListener('blur', this._onBlur);
   }
 
+  /**
+   * 联机模式的触屏接收方。判定条件与 _readInput 的 canDrive 对齐：
+   * 倒地 / 阵亡 / 未开局都不接收推杆与扳机，避免"躺着还能开炮"。
+   */
+  touchTarget() {
+    const canAct = () => !!(this.active && this.me && this.me.alive && !this.me.down);
+    return {
+      enabled: canAct,
+      move: (x, z) => { this.touchMove.x = x; this.touchMove.z = z; },
+      // 与单机一致：只交朝向，瞄准点按固定半径算（手指不挡目标）
+      aim: (angle) => { this.touchAimAngle = angle; },
+      fire: (on) => { this.firing = on && canAct(); },
+    };
+  }
+
   _readInput() {
     const k = this.keys;
     const canDrive = this.me.alive && !this.me.down;
@@ -539,15 +567,38 @@ export class CoopMode {
       if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
       if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
       if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
+      // 触屏摇杆叠加（与单机同一套语义：屏幕上方 = 世界 -Z）
+      if (this.touchMove.x || this.touchMove.z) {
+        mx += this.touchMove.x;
+        mz += this.touchMove.z;
+        const mlen = Math.hypot(mx, mz);
+        if (mlen > 1) { mx /= mlen; mz /= mlen; }
+      }
     }
 
     // 鼠标 → 世界瞄准点（相机是固定的俯视角，地面平面 y=0）
-    this.aimRay.setFromCamera(this.mouseNDC, this.camera);
-    const hit = new THREE.Vector3();
     let hasAim = false;
-    if (this.aimRay.ray.intersectPlane(this.groundPlane, hit)) {
-      this.aimPoint.copy(hit);
+    if (this.touchAimAngle !== null && this.me) {
+      // 触屏：朝向 → 固定半径上的世界点。吸附目标直接用服务端快照里的敌人
+      // （已经是 {x,z} 的普通对象，不用再转一层）。
+      const foes = this.net?.lastSnap?.enemies;
+      let ang = this.touchAimAngle;
+      if (this.game.aimAssist && foes?.length) {
+        ang = assistAim(ang, this.me.x, this.me.z, foes, { count: foes.length }).angle;
+      }
+      this.aimPoint.set(
+        this.me.x + Math.sin(ang) * AIM_RANGE,
+        0,
+        this.me.z + Math.cos(ang) * AIM_RANGE,
+      );
       hasAim = true;
+    } else {
+      this.aimRay.setFromCamera(this.mouseNDC, this.camera);
+      const hit = new THREE.Vector3();
+      if (this.aimRay.ray.intersectPlane(this.groundPlane, hit)) {
+        this.aimPoint.copy(hit);
+        hasAim = true;
+      }
     }
 
     return {
@@ -1399,6 +1450,16 @@ export class CoopMode {
       }
     }
     this._aimMarker.position.set(mx, 0.06, mz);
+
+    // 触屏：准心跟到环上。食指压住的位置通常就是目标，准心画在那里等于没有。
+    if (this.touchAimAngle !== null && this.camera) {
+      const v = this._aimProj || (this._aimProj = new THREE.Vector3());
+      v.set(mx, 0.06, mz).project(this.camera);
+      this.game.hud.moveCrosshair(
+        (v.x * 0.5 + 0.5) * window.innerWidth,
+        (-v.y * 0.5 + 0.5) * window.innerHeight,
+      );
+    }
   }
 
   /** BOSS 血条：服务端只给 hp 比例，名字按类型码认 */
