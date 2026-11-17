@@ -24,6 +24,7 @@ import { createQuality, FOG_BASE } from './core/quality.js';
 import { CoopMode } from './coop.js';
 import { NetClient } from './net.js';
 import { angleDiff } from './core/motion.js';
+import { screenToNDC, ndcToScreen } from './core/viewport.js';
 import { buildPatrolRoutes, anchorRoute } from './core/patrol.js';
 
 const TMP = new THREE.Vector3();
@@ -266,9 +267,15 @@ export class Game {
     this.effects.budget = q.particles;
 
     // 小地图（静态障碍烘焙一次）
+    // 尺寸既看宽度也看高度：横屏手机只有 300 出头的高度，
+    // 168px 的小地图会直接吃掉右下角一半战场，按高度再收一档。
     const mapEl = document.getElementById('minimap');
+    const mapSize = Math.max(104, Math.min(
+      window.innerWidth < 720 ? 124 : 168,
+      Math.round(window.innerHeight * 0.4),
+    ));
     this.minimap = mapEl
-      ? new Minimap(mapEl, this.world, { size: window.innerWidth < 720 ? 124 : 168 })
+      ? new Minimap(mapEl, this.world, { size: mapSize })
       : null;
     this.mapAcc = 0;
 
@@ -444,8 +451,7 @@ export class Game {
     window.addEventListener('mousemove', (e) => {
       // 鼠标一动就把瞄准从触屏手里接回来（平板接鼠标 / 触屏本很常见）
       this.touchAimAngle = null;
-      this.mouseNDC.x = (e.clientX / window.innerWidth) * 2 - 1;
-      this.mouseNDC.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      screenToNDC(this.canvas, e.clientX, e.clientY, this.mouseNDC);
       this.hud.moveCrosshair(e.clientX, e.clientY);
     });
 
@@ -457,6 +463,11 @@ export class Game {
     });
 
     window.addEventListener('resize', () => this.resize());
+    // 手机地址栏伸缩、全屏切换时，部分浏览器（尤其 iOS）不保证触发 window.resize，
+    // visualViewport 那条更可靠；没有这个 API 就只靠上面那条。
+    window.visualViewport?.addEventListener('resize', () => this.resize());
+    // 进出全屏时 canvas 的 CSS 尺寸变了，但不一定伴随 window.resize
+    document.addEventListener('fullscreenchange', () => this.resize());
 
     this.hud.bind({
       onStart: (id, opts) => {
@@ -477,9 +488,12 @@ export class Game {
   }
 
   resize() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this.renderer.setSize(w, h);
+    // 尺寸以 canvas 的实际矩形为准，不用 window：
+    // 手机地址栏伸缩时 innerHeight 与 CSS 的 100dvh 会差几十像素，
+    // 用 window 会把画面按错误的长宽比拉伸，准心和手指也会错位。
+    const w = this.canvas.clientWidth || window.innerWidth;
+    const h = this.canvas.clientHeight || window.innerHeight;
+    this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -1134,10 +1148,8 @@ export class Game {
     // 通常是"目标所在"，准心再画在那里就等于没有。
     if (projectCrosshair) {
       const v = TMP3.set(mx, 0.06, mz).project(this.camera);
-      this.hud.moveCrosshair(
-        (v.x * 0.5 + 0.5) * window.innerWidth,
-        (-v.y * 0.5 + 0.5) * window.innerHeight,
-      );
+      const s = ndcToScreen(this.canvas, v);
+      this.hud.moveCrosshair(s.x, s.y);
     }
   }
 

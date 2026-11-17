@@ -28,6 +28,7 @@ import { buildTerrain, TERRAIN } from './core/terrain.js';
 import { NetDebug } from './debug.js';
 import { assistAim, AIM_RANGE } from './input/touch.js';
 import { FOG_BASE } from './core/quality.js';
+import { ndcToScreen } from './core/viewport.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -1459,10 +1460,8 @@ export class CoopMode {
     if (this.touchAimAngle !== null && this.camera) {
       const v = this._aimProj || (this._aimProj = new THREE.Vector3());
       v.set(mx, 0.06, mz).project(this.camera);
-      this.game.hud.moveCrosshair(
-        (v.x * 0.5 + 0.5) * window.innerWidth,
-        (-v.y * 0.5 + 0.5) * window.innerHeight,
-      );
+      const s = ndcToScreen(this.renderer.domElement, v);
+      this.game.hud.moveCrosshair(s.x, s.y);
     }
   }
 

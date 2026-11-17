@@ -9,9 +9,16 @@
   --panel: rgba(17, 23, 29, .92);
 }
 
+/*
+ * 高度用 dvh，不用 %：手机上 100% 走的是 layout viewport（地址栏隐藏时的高度），
+ * 地址栏一露出来，页面底部连同 HUD、摇杆、选卡按钮一起被推到屏幕外。
+ * 100dvh 跟随"当前真正能看见的高度"，地址栏伸缩时自己会重排。
+ * 上面那行 100% 是给不支持 dvh 的老浏览器的退路。
+ */
 html, body {
   width: 100%;
   height: 100%;
+  height: 100dvh;
   overflow: hidden;
   background: #080b0e;
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
@@ -19,9 +26,17 @@ html, body {
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
 }
 
-#app { position: fixed; inset: 0; }
+#app {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+}
 #app.playing { cursor: none; }
 /* touch-action: none —— 手指在画布上拖动时不能滚页 / 触发下拉刷新 */
 #scene { display: block; width: 100%; height: 100%; touch-action: none; }
@@ -118,6 +133,7 @@ html, body {
 .touch-guide {
   position: fixed;
   inset: 0;
+  height: 100dvh;
   pointer-events: none;
   z-index: 26;
   animation: touch-guide-in .5s ease;
@@ -145,7 +161,9 @@ html, body {
 }
 
 .touch-guide-card.left { left: 10%; }
-.touch-guide-card.right { right: 10%; }
+/* 右侧引导语让开小地图与底部武器条：小地图占右下 180px、武器条在底部居中，
+   所以这块改用 top 定位卡在两者之间的空隙里（横屏 390 / 302 高度都测过不重叠） */
+.touch-guide-card.right { right: 8%; top: 30%; bottom: auto; }
 
 .touch-guide-card b {
   font-size: 14px;
@@ -183,6 +201,7 @@ html, body {
 #vignette {
   position: fixed;
   inset: 0;
+  height: 100dvh;
   pointer-events: none;
   opacity: 0;
   z-index: 15;
@@ -217,14 +236,17 @@ html, body {
 #crosshair::after { top: 50%; left: -4px; height: 2px; width: calc(100% + 8px); margin-top: -1px; opacity: .55; }
 
 /* ---------- HUD ---------- */
-#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+/* HUD 也要跟着 dvh：它比 canvas 高的话，右下角的小地图会被推到地址栏后面 */
+#hud { position: fixed; inset: 0; height: 100dvh; pointer-events: none; z-index: 10; }
 
 .hud-top {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: start;
   gap: 18px;
-  padding: 20px 26px;
+  /* 刘海/挖孔/圆角：横屏时安全区在左右，竖屏在上下 */
+  padding: calc(20px + env(safe-area-inset-top)) calc(26px + env(safe-area-inset-right))
+           20px calc(26px + env(safe-area-inset-left));
 }
 
 .hud-left { max-width: 320px; }
@@ -517,8 +539,9 @@ html, body {
 /* ---- 小地图 ---- */
 .minimap-wrap {
   position: absolute;
-  right: 22px;
-  bottom: 22px;
+  right: calc(22px + env(safe-area-inset-right));
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  transition: opacity .25s ease;
   padding: 5px;
   border-radius: 10px;
   background: rgba(12, 18, 23, .62);
@@ -528,6 +551,10 @@ html, body {
   line-height: 0;
 }
 #minimap { display: block; border-radius: 5px; }
+
+/* 首次触屏引导会盖在右下角，和小地图叠成两层 —— 引导期间把小地图压淡，
+   两个都看得见又都不碍事；引导消失后自己恢复（:has 不支持时只是不淡出，无副作用）。 */
+body:has(.touch-guide) .minimap-wrap { opacity: .22; }
 .weapon-line {
   display: flex;
   align-items: center;
@@ -614,17 +641,33 @@ html, body {
 .center-msg.show { opacity: 1; transform: none; }
 
 /* ---------- 覆盖层 ---------- */
+/*
+ * overlay 用 100dvh + 可滚动：
+ * - 高度跟着 dvh 走，地址栏在不在都不会把面板顶出屏幕；
+ * - 内容比屏幕高时（手机横屏选卡、结算面板）允许滚动，而不是上下各裁一半；
+ * - 居中靠子元素的 margin:auto，而不是 align-items:center ——
+ *   后者在内容溢出时会把顶部裁掉且滚不上去，这是 flex 居中的老坑。
+ */
 .overlay {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   z-index: 30;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
+           calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
   background: radial-gradient(circle at 50% 42%, rgba(18, 26, 33, .74), rgba(4, 7, 9, .95));
   backdrop-filter: blur(4px);
   animation: fadeIn .22s ease both;
+}
+.overlay > * {
+  margin: auto;
 }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
@@ -1296,6 +1339,46 @@ button:active { transform: translateY(0); }
   50% { opacity: 1; }
 }
 
+/* ---------- 触屏与矮屏适配 ---------- */
+
+/* 触屏设备没有键盘，右下角那块键位说明只是白占地方 —— 腾给小地图和瞄准 */
+@media (pointer: coarse) {
+  .key-help { display: none; }
+  /* 手指热区：卡片本身够高，这里只保证描边不贴边，点起来不慌 */
+  .card { min-height: 64px; }
+}
+
+/*
+ * 横屏手机的可用高度常年在 320~400px（再减掉地址栏），而宽度 800+ 会走三列布局，
+ * 于是「三列大卡」的总高顶出屏幕，上下各被裁一截 —— 这就是选卡在手机上"展不全"的原因。
+ * 这里按高度而不是宽度做压缩：横屏不缺横向空间，缺的是纵向。
+ */
+@media (max-height: 560px) {
+  .overlay {
+    padding: calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right))
+             calc(8px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+  }
+  .reward-head { margin-bottom: 10px; }
+  .reward-kicker { margin-bottom: 7px; padding: 3px 9px; font-size: 9px; }
+  .reward-head h2 { font-size: 19px; margin-bottom: 3px; }
+  .reward-sub { font-size: 11px; }
+  .cards { gap: 10px; }
+  .card { padding: 18px 12px 10px; border-radius: 11px; }
+  .card-rarity { top: 6px; font-size: 8.5px; }
+  .card-icon { font-size: 22px; margin-top: 2px; }
+  .card-name { font-size: 13px; margin: 6px 0 3px; }
+  .card-desc { font-size: 11px; line-height: 1.45; min-height: 0; }
+  .card-lv { margin-top: 7px; font-size: 9px; }
+  .card-key { top: 5px; right: 6px; width: 16px; height: 16px; line-height: 15px; font-size: 9px; }
+  .reward-hint { margin-top: 9px; font-size: 10px; }
+  .panel { padding: 22px 20px 18px; }
+  .panel h1 { font-size: 24px; }
+  .stats-grid { gap: 8px; margin: 14px 0 16px; }
+  .stats-grid div { padding: 8px; }
+  .stats-grid b { font-size: 17px; }
+  button { padding: 12px 18px; }
+}
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 720px) {
   .hud-top { grid-template-columns: 1fr auto; padding: 14px 16px; }
@@ -1305,18 +1388,39 @@ button:active { transform: translateY(0); }
   .hud-right { gap: 14px; }
   .stat b { font-size: 16px; }
   .center-msg { font-size: 22px; }
-  .cards { grid-template-columns: 1fr; gap: 10px; }
-  .card { display: grid; grid-template-columns: 44px 1fr; grid-template-rows: auto auto; text-align: left; padding: 14px 16px; }
-  .card-rarity { position: static; grid-column: 2; }
-  .card-icon { grid-row: 1 / span 2; font-size: 26px; margin: 0; align-self: center; }
-  .card-name { margin: 0 0 2px; }
-  .card-desc { min-height: 0; }
-  .card-lv { position: absolute; right: 14px; bottom: 12px; margin: 0; }
+  .cards { grid-template-columns: 1fr; gap: 8px; }
+  /*
+   * 竖排卡用显式 grid 区域，不能靠自动放置：
+   * 一旦有元素没写 grid-column，它会被塞进 40px 的图标列，
+   * 描述文字就变成一行两三个字的竖条（360 宽的手机上实测如此）。
+   */
+  .card {
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    grid-template-areas:
+      "icon rarity"
+      "icon name"
+      "desc desc";
+    column-gap: 10px;
+    row-gap: 1px;
+    align-items: center;
+    text-align: left;
+    padding: 10px 12px 26px;
+  }
+  .card-icon { grid-area: icon; font-size: 22px; margin: 0; }
+  .card-rarity { grid-area: rarity; position: static; }
+  .card-name { grid-area: name; margin: 0; font-size: 13.5px; }
+  .card-desc { grid-area: desc; min-height: 0; font-size: 11px; line-height: 1.45; margin-top: 3px; }
+  .card-lv { position: absolute; right: 12px; bottom: 8px; margin: 0; }
   .card-key { display: none; }
+  .reward-head { margin-bottom: 10px; }
+  .reward-head h2 { font-size: 20px; margin-bottom: 4px; }
+  .reward-kicker { margin-bottom: 8px; }
+  .reward-sub { font-size: 11px; }
+  .reward-hint { margin-top: 10px; font-size: 10px; }
   .panel { padding: 28px 20px 24px; }
   .panel h1 { font-size: 26px; }
-  .reward-head h2 { font-size: 22px; }
-  .minimap-wrap { right: 10px; bottom: 104px; padding: 4px; }
+  .minimap-wrap { right: calc(10px + env(safe-area-inset-right)); bottom: calc(104px + env(safe-area-inset-bottom)); padding: 4px; }
   /* 小屏上车体卡再压一档，保证一行放得下四个 */
   .chassis-card { padding: 6px 2px; }
   .chassis-card .chassis-icon { font-size: 15px; }
@@ -2373,3 +2477,40 @@ button:active { transform: translateY(0); }
    占一行 —— 去掉之后面板高度正好回到设计稿的 520。
    HUD.renderChassis() 找不到 #chassis-cards 会直接 return，不会报错。
    ========================================================================== */
+
+/*
+ * 横屏手机（高度 300~390）上，首页原本竖着堆：标题 / 模式 / 呼号 / 开始 / 选项，
+ * 总高近 500px —— "开始冲锋"被顶到首屏之外，得先滚动才能开局。
+ * 这里改成左右两栏：左边选模式，右边填呼号 + 开战，一屏看全。
+ */
+@media (max-height: 560px) and (min-width: 560px) {
+  .menu-panel {
+    width: min(94vw, 880px);
+    min-height: 0;
+    padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto auto auto;  /* 标题 / 呼号 / 报错 / 开始 / 辅助瞄准 / 页脚 */
+    gap: 6px 22px;
+    align-items: center;
+  }
+  .deco-diamond { display: none; }
+
+  .menu-title { grid-column: 1 / -1; grid-row: 1; margin: 0; }
+  .menu-title h1 { font-size: 26px; }
+  .menu-sub { display: none; }
+
+  /* 左栏：模式卡纵向占满右栏那几行的空间 */
+  .mode-block { grid-column: 1; grid-row: 2 / span 4; margin: 0; align-self: center; }
+  .menu-section { font-size: 12px; margin-bottom: 6px; }
+  .mode-card { padding: 9px 4px; }
+  .mode-card b { font-size: 11.5px; }
+  .mode-card i { font-size: 9px; }
+
+  .callsign { grid-column: 2; grid-row: 2; margin: 0; }
+  /* 报错单独一行：隐藏时行高为 0，不占位也不和开始按钮叠在一起 */
+  .callsign-err { grid-column: 2; grid-row: 3; margin: 0; font-size: 11px; }
+  .start-btns { grid-column: 2; grid-row: 4; }
+  .touch-opts { grid-column: 2; grid-row: 5; margin: 0; }
+  .tip { grid-column: 1 / -1; grid-row: 6; margin: 0; font-size: 10px; }
+}

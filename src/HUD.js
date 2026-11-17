@@ -3,6 +3,7 @@ import { CHASSIS_LIST, CHASSIS, normalizeChassisId } from './chassis.js';
 import { loadCallsign, saveCallsign, todayKey, fetchAll, fetchDay, getPid } from './daily.js';
 import { BUILD } from './core/protocol.js';
 import { loadAssist, saveAssist } from './input/prefs.js';
+import { autoFullscreenOnTouch } from './input/fullscreen.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -593,6 +594,10 @@ export class HUD {
     });
 
     this.startBtn?.addEventListener('click', () => {
+      // 手机浏览器：地址栏常占 50~100px，而横屏俯视战场正缺这块空间。
+      // 必须在 click 的同步栈里请求全屏 —— 中间只要 await 过别的，
+      // 浏览器的「用户激活」就过期了，requestFullscreen 会被直接拒绝。
+      autoFullscreenOnTouch();
       if (this.mode === 'coop') { enterCoop(); return; }
       const name = ensureName();
       if (name) onStart(this.selectedChassis, { name });

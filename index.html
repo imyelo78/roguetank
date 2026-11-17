@@ -2,8 +2,14 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<!-- viewport-fit=cover：让页面铺到刘海/圆角区域，再用 env(safe-area-inset-*) 把 HUD 推开 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#0a0e12" />
+<!-- 加到主屏后以独立窗口启动：iOS 上这是唯一能彻底摆脱地址栏的办法 -->
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="钢铁突击" />
 <title>钢铁突击 · 3D 坦克肉鸽</title>
 <link rel="stylesheet" href="./styles.css" />
 </head>

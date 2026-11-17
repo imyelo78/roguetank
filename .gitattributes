@@ -1,0 +1,17 @@
+# 行尾统一为 LF：仓库里所有文本 blob 本来都是 LF，
+# 但 Windows 全局 core.autocrlf=true 会把工作区检出成 CRLF，
+# 导致 test/home.test.mjs 里 `indexOf('}\n}')` 这类按行尾切块的断言失败（假失败）。
+* text=auto eol=lf
+
+# 二进制资源不参与行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
