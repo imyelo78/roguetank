@@ -7,6 +7,9 @@ import { autoFullscreenOnTouch } from './input/fullscreen.js';
 
 const $ = (id) => document.getElementById(id);
 
+/** 手机端「战况」展开后自动收回的时长（ms） */
+const PEEK_MS = 5000;
+
 const fmtTime = (ms) => {
   const s = Math.max(0, Math.floor((ms || 0) / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -163,6 +166,9 @@ export class HUD {
 
     // 右下角操作说明
     this.keyHelp = $('key-help');
+    // 手机端「战况」胶囊（战斗时点头部展开/收起）
+    this.peekBtn = $('hud-peek');
+    this._peekTimer = 0;
     // 1280×720 这类笔记本是主力尺寸，展开后 203px 高也压不到面板（横向根本不重叠），
     // 所以门槛压到 700：只有真的很矮的窗口才默认收起。
     const khSmall = window.innerWidth < 900 || window.innerHeight < 700;
@@ -179,6 +185,32 @@ export class HUD {
     this.assistBtn.classList.toggle('on', !!on);
     this.assistBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     if (this.assistVal) this.assistVal.textContent = on ? '开' : '关';
+  }
+
+  /**
+   * 手机端「战况」展开 / 收回。
+   *
+   * 横屏手机去掉地址栏后可用高度常年在 300 出头，而击杀得分、地形、强化图标、
+   * 武器名加房间码这些面板加起来能吃掉上半屏 —— 敌人从上方压过来时正好被挡。
+   * 所以战斗中默认把它们收出边界（上滑 / 折成 0 高），只留活着必需的五样：
+   * 装甲条、波次微标、换弹条、小地图、BOSS 血条。
+   *
+   * 展开后 5 秒自动收回：瞥一眼就够了，久留等于又回到遮挡状态。
+   * 桌面端不挂 is-touch，这些规则一条都不生效，HUD 与原来完全一致。
+   */
+  _setPeek(on) {
+    const want = !!on;
+    if (this._peekTimer) {
+      clearTimeout(this._peekTimer);
+      this._peekTimer = 0;
+    }
+    this.app?.classList.toggle('peek-on', want);
+    if (this.peekBtn) {
+      this.peekBtn.classList.toggle('on', want);
+      this.peekBtn.setAttribute('aria-expanded', want ? 'true' : 'false');
+      this.peekBtn.setAttribute('aria-label', want ? '收起战况' : '展开战况');
+    }
+    if (want) this._peekTimer = setTimeout(() => this._setPeek(false), PEEK_MS);
   }
 
   /**
@@ -621,6 +653,20 @@ export class HUD {
         this.onAimAssist?.(next);
       });
     }
+    // ---- 手机端极简 HUD ----
+    // 判定比辅助瞄准开关更严格：那个只是"多显示一个选项"，这里会真的改版式。
+    // 带触摸屏的 Windows 本主指针是鼠标（pointer: coarse 为 false，any-pointer: fine
+    // 为 true），不能因为 maxTouchPoints > 0 就把它降级成手机 HUD；
+    // 只有"没有精细指针"的设备才算触屏机（手机、无键鼠的平板）。
+    const coarse = window.matchMedia?.('(pointer: coarse)')?.matches;
+    const fine = window.matchMedia?.('(any-pointer: fine)')?.matches;
+    const touchLike = !!coarse || (!fine && (navigator.maxTouchPoints || 0) > 0);
+    document.body.classList.toggle('is-touch', touchLike);
+    this.peekBtn = this.peekBtn || $('hud-peek');
+    this.peekBtn?.addEventListener('click', () => {
+      this._setPeek(!this.app.classList.contains('peek-on'));
+    });
+
     if (this.callsignEl) {
       this.callsignEl.addEventListener('change', () => {
         const v = this.callsignEl.value.trim();
@@ -738,6 +784,8 @@ export class HUD {
     this.hud.classList.remove('hidden');
     this.crosshair.classList.remove('hidden');
     this.app.classList.add('playing');
+    // 每一波开始都回到「极简」，不要把上一波展开的战况带进来
+    this._setPeek(false);
   }
 
   showRewards(wave, choices, counts) {
@@ -895,6 +943,7 @@ export class HUD {
     this.hud.classList.add('hidden');
     this.crosshair.classList.add('hidden');
     this.app.classList.remove('playing');
+    this._setPeek(false);
   }
 
   setBest(best) {

@@ -2514,3 +2514,199 @@ button:active { transform: translateY(0); }
   .touch-opts { grid-column: 2; grid-row: 5; margin: 0; }
   .tip { grid-column: 1 / -1; grid-row: 6; margin: 0; font-size: 10px; }
 }
+
+/* ==========================================================================
+   手机端极简 HUD
+   ---------------------------------------------------------------------------
+   起因是实测截图：844×390 的横屏手机，去掉地址栏后可用高度 300 出头，
+   而顶栏（装甲 + 波次 + 击杀得分）+ 中央大字 + 底部武器条 + 小地图加起来
+   吃掉了上半屏 —— 敌人从上方压过来的时候，正好被这些面板挡个正着。
+
+   继续"整体再缩一档"没用（缩到 8px 也还是挡），所以改成分层：
+
+   · 常显（活着必需）：装甲条、波次微标、换弹 / 热量条、小地图、BOSS 血条
+   · 收起（点右上「战况」展开 5 秒）：击杀得分、地形、挑战词条、
+     强化图标、武器名与类型、联机房间码
+
+   收起用 opacity + transform / max-height，不用 display:none ——
+   后者只能硬闪，前者有 0.26s 过渡，展开时不会"啪"地跳出来。
+   全部规则挂在 body.is-touch 下（HUD.bind 里判定 pointer: coarse 或
+   maxTouchPoints > 0），桌面端一条都不生效，HUD 与 r34 完全一致。
+
+   状态类刻意叫 peek-on 而不是 hud-peek：后者是胶囊按钮自己的类，而胶囊的
+   基础规则里有 display:none —— 状态类要是也叫 hud-peek，#app 一挂上就被
+   那条规则 display:none，整个界面直接消失（踩过一次）。
+   ========================================================================== */
+
+/* ---- 「战况」胶囊：只有触屏 + 战斗中才出现 ---- */
+.hud-peek {
+  position: absolute;
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(10px + env(safe-area-inset-right));
+  display: none;
+  align-items: center;
+  gap: 5px;
+  /* 全局 `button { width: 100% }` 会把胶囊撑成整行、并被 right 推到屏幕外(x=-10)。
+     它是胶囊，不是面板，必须收回自适应宽度。 */
+  width: auto;
+  height: 24px;
+  padding: 0 9px 0 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  color: #c7d4df;
+  background: rgba(12, 18, 23, .5);
+  border: 1px solid rgba(255, 255, 255, .16);
+  box-shadow: none;
+  backdrop-filter: blur(4px);
+  /* #hud 整体 pointer-events:none，这里要单独收回来，否则点不到 */
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  transition: color .16s, border-color .16s, background .16s;
+}
+.hud-peek-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  opacity: .8;
+}
+.hud-peek.on {
+  color: #f2ca91;
+  border-color: rgba(242, 202, 145, .6);
+  background: rgba(38, 28, 16, .72);
+}
+body.is-touch #app.playing .hud-peek { display: flex; }
+
+/* ---- 1. 常显的五样先缩一档 ---- */
+body.is-touch #app.playing .hud-top {
+  padding: calc(9px + env(safe-area-inset-top)) calc(9px + env(safe-area-inset-right))
+           9px calc(9px + env(safe-area-inset-left));
+  gap: 10px;
+}
+/* 展开时给右侧胶囊让位，左右同时加同样宽度，波次微标才还在正中 */
+body.is-touch #app.playing.peek-on .hud-top {
+  padding-left: calc(68px + env(safe-area-inset-left));
+  padding-right: calc(68px + env(safe-area-inset-right));
+}
+
+body.is-touch #app.playing .hud-left { max-width: 128px; }
+body.is-touch #app.playing .hp-row { margin-bottom: 4px; }
+/* 一条带颜色的横条 + 10px 数字就够看懂了，不需要"装甲"两个字 */
+body.is-touch #app.playing .hp-row .label { display: none; }
+body.is-touch #app.playing .hp-text { font-size: 10px; letter-spacing: .02em; }
+body.is-touch #app.playing .bar { height: 7px; }
+
+/* 波次：竖排大块（WAVE / 数字 / 剩余）压成一行微标「W3 · 剩余 12」 */
+body.is-touch #app.playing .wave-chip {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 9px 3px;
+  border-radius: 7px;
+  background: rgba(12, 18, 23, .42);
+  border-color: rgba(255, 255, 255, .1);
+  backdrop-filter: none;
+}
+body.is-touch #app.playing .wave-label { display: none; }
+body.is-touch #app.playing .wave-chip b { font-size: 14px; text-shadow: none; }
+body.is-touch #app.playing .wave-chip b::before {
+  content: 'W';
+  font-size: 9px;
+  font-weight: 600;
+  opacity: .6;
+  margin-right: 1px;
+}
+body.is-touch #app.playing .enemy-left { font-size: 9px; }
+
+/* 武器条：名字整行折掉，只留换弹 / 热量；底板缩小、降透明度 */
+body.is-touch #app.playing .weapon-hud {
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  width: 124px;
+  padding: 4px 8px 5px;
+  border-radius: 7px;
+  background: rgba(12, 18, 23, .38);
+  border-color: rgba(255, 255, 255, .08);
+  backdrop-filter: none;
+}
+body.is-touch #app.playing .reload { height: 3px; margin-top: 0; }
+body.is-touch #app.playing .heat-row { margin-top: 3px; font-size: 8.5px; }
+body.is-touch #app.playing .heat-bar { height: 3px; }
+/* 名字 + 类型标签不许折行：124px 的条里"双联重炮 / 重装"会被挤成竖排
+   （实测"双联重"一行、"炮"一行，"重装"竖着码在右边） */
+body.is-touch #app.playing .weapon-line b,
+body.is-touch #app.playing .weapon-line i { white-space: nowrap; }
+/* 展开时条加宽，让名字行排得下 */
+body.is-touch #app.playing.peek-on .weapon-hud { width: 158px; }
+
+body.is-touch #app.playing .minimap-wrap { padding: 3px; background: rgba(12, 18, 23, .42); }
+
+/* 中央大字：32px 在 390 高的屏上等于半个战场，压到 16px */
+body.is-touch #app.playing .center-msg { top: 17%; font-size: 16px; letter-spacing: .08em; }
+
+/* BOSS 血条：贴到波次下面，窄一档，仍要一眼看清剩多少 */
+body.is-touch #app.playing .boss-bar {
+  top: 40px;
+  width: min(320px, 56vw);
+  padding: 4px 8px 5px;
+  border-radius: 7px;
+}
+body.is-touch #app.playing .boss-head { margin-bottom: 3px; gap: 6px; }
+body.is-touch #app.playing #boss-name { font-size: 11px; }
+body.is-touch #app.playing #boss-hp-text { font-size: 9px; }
+body.is-touch #app.playing .boss-track { height: 6px; }
+
+/* ---- 2. 收起：默认滑出边界 / 折成 0 高 ---- */
+body.is-touch #app.playing .hud-right,
+body.is-touch #app.playing #terrain-chip,
+body.is-touch #app.playing #modifier,
+body.is-touch #app.playing #chips,
+body.is-touch #app.playing .weapon-line,
+body.is-touch #app.playing #room-chip {
+  transition: opacity .2s ease, transform .26s ease, max-height .26s ease, margin .26s ease;
+}
+
+/* 顶部往外滑：translateY(-160%) 足够连阴影一起移出上边界 */
+body.is-touch #app.playing:not(.peek-on) .hud-right,
+body.is-touch #app.playing:not(.peek-on) #terrain-chip,
+body.is-touch #app.playing:not(.peek-on) #modifier {
+  opacity: 0;
+  transform: translateY(-160%);
+  pointer-events: none;
+}
+/* 折成 0 高：这类是"列表"，滑出去会留在原地占位，折高度更干净。
+   min-height 必须一起归零 —— CSS 里 min-height 的优先级高于 max-height，
+   只写 max-height:0 是折不掉的（.chips 自己有 min-height:26px）。 */
+body.is-touch #app.playing:not(.peek-on) #chips,
+body.is-touch #app.playing:not(.peek-on) .weapon-line {
+  max-height: 0;
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  margin: 0;
+  pointer-events: none;
+}
+/* 房间码在左下角，跟走位拇指容易打架，往下滑出去 */
+body.is-touch #app.playing:not(.peek-on) #room-chip {
+  opacity: 0;
+  transform: translateY(160%);
+}
+
+/* ---- 3. 展开态：恢复（过渡对称，5 秒后自动收回） ---- */
+body.is-touch #app.playing.peek-on .hud-right,
+body.is-touch #app.playing.peek-on #terrain-chip,
+body.is-touch #app.playing.peek-on #modifier { opacity: 1; transform: none; }
+body.is-touch #app.playing.peek-on #chips,
+body.is-touch #app.playing.peek-on .weapon-line {
+  max-height: 60px;
+  min-height: 0;
+  opacity: 1;
+}
+body.is-touch #app.playing.peek-on #chips { min-height: 26px; margin-top: 10px; }
+body.is-touch #app.playing.peek-on .weapon-line { margin-top: 0; }
+body.is-touch #app.playing.peek-on #room-chip { opacity: 1; transform: none; }
+
+/* 触屏设备上手指点按不要出现焦点框，但键盘（外接）仍保留可见焦点 */
+body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }

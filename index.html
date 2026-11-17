@@ -21,6 +21,17 @@
 
   <!-- ================= HUD ================= -->
   <div id="hud" class="hidden">
+    <!--
+      手机端「战况」胶囊：只在触屏 + 战斗中显示（见 styles.css 的 .hud-peek）。
+      战斗时击杀/得分、地形、强化图标、武器名这些都不是"活着必需"，默认收出边界；
+      点这里展开 5 秒，再点收回。桌面端永远不出现，HUD 布局与原来一致。
+      no-touch：touch.js 的 pointerdown 会跳过带这个类的元素，
+      否则点它会顺手推一下坦克、或者把右侧那一下当成开火。
+    -->
+    <button id="hud-peek" class="hud-peek no-touch" type="button" aria-expanded="false" aria-label="展开战况">
+      <i class="hud-peek-dot"></i><span>战况</span>
+    </button>
+
     <div class="hud-top">
       <div class="hud-left">
         <div class="hp-row">
