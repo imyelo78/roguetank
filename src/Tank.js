@@ -2,6 +2,7 @@ import * as THREE from '../vendor/three.module.js';
 import { aimTurret, angleDiff } from './core/motion.js';
 import { TURRET_SNAP_RATE, normalizeChassisId } from './chassis.js';
 import { tankSkin } from './teams.js';
+import { batchFor } from './TankBatch.js';
 
 // ======================================================================
 // 材质 / 几何体缓存
@@ -366,6 +367,16 @@ export class Tank {
       this.group.add(this.traverseFan);
     }
 
+    // ---- 合批：低模（敌人、队友）交给 InstancedMesh ----
+    // 高细节车（玩家自己）有负重轮滚动、部件也更多，只有 1 辆，留在原路上省事。
+    // 低模没有任何逐件动画（轮子都不建），整车的可见状态 = 车体矩阵 × 炮塔矩阵，
+    // 正好能压进实例矩阵里。注册后这些 Mesh 会从场景图里摘掉，只留变换节点。
+    this._parts = null;
+    this._batch = null;
+    if (!hi && opts.batch !== false && this.wheels.length === 0) {
+      batchFor(scene).register(this);
+    }
+
     this.tmpV = new THREE.Vector3();
   }
 
@@ -485,6 +496,7 @@ export class Tank {
 
   dispose(scene) {
     scene.remove(this.group);
+    if (this._batch) this._batch.unregister(this);
     // 几何体与材质全部来自共享缓存，不在此释放
   }
 }

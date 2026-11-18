@@ -3,6 +3,7 @@ import { createLevel, PLAYER_START, HALF } from './level.js';
 import { generateBoxes } from './core/levelgen.js';
 import { buildTerrain, presetK, TERRAIN } from './core/terrain.js';
 import { Tank } from './Tank.js';
+import { updateBatches } from './TankBatch.js';
 import { Enemy } from './Enemy.js';
 import { Bullet } from './Bullet.js';
 import { Effects } from './Effects.js';
@@ -220,6 +221,15 @@ export class Game {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
+
+    // 合批的实例矩阵必须在真正提交绘制之前写好。包一层 render 而不是在
+    // update 里插一句：单机在 Game.update 末尾渲染、联机在 coop.update 里
+    // 自己渲染，两条路径都要覆盖，包在这里只有一处，也不会漏。
+    const rawRender = this.renderer.render.bind(this.renderer);
+    this.renderer.render = (scene, camera) => {
+      updateBatches();
+      rawRender(scene, camera);
+    };
   }
 
   _initScene() {
