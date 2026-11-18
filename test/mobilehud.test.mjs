@@ -151,8 +151,9 @@ const has = (src, selector) => src.includes(selector);
     '中央大字在手机上应压到 16px（原来 32px 等于半个战场）');
   assert.match(decl(cssClean, '\nbody.is-touch #app.playing .wave-chip {'), /flex-direction: row/,
     '波次应压成一行微标');
-  assert.match(decl(cssClean, 'body.is-touch #app.playing .boss-bar'), /top: 40px/,
-    'BOSS 血条应贴到顶部，不能压在战场中央');
+  // 顶栏整体上移到 9px 后，BOSS 条跟着让到中央大字下面（34 + 22 高）
+  assert.match(decl(cssClean, 'body.is-touch #app.playing .boss-bar'), /top: calc\(60px/,
+    'BOSS 血条应贴在中央大字下面，不能压在战场中央');
   assert.match(decl(cssClean, 'body.is-touch #app.playing .hp-block'), /max-width: 128px/,
     '装甲区应限宽，别横着占满左边');
   ok('常显五样也按手机尺寸缩了一档（装甲 / 波次 / 武器 / 中央字 / BOSS 条）');
@@ -194,6 +195,46 @@ const has = (src, selector) => src.includes(selector);
   assert.ok(block > lastMedia - 1 || block > css.indexOf('@media (max-height: 560px) and (min-width: 560px)'),
     '手机端极简 HUD 段落必须写在所有 @media 之后（前段同特异性规则会覆盖它）');
   ok('规则位于文件末尾，不被前段媒体查询覆盖');
+}
+
+// ---------------------------------------------------------------- [8] r37 布局
+{
+  // 顶栏贴到 9px：原来为了让开「战况」胶囊整行下压 39px，波次微标和小地图不在一条线上
+  const top = decl(cssClean, 'body.is-touch #app.playing .hud-top');
+  assert.match(top, /padding: calc\(9px/, '顶栏应贴到 9px，不再为胶囊整行下压');
+  // 右列自己让开胶囊（top 10 + 24 高）
+  assert.match(decl(cssClean, 'body.is-touch #app.playing .hud-right'), /padding-top: 28px/,
+    '右列应单独下移 28px 让开「战况」胶囊');
+  ok('顶栏与波次微标贴顶，右列单独让位');
+
+  // 小地图左右 / 上下同距：两处都走 --map-gap，不能一处 calc(x + inset) 一处另写
+  // （.minimap-wrap 有多处定义，这里取第一条基础规则，不是文件末尾的触屏覆盖）
+  const mapStart = cssClean.indexOf('.minimap-wrap {');
+  const map = cssClean.slice(mapStart, cssClean.indexOf('}', mapStart)).replace(/\s+/g, ' ');
+  assert.match(map, /--map-gap: 18px/, '小地图间距应统一走 --map-gap');
+  assert.match(map, /left: calc\(var\(--map-gap\) \+ env/, '左边距应由 --map-gap 推出');
+  assert.match(map, /top: calc\(var\(--map-gap\) \+ env/, '上边距应由 --map-gap 推出');
+  // 横屏时左侧安全区（刘海留白 ~44px）会让左边距虚胖，必须排除
+  assert.match(decl(cssClean, '.minimap-wrap { left: var(--map-gap)'), /left: var\(--map-gap\)/,
+    '横屏应脱离 safe-area-inset-left，左边距严格等于上边距');
+  assert.ok(/body\.is-touch #app\.playing \.minimap-wrap \{[^}]*--map-gap: 9px/.test(cssClean),
+    '战斗中应把 --map-gap 收到 9px');
+  ok('小地图左右上同距，横屏不吃左侧安全区');
+
+  // 横屏结算面板：两栏 + 「再来一局」在左栏（实测单列 843px 高，按钮落到 y=773 够不着）
+  const go = decl(cssClean, '#gameover .panel {');
+  assert.match(go, /grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/, '横屏结算应左右两栏');
+  assert.match(go, /"fail lb"/, '标题与排行榜应分居两栏');
+  assert.match(go, /"again lb"/, '「再来一局」必须放在左栏首屏区域');
+  assert.match(decl(cssClean, '#gameover .stats-grid {'), /repeat\(4, 1fr\)/,
+    '战果四格应摊成一行（横屏不缺横向空间）');
+  assert.match(decl(cssClean, '#gameover #lb-list {'), /overflow-y: auto/, '排行榜列表自己滚');
+  ok('横屏结算改两栏，再来一局固定首屏');
+
+  // 没有榜单时不能留半张空面板
+  assert.match(cssClean, /#gameover \.panel:not\(:has\(#lb:not\(\.hidden\)\)\)/,
+    '排行榜隐藏时应收回单列');
+  ok('榜单隐藏时收回单列');
 }
 
 console.log(`\n手机端极简 HUD ${pass} 项通过`);

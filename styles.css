@@ -561,8 +561,17 @@ html, body {
    移到左上后两个角落各归其主：左上信息、右下操作。 */
 .minimap-wrap {
   position: absolute;
-  left: calc(22px + env(safe-area-inset-left));
-  top: calc(18px + env(safe-area-inset-top));
+  /*
+   * 左边距 = 上边距，且整体再往左上收一档（原来是 22 / 18，看着像贴歪了）。
+   * 不能一个写 22px + inset-left、一个写 18px + inset-top：横屏手机的
+   * safe-area-inset-left 是刘海留白（~44px），而 inset-top 一般是 0，
+   * 于是左边距凭空比上边距宽一倍——玩家看到的就是"小地图没贴到角上"。
+   * 横屏时左侧安全区在这里没用（刘海在左边竖直中段，左上角碰不到），
+   * 所以下面 @media (orientation: landscape) 里直接不吃它。
+   */
+  --map-gap: 18px;
+  left: calc(var(--map-gap) + env(safe-area-inset-left));
+  top: calc(var(--map-gap) + env(safe-area-inset-top));
   transition: opacity .25s ease;
   padding: 5px;
   border-radius: 10px;
@@ -573,6 +582,11 @@ html, body {
   line-height: 0;
 }
 #minimap { display: block; border-radius: 5px; }
+
+/* 横屏：不吃左侧安全区，左边距严格等于上边距（理由见 .minimap-wrap 的注释） */
+@media (orientation: landscape) {
+  .minimap-wrap { left: var(--map-gap); }
+}
 .weapon-line {
   display: flex;
   align-items: center;
@@ -1440,7 +1454,7 @@ button:active { transform: translateY(0); }
   .reward-hint { margin-top: 10px; font-size: 10px; }
   .panel { padding: 28px 20px 24px; }
   .panel h1 { font-size: 26px; }
-  .minimap-wrap { left: calc(10px + env(safe-area-inset-left)); top: calc(10px + env(safe-area-inset-top)); padding: 4px; }
+  .minimap-wrap { --map-gap: 10px; padding: 4px; }
   /* 小屏上车体卡再压一档，保证一行放得下四个 */
   .chassis-card { padding: 6px 2px; }
   .chassis-card .chassis-icon { font-size: 15px; }
@@ -2602,12 +2616,15 @@ body.is-touch #app.playing .hud-peek { display: flex; }
 
 /* ---- 1. 常显的五样先缩一档 ---- */
 body.is-touch #app.playing .hud-top {
-  /* 顶部多留 30px：右上角是「战况」胶囊（top 10、height 24），
-     装甲条原来在左边不受影响，搬到右边后必须让开它。 */
-  padding: calc(39px + env(safe-area-inset-top)) calc(9px + env(safe-area-inset-right))
+  /* 顶部贴到 9px，和小地图同一条线：原来为了让开右上角的「战况」胶囊
+     整行下压 39px，波次微标离上边太远，跟左上角的小地图明显不在一条线上。
+     现在只把右列（装甲条 + 击杀得分）往下让 30px，中间那列照旧贴顶。 */
+  padding: calc(9px + env(safe-area-inset-top)) calc(9px + env(safe-area-inset-right))
            9px calc(9px + env(safe-area-inset-left));
   gap: 10px;
 }
+/* 「战况」胶囊占 top 10 + 24 高，右列让开它 */
+body.is-touch #app.playing .hud-right { padding-top: 28px; }
 /* 展开时给右侧胶囊让位，左右同时加同样宽度，波次微标才还在正中 */
 body.is-touch #app.playing.peek-on .hud-top {
   padding-left: calc(68px + env(safe-area-inset-left));
@@ -2664,18 +2681,23 @@ body.is-touch #app.playing .weapon-line i { white-space: nowrap; }
 body.is-touch #app.playing.peek-on .weapon-hud { width: 158px; }
 
 body.is-touch #app.playing .minimap-wrap {
-  left: calc(9px + env(safe-area-inset-left));
-  top: calc(9px + env(safe-area-inset-top));
+  --map-gap: 9px;
   padding: 3px;
   background: rgba(12, 18, 23, .42);
 }
 
-/* 中央大字：32px 在 390 高的屏上等于半个战场，压到 16px */
-body.is-touch #app.playing .center-msg { top: 17%; font-size: 16px; letter-spacing: .08em; }
+/* 中央大字：32px 在 390 高的屏上等于半个战场，压到 16px。
+   位置紧跟在波次微标下面（原来 17% ≈ 66px，被顶栏一起推得太低） */
+body.is-touch #app.playing .center-msg {
+  top: calc(34px + env(safe-area-inset-top));
+  font-size: 16px;
+  letter-spacing: .08em;
+}
 
-/* BOSS 血条：贴到波次下面，窄一档，仍要一眼看清剩多少 */
+/* BOSS 血条：贴到波次下面，窄一档，仍要一眼看清剩多少。
+   top 让到中央大字下面（大字 34 + 22 高），两者同时出现时不叠 */
 body.is-touch #app.playing .boss-bar {
-  top: 40px;
+  top: calc(60px + env(safe-area-inset-top));
   width: min(320px, 56vw);
   padding: 4px 8px 5px;
   border-radius: 7px;
@@ -2737,3 +2759,85 @@ body.is-touch #app.playing.peek-on #room-chip { opacity: 1; transform: none; }
 
 /* 触屏设备上手指点按不要出现焦点框，但键盘（外接）仍保留可见焦点 */
 body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
+
+/* ==========================================================================
+   横屏手机的结算面板（r37）
+   ---------------------------------------------------------------------------
+   844×390 实测：单列排下来面板 843px 高，而视口只有 390 —— 「再来一局」
+   落在 y=773，得先拖着整块面板往上滑才够得着，手机上基本等于按不到
+   （主页 / 选卡都在 r34、r35 做过横屏适配，唯独这张漏了）。
+
+   改成左右两栏：左栏标题 / 战果 / 再来一局（永远在首屏），右栏今日排行榜
+   （列表自己滚）与邀请好友。排行榜隐藏时（:has 不支持就走两栏，右侧留白，
+   不影响按钮可用）自动收回单列，避免半张空面板。
+   ========================================================================== */
+@media (max-height: 560px) and (min-width: 560px) {
+  #gameover .panel {
+    width: min(96vw, 780px);
+    max-height: calc(100dvh - 12px);
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: repeat(7, auto);
+    grid-template-areas:
+      "fail    lb"
+      "record  lb"
+      "stats   lb"
+      "again   lb"
+      "note    lb"
+      "share   lb"
+      "tip     lb";
+    column-gap: 22px;
+    row-gap: 5px;
+    align-content: center;
+    overflow: hidden;
+  }
+  #gameover .panel > h2.fail { grid-area: fail; font-size: 21px; margin: 0; }
+  #gameover #new-record { grid-area: record; margin: 0; font-size: 11px; }
+  #gameover .stats-grid {
+    grid-area: stats;
+    /* 2×2 在 390 高的屏上要吃掉 120px，横屏不缺横向空间：摊成一行四格 */
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    margin: 6px 0;
+  }
+  #gameover .stats-grid div { padding: 6px 4px; border-radius: 8px; }
+  #gameover .stats-grid span { font-size: 9px; margin-bottom: 2px; letter-spacing: .08em; }
+  #gameover .stats-grid b { font-size: 16px; }
+  #gameover #again-btn {
+    grid-area: again;
+    width: 100%;
+    padding: 10px 16px;
+    font-size: 15px;
+  }
+  #gameover #go-note { grid-area: note; margin: 4px 0 0; font-size: 10.5px; padding: 5px 8px; }
+  #gameover .tip { grid-area: tip; margin: 0; font-size: 10px; }
+
+  /* 右栏：排行榜独占整列，列表在格子内自己滚（格子高度由左栏撑开，够高） */
+  #gameover #lb {
+    grid-area: lb;
+    margin: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  #gameover .lb-title { font-size: 11px; margin-bottom: 4px; }
+  #gameover #lb-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    margin-bottom: 0;
+  }
+  #gameover #lb-list li { font-size: 11px; padding: 4px 8px; }
+  #gameover #share-box { grid-area: share; margin: 0; padding: 8px 10px; }
+  #gameover .ch-share-head { font-size: 11px; margin-bottom: 4px; }
+  #gameover .ch-share-tip { font-size: 10px; margin-bottom: 6px; }
+
+  /* 没有榜单也没有邀请框：收回单列、宽度也收回去，别留半张空面板 */
+  #gameover .panel:not(:has(#lb:not(.hidden))) {
+    width: min(92vw, 460px);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "fail" "record" "stats" "again" "note" "share" "tip";
+  }
+}

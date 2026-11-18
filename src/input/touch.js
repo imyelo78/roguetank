@@ -10,10 +10,10 @@
 //
 // r36 的变化：两根摇杆从"在各自半屏里浮动"改成**固定在左下 / 右下角落**。
 //   - 战斗中常显（压暗），按住变亮，位置一眼可见，不用先猜"摇杆在哪"。
-//   - 按下点落在摇杆附近（半径 + 52px）时基点就是角落的圆心，摇杆不动；
-//     落在更远处才把摇杆挪到手指下面 —— 保留这条是为了不给玩家制造死区，
-//     手指偏几公分就"按了没反应"会被当成卡了。
-//   - 瞄准摇杆仍是浮动方向摇杆：拇指只决定方位，准心画在固定 17m 的环上。
+//   - r37：位置彻底钉死。只有按下点落在摇杆圈内（半径 + PAD_GRAB）才认这根摇杆，
+//     按在战场中间既不走位也不开火 —— 之前"落在远处就把摇杆挪到手指下面"的兜底
+//     会让摇杆在任意位置冒出来，等于没固定。
+//   - 瞄准摇杆只决定方位，准心画在固定 17m 的环上。
 //   - 方向有粘性：拇指回到死区内不改朝向，抬手后炮塔保持最后朝向。
 //   - 8° 辅助吸附（assistAim，可在开始界面关掉），只吸 46m 内的目标，
 //     并且在窗口边缘平滑过渡，不会出现"锁上/脱锁"的跳变。
@@ -274,8 +274,10 @@ export class TouchControls {
     const half = window.innerWidth / 2;
     if (e.clientX < half) {
       if (this.movePointer !== null) return;   // 左半屏只认第一根手指
-      this.movePointer = e.pointerId;
       const c = this._grabCenter('move', e.clientX, e.clientY);
+      // 没搭在左下角那根摇杆上：这次按下不算走位（摇杆位置钉死，不再跟手）
+      if (!c) return;
+      this.movePointer = e.pointerId;
       this.origin.x = c.x;
       this.origin.y = c.y;
       this._showStick(c.x, c.y);
@@ -283,8 +285,10 @@ export class TouchControls {
       this._guidedMove = true;
     } else {
       if (this.aimPointer !== null) return;
-      this.aimPointer = e.pointerId;
       const c = this._grabCenter('aim', e.clientX, e.clientY);
+      // 同理：右半屏空白处按下不开火，只有按在右下角摇杆上才算
+      if (!c) return;
+      this.aimPointer = e.pointerId;
       this.aimOrigin.x = c.x;
       this.aimOrigin.y = c.y;
       this._showAimStick(c.x, c.y);
@@ -420,17 +424,19 @@ export class TouchControls {
   // ---------------- 覆盖层 ----------------
 
   /**
-   * 摇杆基点：默认固定在角落（左下 / 右下）。手指落在摇杆附近
-   * （半径 + PAD_GRAB 的圈内）就认这根固定摇杆，基点不动、只跟拇指偏移；
-   * 落得更远时把摇杆挪到手指下面。
+   * 摇杆基点：**只认角落那一根**。
    *
-   * 后者是刻意保留的：固定摇杆最怕"按了没反应"——手指偏了几公分坦克就不动，
-   * 玩家会以为是卡了。挪过去视觉上立刻有反馈，松手自己回角落。
+   * 按下点落在摇杆圈内（半径 + PAD_GRAB 的余量，拇指落点不会精确到圆心）
+   * 才返回角落圆心，否则返回 null —— 调用方据此直接忽略这次按下。
+   *
+   * r36 曾经在圈外把摇杆挪到手指下面（怕"按了没反应"），代价是摇杆能在
+   * 半屏任意位置冒出来，等于又变回浮动摇杆。r37 按玩家反馈钉死：
+   * 手指没搭在摇杆上就什么也不发生，摇杆永远待在左下 / 右下角。
    */
   _grabCenter(kind, x, y) {
     const base = padCenter(kind, window.innerWidth, window.innerHeight);
     const grab = (kind === 'aim' ? AIM_RADIUS : STICK_RADIUS) + PAD_GRAB;
-    return Math.hypot(x - base.x, y - base.y) <= grab ? base : { x, y };
+    return Math.hypot(x - base.x, y - base.y) <= grab ? base : null;
   }
 
   _place(el, c) {

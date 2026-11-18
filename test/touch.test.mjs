@@ -219,16 +219,24 @@ assert.deepEqual(calls.fire, [true, false], '抬手应松开扳机');
 assert.ok(angNear(tc.aimAngle, Math.PI / 2), '抬手后朝向保留（炮塔不回弹）');
 assert.equal(tc._aimEl.style.left, `${A.x}px`, '松手后瞄准摇杆回到右下角');
 
-// 按在离摇杆很远的地方：摇杆挪到手指下面（不然就是"按了没反应"）
+// 按在离摇杆很远的地方：摇杆钉死在角落，这次按下不算走位（r37 起不再跟手）
 listeners.get('pointerup')(ev({ pointerId: 11 }));   // 先放开上一根走位手指
+const movesBefore = calls.move.length;
 listeners.get('pointerdown')(ev({ pointerId: 14, clientX: 300, clientY: 90 }));
-assert.equal(tc.origin.x, 300, '远处按下时基点应跟到手指');
-assert.equal(tc._el.style.left, '300px', '摇杆位置跟着手指走');
+assert.equal(tc.movePointer, null, '远处按下不该接管走位');
+assert.equal(tc._el.style.left, `${M.x}px`, '摇杆必须留在左下角，不跟手');
+assert.equal(calls.move.length, movesBefore, '远处按下不该给移动向量');
+// 圈外一点点（角落圆心 + 半径 + 余量之外）同样不算
+listeners.get('pointerdown')(ev({ pointerId: 15, clientX: M.x, clientY: M.y - STICK_RADIUS - 80 }));
+assert.equal(tc.movePointer, null, '摇杆圈外半屏也不接管');
+// 圈内但不在圆心：基点仍是角落，拇指偏一点就是慢速
+listeners.get('pointerdown')(ev({ pointerId: 16, clientX: M.x + 10, clientY: M.y - 20 }));
+assert.equal(tc.origin.x, M.x, '圈内按下基点固定在角落');
 calls.move.length = 0;
-listeners.get('pointermove')(ev({ pointerId: 14, clientX: 300, clientY: 90 - 20 }));
+listeners.get('pointermove')(ev({ pointerId: 16, clientX: M.x + 10, clientY: M.y - 20 - 12 }));
 assert.ok(calls.move[0][1] < 0 && calls.move[0][1] > -0.5, '轻推应是慢速而不是满速');
-listeners.get('pointerup')(ev({ pointerId: 14 }));
-assert.equal(tc._el.style.left, `${M.x}px`, '松手后摇杆回角落');
+listeners.get('pointerup')(ev({ pointerId: 16 }));
+assert.equal(tc._el.style.left, `${M.x}px`, '松手后摇杆还在角落');
 
 // 鼠标（pointerType mouse）必须留给原来的 mousemove/mousedown 路径
 const fireBefore = calls.fire.length;
