@@ -84,7 +84,7 @@ const has = (src, selector) => src.includes(selector);
 // ---------------------------------------------------------------- [3] 收起态
 {
   const collapsed = [
-    '.hud-right',
+    '.hud-stats',
     '#terrain-chip',
     '#modifier',
     '#chips',
@@ -98,12 +98,12 @@ const has = (src, selector) => src.includes(selector);
   ok(`6 类次要信息都有收起态：${collapsed.join('、')}`);
 
   // 滑出边界的三个（顶部信息 / 房间码）
-  const rightBody = decl(cssClean, 'body.is-touch #app.playing:not(.peek-on) .hud-right,');
-  assert.match(rightBody, /opacity: 0/, '.hud-right 收起后应透明');
-  assert.match(rightBody, /translateY\(-160%\)/, '.hud-right 应收出上边界而不是留在原地');
+  const rightBody = decl(cssClean, 'body.is-touch #app.playing:not(.peek-on) .hud-stats,');
+  assert.match(rightBody, /opacity: 0/, '.hud-stats 收起后应透明');
+  assert.match(rightBody, /translateY\(-160%\)/, '.hud-stats 应收出上边界而不是留在原地');
   const roomBody = decl(cssClean, 'body.is-touch #app.playing:not(.peek-on) #room-chip');
   assert.match(roomBody, /translateY\(160%\)/, '房间码应向下滑出（左下角是走位拇指区）');
-  ok('.hud-right / 地形 / 词条上滑出界，房间码下滑出界');
+  ok('.hud-stats / 地形 / 词条上滑出界，房间码下滑出界');
 
   // 折叠类必须归零 min-height（.chips 自带 min-height:26px）
   const foldBody = decl(cssClean, 'body.is-touch #app.playing:not(.peek-on) #chips,');
@@ -124,7 +124,7 @@ const has = (src, selector) => src.includes(selector);
 
 // ---------------------------------------------------------------- [4] 展开态
 {
-  for (const sel of ['.hud-right', '#terrain-chip', '#modifier']) {
+  for (const sel of ['.hud-stats', '#terrain-chip', '#modifier']) {
     const body = decl(cssClean, `body.is-touch #app.playing.peek-on ${sel}`);
     assert.match(body, /opacity: 1/, `${sel} 展开后应恢复可见`);
     assert.match(body, /transform: none/, `${sel} 展开后应回到原位`);
@@ -153,7 +153,7 @@ const has = (src, selector) => src.includes(selector);
     '波次应压成一行微标');
   assert.match(decl(cssClean, 'body.is-touch #app.playing .boss-bar'), /top: 40px/,
     'BOSS 血条应贴到顶部，不能压在战场中央');
-  assert.match(decl(cssClean, 'body.is-touch #app.playing .hud-left'), /max-width: 128px/,
+  assert.match(decl(cssClean, 'body.is-touch #app.playing .hp-block'), /max-width: 128px/,
     '装甲区应限宽，别横着占满左边');
   ok('常显五样也按手机尺寸缩了一档（装甲 / 波次 / 武器 / 中央字 / BOSS 条）');
 }

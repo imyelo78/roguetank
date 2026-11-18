@@ -7,8 +7,8 @@
 
 import assert from 'node:assert/strict';
 import {
-  stickVector, aimVector, aimAngle, assistAim, toNDC,
-  STICK_RADIUS, AIM_RADIUS, AIM_ASSIST_ANGLE,
+  stickVector, aimVector, aimAngle, assistAim, toNDC, padCenter,
+  STICK_RADIUS, AIM_RADIUS, AIM_ASSIST_ANGLE, PAD_INSET,
 } from '../src/input/touch.js';
 
 let pass = 0;
@@ -124,6 +124,26 @@ const offset = toNDC(200, 200, { left: 100, top: 100, width: 200, height: 200 })
 assert.ok(near(offset.x, 0) && near(offset.y, 0), '带偏移的画布应按 rect 归零');
 ok('NDC 换算与 mousemove 那条路径一致');
 
+console.log('\n[7.5] 角落摇杆基点');
+
+// 走位在左下、瞄准在右下；两者关于屏幕中线镜像
+const pad = padCenter('move', 800, 400);
+const padAim = padCenter('aim', 800, 400);
+assert.equal(pad.y, padAim.y, '两根摇杆应该同高');
+assert.ok(near(pad.x + padAim.x, 800, 1e-9), '左右基点应关于中线镜像');
+assert.ok(near(pad.x, PAD_INSET), `正常高度下基点距边缘应为 ${PAD_INSET}px（实际 ${pad.x}）`);
+assert.ok(pad.y > 400 * 0.5, '基点应在屏幕下半部');
+// 摇杆中心 ± 半径都得留在屏幕内，否则会压到刘海或边角
+assert.ok(pad.x - STICK_RADIUS > 0 && pad.y + STICK_RADIUS < 400, '走位摇杆不应出界');
+assert.ok(padAim.x + AIM_RADIUS < 800, '瞄准摇杆不应出界');
+// 矮屏（横屏手机 302px 高）按键面收一档，不能顶到屏幕中间
+const shortPad = padCenter('move', 700, 302);
+assert.ok(shortPad.y > 302 * 0.6, `矮屏基点应仍在下半部（实际 y=${shortPad.y}）`);
+// 两根摇杆不能互相重叠（窄屏 640 宽也还够）
+const narrow = [padCenter('move', 640, 360), padCenter('aim', 640, 360)];
+assert.ok(narrow[1].x - narrow[0].x > STICK_RADIUS + AIM_RADIUS, '窄屏两根摇杆也不该连在一起');
+ok('左 / 右对称、不出界、矮屏内收、窄屏不重叠');
+
 console.log('\n[8] 事件接线（假 DOM）');
 
 // 只验"谁调了谁"：触摸落到左半屏 → 移动；右半屏 → 瞄准朝向 + 扳机；鼠标不接管
@@ -138,7 +158,7 @@ globalThis.window = {
 const mkEl = () => ({
   style: {}, className: '', textContent: '',
   appendChild() {}, setAttribute() {}, remove() {},
-  classList: { toggle() {}, add() {}, contains: () => false },
+  classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
 });
 globalThis.document = {
   getElementById: () => ({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 400 }) }),
@@ -161,36 +181,54 @@ calls.aim.length = 0;
 calls.fire.length = 0;
 
 const ev = (over) => ({ pointerType: 'touch', preventDefault() {}, target: null, ...over });
+const M = padCenter('move', 800, 400);   // (112, 288)
+const A = padCenter('aim', 800, 400);    // (688, 288)
 
-listeners.get('pointerdown')(ev({ pointerId: 11, clientX: 120, clientY: 300 }));  // 左半屏
+// 摇杆附近按下：基点是角落圆心（不是手指落点），所以拇指从侧面搭上来也不会立刻满速
+listeners.get('pointerdown')(ev({ pointerId: 11, clientX: M.x + 8, clientY: M.y + 12 }));
 assert.deepEqual(calls.fire, [], '左半屏按下不该开火');
+assert.equal(tc.origin.x, M.x, '落在摇杆圈内时基点应固定在角落');
+assert.equal(tc.origin.y, M.y);
 
-listeners.get('pointerdown')(ev({ pointerId: 12, clientX: 700, clientY: 300 }));  // 右半屏
+listeners.get('pointerdown')(ev({ pointerId: 12, clientX: A.x + 12, clientY: A.y + 12 }));  // 右半屏
 assert.deepEqual(calls.fire, [true], '右半屏按下应开火');
 assert.equal(calls.aim.length, 0, '刚按下还没方向，不该立刻给朝向');
+assert.equal(tc.aimOrigin.x, A.x, '瞄准摇杆同样固定在右下角');
 
-// 上推 60px：方向 = 屏幕上方 = 世界 -Z
-listeners.get('pointermove')(ev({ pointerId: 12, clientX: 700, clientY: 240 }));
+// 上推 56px：方向 = 屏幕上方 = 世界 -Z
+listeners.get('pointermove')(ev({ pointerId: 12, clientX: A.x, clientY: A.y - 56 }));
 assert.equal(calls.aim.length, 1, '出死区后应给一次朝向');
 assert.ok(angNear(calls.aim[0], Math.PI), `上推应为 ±π（实际 ${calls.aim[0]}）`);
 
 // 回到死区（位移 4px）：朝向保持不变，也不再上报
-listeners.get('pointermove')(ev({ pointerId: 12, clientX: 702, clientY: 302 }));
+listeners.get('pointermove')(ev({ pointerId: 12, clientX: A.x + 4, clientY: A.y + 4 }));
 assert.equal(calls.aim.length, 1, '死区内不应该改写朝向');
 assert.ok(angNear(tc.aimAngle, Math.PI), '朝向应停留在最后一次有效方向');
 
 // 再拉到右侧：朝向变 +π/2
-listeners.get('pointermove')(ev({ pointerId: 12, clientX: 760, clientY: 300 }));
+listeners.get('pointermove')(ev({ pointerId: 12, clientX: A.x + 72, clientY: A.y }));
 assert.ok(angNear(calls.aim.at(-1), Math.PI / 2), '右推应为 +π/2');
 
-listeners.get('pointermove')(ev({ pointerId: 11, clientX: 120, clientY: 240 }));  // 左摇杆上推 60px
+listeners.get('pointermove')(ev({ pointerId: 11, clientX: M.x, clientY: M.y - 60 }));  // 左摇杆上推 60px
 const lastMove = calls.move.at(-1);
 assert.ok(lastMove[1] < 0, `上推应得到 z<0（实际 ${lastMove[1]}）`);
-assert.ok(Math.abs(lastMove[0]) < 1e-6, '纯上推不该有横向分量');
+assert.ok(Math.abs(lastMove[0]) < 1e-9, '纯上推不该有横向分量');
 
 listeners.get('pointerup')(ev({ pointerId: 12 }));
 assert.deepEqual(calls.fire, [true, false], '抬手应松开扳机');
 assert.ok(angNear(tc.aimAngle, Math.PI / 2), '抬手后朝向保留（炮塔不回弹）');
+assert.equal(tc._aimEl.style.left, `${A.x}px`, '松手后瞄准摇杆回到右下角');
+
+// 按在离摇杆很远的地方：摇杆挪到手指下面（不然就是"按了没反应"）
+listeners.get('pointerup')(ev({ pointerId: 11 }));   // 先放开上一根走位手指
+listeners.get('pointerdown')(ev({ pointerId: 14, clientX: 300, clientY: 90 }));
+assert.equal(tc.origin.x, 300, '远处按下时基点应跟到手指');
+assert.equal(tc._el.style.left, '300px', '摇杆位置跟着手指走');
+calls.move.length = 0;
+listeners.get('pointermove')(ev({ pointerId: 14, clientX: 300, clientY: 90 - 20 }));
+assert.ok(calls.move[0][1] < 0 && calls.move[0][1] > -0.5, '轻推应是慢速而不是满速');
+listeners.get('pointerup')(ev({ pointerId: 14 }));
+assert.equal(tc._el.style.left, `${M.x}px`, '松手后摇杆回角落');
 
 // 鼠标（pointerType mouse）必须留给原来的 mousemove/mousedown 路径
 const fireBefore = calls.fire.length;

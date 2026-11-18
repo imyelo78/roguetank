@@ -33,18 +33,8 @@
     </button>
 
     <div class="hud-top">
-      <div class="hud-left">
-        <div class="hp-row">
-          <span class="label">装甲</span>
-          <span id="hp-text" class="hp-text">120 / 120</span>
-        </div>
-        <div class="bar">
-          <div id="hp-ghost" class="ghost"></div>
-          <div id="hp-fill" class="fill"></div>
-        </div>
-        <div id="chips" class="chips"></div>
-      </div>
-
+      <!-- 左上角空出来给小地图（.minimap-wrap 绝对定位在左上）。
+           血量搬到右上，与击杀/得分同列：右列 = 装甲条 + 数字，垂直排。 -->
       <div class="hud-center">
         <div class="wave-chip">
           <span class="wave-label">WAVE</span>
@@ -60,8 +50,22 @@
       </div>
 
       <div class="hud-right">
-        <div class="stat"><span>击杀</span><b id="kills">0</b></div>
-        <div class="stat"><span>得分</span><b id="score">0</b></div>
+        <div class="hp-block">
+          <div class="hp-row">
+            <span class="label">装甲</span>
+            <span id="hp-text" class="hp-text">120 / 120</span>
+          </div>
+          <div class="bar">
+            <div id="hp-ghost" class="ghost"></div>
+            <div id="hp-fill" class="fill"></div>
+          </div>
+          <div id="chips" class="chips"></div>
+        </div>
+        <!-- 击杀/得分单独成组：手机端「战况」收起的正是这一组，装甲条必须常显 -->
+        <div class="hud-stats">
+          <div class="stat"><span>击杀</span><b id="kills">0</b></div>
+          <div class="stat"><span>得分</span><b id="score">0</b></div>
+        </div>
       </div>
     </div>
 

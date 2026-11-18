@@ -49,16 +49,22 @@ html, body {
   position: fixed;
   width: 124px;
   height: 124px;
-  /* 以"按下点"为中心：负 margin 抵掉一半尺寸 */
+  /* 位置由 JS 按角落基点设置（padCenter），这里只负责"以中心对齐"。
+     不用 CSS 的 left/bottom 是因为抓取判定也要用同一组圆心坐标。 */
   margin: -62px 0 0 -62px;
   border-radius: 50%;
   border: 1px solid rgba(93, 202, 165, .45);
   background: rgba(4, 52, 44, .22);
   display: none;
+  /* 常显但压暗：手一按上来变亮，位置一眼能找到又不抢战场视线 */
+  opacity: .5;
+  transition: opacity .16s ease;
   /* 覆盖层不吃事件：位置全靠 pointer 坐标算，指针滑出去也不会丢 */
   pointer-events: none;
   z-index: 25;
 }
+
+.touch-stick.is-held { opacity: 1; border-color: rgba(93, 202, 165, .7); }
 
 .touch-stick-knob {
   position: absolute;
@@ -84,6 +90,8 @@ html, body {
   /* 中间那圈是 22% 死区：拇指停在里面朝向不变 */
   background-image: radial-gradient(circle at center, rgba(255, 166, 61, .16) 0 13px, transparent 13px);
 }
+
+.touch-stick--aim.is-held { border-color: rgba(255, 166, 61, .72); }
 
 .touch-stick-knob--aim {
   width: 34px;
@@ -144,9 +152,10 @@ html, body {
   to { opacity: 1; }
 }
 
+/* 引导语贴在两根摇杆上方：摇杆已固定在左下 / 右下，指引直接指着它们说 */
 .touch-guide-card {
   position: absolute;
-  bottom: 20%;
+  bottom: 190px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -160,10 +169,8 @@ html, body {
   letter-spacing: .05em;
 }
 
-.touch-guide-card.left { left: 10%; }
-/* 右侧引导语让开小地图与底部武器条：小地图占右下 180px、武器条在底部居中，
-   所以这块改用 top 定位卡在两者之间的空隙里（横屏 390 / 302 高度都测过不重叠） */
-.touch-guide-card.right { right: 8%; top: 30%; bottom: auto; }
+.touch-guide-card.left { left: 11%; }
+.touch-guide-card.right { right: 11%; }
 
 .touch-guide-card b {
   font-size: 14px;
@@ -249,7 +256,9 @@ html, body {
            20px calc(26px + env(safe-area-inset-left));
 }
 
-.hud-left { max-width: 320px; }
+/* 装甲条：原来在左上，现在跟击杀/得分一起放右侧一列。
+   max-width 限宽是为了比条不被拉成横贯半屏的"进度条"。 */
+.hp-block { width: 100%; max-width: 320px; }
 
 .hp-row {
   display: flex;
@@ -328,7 +337,9 @@ html, body {
   to { opacity: 1; transform: none; }
 }
 
-.hud-center { text-align: center; }
+/* 左列现在空着（小地图绝对定位占左上），所以显式指定列位：
+   否则 .hud-center 会自动落到第 1 列，波次框跑到左边去。 */
+.hud-center { grid-column: 2; text-align: center; }
 
 /* 地表指示：脚下是什么地形、跑得动跑不动。
    位置放在 WAVE 正下方，是玩家视野的落点区（瞄具在中间），
@@ -506,7 +517,16 @@ html, body {
   to { border-color: rgba(255, 74, 58, .95); }
 }
 
-.hud-right { display: flex; justify-content: flex-end; gap: 26px; }
+/* 右列：装甲条在上、击杀/得分在下，整体右对齐。
+   拆成两组的唯一原因在手机端：战况收起时只收 .hud-stats，装甲条留在右上。 */
+.hud-right {
+  grid-column: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+.hud-stats { display: flex; justify-content: flex-end; gap: 26px; }
 .stat { text-align: right; }
 .stat span {
   display: block;
@@ -536,11 +556,13 @@ html, body {
   backdrop-filter: blur(6px);
 }
 
-/* ---- 小地图 ---- */
+/* ---- 小地图 ----
+   左上角。原来在右下，手机端正好压在瞄准摇杆的拇指位置上，
+   移到左上后两个角落各归其主：左上信息、右下操作。 */
 .minimap-wrap {
   position: absolute;
-  right: calc(22px + env(safe-area-inset-right));
-  bottom: calc(22px + env(safe-area-inset-bottom));
+  left: calc(22px + env(safe-area-inset-left));
+  top: calc(18px + env(safe-area-inset-top));
   transition: opacity .25s ease;
   padding: 5px;
   border-radius: 10px;
@@ -551,10 +573,6 @@ html, body {
   line-height: 0;
 }
 #minimap { display: block; border-radius: 5px; }
-
-/* 首次触屏引导会盖在右下角，和小地图叠成两层 —— 引导期间把小地图压淡，
-   两个都看得见又都不碍事；引导消失后自己恢复（:has 不支持时只是不淡出，无副作用）。 */
-body:has(.touch-guide) .minimap-wrap { opacity: .22; }
 .weapon-line {
   display: flex;
   align-items: center;
@@ -1381,11 +1399,13 @@ button:active { transform: translateY(0); }
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 720px) {
-  .hud-top { grid-template-columns: 1fr auto; padding: 14px 16px; }
+  /* 窄屏不显示波次框，右列就是唯一内容 → 单列，不需要三列网格 */
+  .hud-top { grid-template-columns: 1fr; padding: 14px 16px; }
   .hud-center { display: none; }
   .boss-bar { top: 74px; width: min(440px, 88vw); }
-  .hud-left { max-width: 180px; }
-  .hud-right { gap: 14px; }
+  .hud-right { grid-column: 1; }
+  .hp-block { max-width: 180px; }
+  .hud-stats { gap: 14px; }
   .stat b { font-size: 16px; }
   .center-msg { font-size: 22px; }
   .cards { grid-template-columns: 1fr; gap: 8px; }
@@ -1420,7 +1440,7 @@ button:active { transform: translateY(0); }
   .reward-hint { margin-top: 10px; font-size: 10px; }
   .panel { padding: 28px 20px 24px; }
   .panel h1 { font-size: 26px; }
-  .minimap-wrap { right: calc(10px + env(safe-area-inset-right)); bottom: calc(104px + env(safe-area-inset-bottom)); padding: 4px; }
+  .minimap-wrap { left: calc(10px + env(safe-area-inset-left)); top: calc(10px + env(safe-area-inset-top)); padding: 4px; }
   /* 小屏上车体卡再压一档，保证一行放得下四个 */
   .chassis-card { padding: 6px 2px; }
   .chassis-card .chassis-icon { font-size: 15px; }
@@ -2582,7 +2602,9 @@ body.is-touch #app.playing .hud-peek { display: flex; }
 
 /* ---- 1. 常显的五样先缩一档 ---- */
 body.is-touch #app.playing .hud-top {
-  padding: calc(9px + env(safe-area-inset-top)) calc(9px + env(safe-area-inset-right))
+  /* 顶部多留 30px：右上角是「战况」胶囊（top 10、height 24），
+     装甲条原来在左边不受影响，搬到右边后必须让开它。 */
+  padding: calc(39px + env(safe-area-inset-top)) calc(9px + env(safe-area-inset-right))
            9px calc(9px + env(safe-area-inset-left));
   gap: 10px;
 }
@@ -2592,7 +2614,7 @@ body.is-touch #app.playing.peek-on .hud-top {
   padding-right: calc(68px + env(safe-area-inset-right));
 }
 
-body.is-touch #app.playing .hud-left { max-width: 128px; }
+body.is-touch #app.playing .hp-block { max-width: 128px; }
 body.is-touch #app.playing .hp-row { margin-bottom: 4px; }
 /* 一条带颜色的横条 + 10px 数字就够看懂了，不需要"装甲"两个字 */
 body.is-touch #app.playing .hp-row .label { display: none; }
@@ -2641,7 +2663,12 @@ body.is-touch #app.playing .weapon-line i { white-space: nowrap; }
 /* 展开时条加宽，让名字行排得下 */
 body.is-touch #app.playing.peek-on .weapon-hud { width: 158px; }
 
-body.is-touch #app.playing .minimap-wrap { padding: 3px; background: rgba(12, 18, 23, .42); }
+body.is-touch #app.playing .minimap-wrap {
+  left: calc(9px + env(safe-area-inset-left));
+  top: calc(9px + env(safe-area-inset-top));
+  padding: 3px;
+  background: rgba(12, 18, 23, .42);
+}
 
 /* 中央大字：32px 在 390 高的屏上等于半个战场，压到 16px */
 body.is-touch #app.playing .center-msg { top: 17%; font-size: 16px; letter-spacing: .08em; }
@@ -2659,7 +2686,7 @@ body.is-touch #app.playing #boss-hp-text { font-size: 9px; }
 body.is-touch #app.playing .boss-track { height: 6px; }
 
 /* ---- 2. 收起：默认滑出边界 / 折成 0 高 ---- */
-body.is-touch #app.playing .hud-right,
+body.is-touch #app.playing .hud-stats,
 body.is-touch #app.playing #terrain-chip,
 body.is-touch #app.playing #modifier,
 body.is-touch #app.playing #chips,
@@ -2669,7 +2696,7 @@ body.is-touch #app.playing #room-chip {
 }
 
 /* 顶部往外滑：translateY(-160%) 足够连阴影一起移出上边界 */
-body.is-touch #app.playing:not(.peek-on) .hud-right,
+body.is-touch #app.playing:not(.peek-on) .hud-stats,
 body.is-touch #app.playing:not(.peek-on) #terrain-chip,
 body.is-touch #app.playing:not(.peek-on) #modifier {
   opacity: 0;
@@ -2695,7 +2722,7 @@ body.is-touch #app.playing:not(.peek-on) #room-chip {
 }
 
 /* ---- 3. 展开态：恢复（过渡对称，5 秒后自动收回） ---- */
-body.is-touch #app.playing.peek-on .hud-right,
+body.is-touch #app.playing.peek-on .hud-stats,
 body.is-touch #app.playing.peek-on #terrain-chip,
 body.is-touch #app.playing.peek-on #modifier { opacity: 1; transform: none; }
 body.is-touch #app.playing.peek-on #chips,

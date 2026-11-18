@@ -1,4 +1,4 @@
-// 触屏操作：左半屏走位（浮动摇杆），右半屏瞄准（浮动方向摇杆 + 按住连发）。
+// 触屏操作：左下角走位摇杆、右下角瞄准摇杆（按住连发）。
 //
 // 设计前提（都是现有代码的事实，不是假设）：
 //   1. 相机永远朝 -Z、不旋转（core/camera.js 的 followStep 只跟位置），
@@ -8,13 +8,15 @@
 //   3. 战斗逻辑只读 keys / mouseNDC / firing。这里把触摸翻译成这三样，
 //      单机和联机共用同一套代码，避免再出现"组队里某个键失效"那类分叉 bug。
 //
-// P1 相对 P0 的变化：
-//   - 右半屏从"绝对落点"改成**浮动方向摇杆**：按下点为基点，拇指只决定方位，
-//     准心画在固定 17m 的环上 —— 手指不再挡住目标（P0 最大的手感问题）。
-//   - 方向有粘性：拇指回到死区内不改变朝向，抬手后炮塔保持最后朝向。
-//   - 新增 8° 辅助吸附（assistAim，可在开始界面关掉），只吸附 46m 内的目标，
-//     并且在吸附窗口边缘平滑过渡，不会出现"锁上/脱锁"的跳变。
-//   - 两根摇杆都有可视浮层（走位是青绿、瞄准是橙），按下即出现。
+// r36 的变化：两根摇杆从"在各自半屏里浮动"改成**固定在左下 / 右下角落**。
+//   - 战斗中常显（压暗），按住变亮，位置一眼可见，不用先猜"摇杆在哪"。
+//   - 按下点落在摇杆附近（半径 + 52px）时基点就是角落的圆心，摇杆不动；
+//     落在更远处才把摇杆挪到手指下面 —— 保留这条是为了不给玩家制造死区，
+//     手指偏几公分就"按了没反应"会被当成卡了。
+//   - 瞄准摇杆仍是浮动方向摇杆：拇指只决定方位，准心画在固定 17m 的环上。
+//   - 方向有粘性：拇指回到死区内不改朝向，抬手后炮塔保持最后朝向。
+//   - 8° 辅助吸附（assistAim，可在开始界面关掉），只吸 46m 内的目标，
+//     并且在窗口边缘平滑过渡，不会出现"锁上/脱锁"的跳变。
 //
 // 首次进战斗会弹一次双区引导（左推 / 右按），碰过两个区或 5 秒后消失，
 // 只弹一次（localStorage 记账）， prefs.js 负责读写。
@@ -36,6 +38,25 @@ export const AIM_RANGE = 17;
 export const AIM_ASSIST_ANGLE = (8 * Math.PI) / 180;
 /** 辅助吸附的最远距离（米）。超出这个距离要靠玩家自己预判 */
 export const AIM_ASSIST_RANGE = 46;
+
+/** 摇杆基点到屏幕边缘的距离（px）：拇指自然落点，也躲得开刘海与圆角 */
+export const PAD_INSET = 112;
+/** 抓取余量：在摇杆半径外这一圈按下，也算抓住角落这根摇杆 */
+export const PAD_GRAB = 52;
+
+/**
+ * 固定摇杆的基点：走位在左下、瞄准在右下。
+ *
+ * 不写死在 CSS 里是因为"抓住摇杆"的判定要用同一组圆心坐标，
+ * 两边各写一套数迟早会对不上（CSS 一改，抓取区就偏了）。
+ * 屏幕矮（横屏手机 300 出头）时按高度收一档，否则摇杆会顶到屏幕中间。
+ */
+export function padCenter(kind, width, height) {
+  const w = Math.max(1, width || 0);
+  const h = Math.max(1, height || 0);
+  const inset = Math.min(PAD_INSET, Math.max(96, h * 0.32));
+  return { x: kind === 'aim' ? w - inset : inset, y: h - inset };
+}
 
 /**
  * 把"拇指相对基点的位移"换算成世界移动向量。
@@ -162,7 +183,11 @@ export class TouchControls {
     this._onDown = (e) => this._handleDown(e);
     this._onMove = (e) => this._handleMove(e);
     this._onUp = (e) => this._handleUp(e);
-    this._onResize = () => this._checkOrientation();
+    // 尺寸变了要重算角落基点，否则转屏后摇杆还停在旧位置
+    this._onResize = () => {
+      this._checkOrientation();
+      this._syncPads();
+    };
 
     if (doc) this.bind();
   }
@@ -209,6 +234,7 @@ export class TouchControls {
     this._resetMove();
     this._releaseFire();
     this.aimAngle = null;
+    this._syncPads();
     this._checkOrientation();
   }
 
@@ -222,6 +248,8 @@ export class TouchControls {
    */
   refresh() {
     if (!this.active) this._stopAll();
+    // 角落里那两根摇杆的显隐也归这里管：战斗中常显（暗态），菜单/选卡时藏起来
+    this._syncPads();
     // 引导跟着"进入战斗"走：开局弹出，退出战斗（选卡/阵亡/回菜单）时收掉
     if (this.active) this._maybeGuide();
     else this._dismissGuide();
@@ -247,17 +275,19 @@ export class TouchControls {
     if (e.clientX < half) {
       if (this.movePointer !== null) return;   // 左半屏只认第一根手指
       this.movePointer = e.pointerId;
-      this.origin.x = e.clientX;
-      this.origin.y = e.clientY;
-      this._showStick(e.clientX, e.clientY);
+      const c = this._grabCenter('move', e.clientX, e.clientY);
+      this.origin.x = c.x;
+      this.origin.y = c.y;
+      this._showStick(c.x, c.y);
       this.target.move?.(0, 0);
       this._guidedMove = true;
     } else {
       if (this.aimPointer !== null) return;
       this.aimPointer = e.pointerId;
-      this.aimOrigin.x = e.clientX;
-      this.aimOrigin.y = e.clientY;
-      this._showAimStick(e.clientX, e.clientY);
+      const c = this._grabCenter('aim', e.clientX, e.clientY);
+      this.aimOrigin.x = c.x;
+      this.aimOrigin.y = c.y;
+      this._showAimStick(c.x, c.y);
       this.target.fire?.(true);
       this._guidedAim = true;
     }
@@ -310,7 +340,7 @@ export class TouchControls {
     }
     if (e.pointerId === this.aimPointer) {
       this.aimPointer = null;
-      this._hideAimStick();
+      this._restAim();
       // 只松开扳机，不清朝向：炮塔保持最后指向（有转速的车归位会像回弹）
       this.target?.fire?.(false);
     }
@@ -318,7 +348,7 @@ export class TouchControls {
 
   _resetMove() {
     this.movePointer = null;
-    this._hideStick();
+    this._restMove();
   }
 
   /** 摇杆、扳机、目标里的移动向量一起归零（面板弹出 / 切模式时用） */
@@ -330,7 +360,7 @@ export class TouchControls {
 
   _releaseFire() {
     this.aimPointer = null;
-    this._hideAimStick();
+    this._restAim();
     this.target?.fire?.(false);
   }
 
@@ -342,9 +372,7 @@ export class TouchControls {
    */
   _maybeGuide() {
     if (this._guide || this._guideTimer || loadGuideSeen() || !this.doc) return;
-    const touch = window.matchMedia?.('(pointer: coarse)')?.matches
-      || (navigator.maxTouchPoints || 0) > 0;
-    if (!touch) return;   // 鼠标用户用不着，别闪一下烦人
+    if (!this._isTouchDevice()) return;   // 鼠标用户用不着，别闪一下烦人
 
     const el = this.doc.createElement('div');
     el.className = 'touch-guide';
@@ -380,7 +408,62 @@ export class TouchControls {
     saveGuideSeen();
   }
 
+  /** 这个设备到底有没有触摸能力（触屏本、平板、手机都算） */
+  _isTouchDevice() {
+    if (this._touchCap === undefined) {
+      this._touchCap = !!(window.matchMedia?.('(pointer: coarse)')?.matches
+        || (navigator.maxTouchPoints || 0) > 0);
+    }
+    return this._touchCap;
+  }
+
   // ---------------- 覆盖层 ----------------
+
+  /**
+   * 摇杆基点：默认固定在角落（左下 / 右下）。手指落在摇杆附近
+   * （半径 + PAD_GRAB 的圈内）就认这根固定摇杆，基点不动、只跟拇指偏移；
+   * 落得更远时把摇杆挪到手指下面。
+   *
+   * 后者是刻意保留的：固定摇杆最怕"按了没反应"——手指偏了几公分坦克就不动，
+   * 玩家会以为是卡了。挪过去视觉上立刻有反馈，松手自己回角落。
+   */
+  _grabCenter(kind, x, y) {
+    const base = padCenter(kind, window.innerWidth, window.innerHeight);
+    const grab = (kind === 'aim' ? AIM_RADIUS : STICK_RADIUS) + PAD_GRAB;
+    return Math.hypot(x - base.x, y - base.y) <= grab ? base : { x, y };
+  }
+
+  _place(el, c) {
+    if (!el) return;
+    el.style.left = `${c.x}px`;
+    el.style.top = `${c.y}px`;
+  }
+
+  /** 把两根摇杆摆到角落，并按"现在能不能操作"显隐（战斗中常显，菜单里藏起来） */
+  _syncPads() {
+    if (!this.doc) return;
+    this._ensureStick();
+    this._ensureAimStick();
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    // 纯键鼠设备一根都不画：常显是给拇指找位置的，桌面上只会变成两块浮斑
+    const show = this.active && this._isTouchDevice() ? 'block' : 'none';
+    if (this._el) {
+      // 正按着的手指不打断：它可能已经被挪到手指下面了
+      if (this.movePointer === null) this._place(this._el, padCenter('move', w, h));
+      this._el.style.display = show;
+    }
+    if (this._aimEl) {
+      if (this.aimPointer === null) this._place(this._aimEl, padCenter('aim', w, h));
+      this._aimEl.style.display = show;
+    }
+    if (!this.active) {
+      this._moveKnob(0, 0);
+      this._moveAimKnob(0, 0);
+      this._el?.classList?.remove?.('is-held');
+      this._aimEl?.classList?.remove?.('is-held');
+    }
+  }
 
   _ensureStick() {
     if (this._el || !this.doc) return;
@@ -397,9 +480,9 @@ export class TouchControls {
   _showStick(x, y) {
     this._ensureStick();
     if (!this._el) return;
-    this._el.style.left = `${x}px`;
-    this._el.style.top = `${y}px`;
+    this._place(this._el, { x, y });
     this._el.style.display = 'block';
+    this._el.classList?.add?.('is-held');
     this._moveKnob(0, 0);
   }
 
@@ -408,9 +491,12 @@ export class TouchControls {
     this._knob.style.transform = `translate(${dx}px, ${dy}px)`;
   }
 
-  _hideStick() {
-    if (this._el) this._el.style.display = 'none';
+  /** 松手 / 清零：拇指归中，摇杆回到角落，只在战斗里继续显示 */
+  _restMove() {
     this._moveKnob(0, 0);
+    this._el?.classList?.remove?.('is-held');
+    this._place(this._el, padCenter('move', window.innerWidth, window.innerHeight));
+    if (this._el) this._el.style.display = this.active && this._isTouchDevice() ? 'block' : 'none';
   }
 
   _ensureAimStick() {
@@ -428,9 +514,9 @@ export class TouchControls {
   _showAimStick(x, y) {
     this._ensureAimStick();
     if (!this._aimEl) return;
-    this._aimEl.style.left = `${x}px`;
-    this._aimEl.style.top = `${y}px`;
+    this._place(this._aimEl, { x, y });
     this._aimEl.style.display = 'block';
+    this._aimEl.classList?.add?.('is-held');
     this._moveAimKnob(0, 0);
   }
 
@@ -439,9 +525,11 @@ export class TouchControls {
     this._aimKnob.style.transform = `translate(${dx}px, ${dy}px)`;
   }
 
-  _hideAimStick() {
-    if (this._aimEl) this._aimEl.style.display = 'none';
+  _restAim() {
     this._moveAimKnob(0, 0);
+    this._aimEl?.classList?.remove?.('is-held');
+    this._place(this._aimEl, padCenter('aim', window.innerWidth, window.innerHeight));
+    if (this._aimEl) this._aimEl.style.display = this.active && this._isTouchDevice() ? 'block' : 'none';
   }
 
   /**

@@ -267,12 +267,13 @@ export class Game {
     this.effects.budget = q.particles;
 
     // 小地图（静态障碍烘焙一次）
-    // 尺寸既看宽度也看高度：横屏手机只有 300 出头的高度，
-    // 168px 的小地图会直接吃掉右下角一半战场，按高度再收一档。
+    // 挪到左上角后不需要再给右下的摇杆让位，尺寸整体收一档：
+    // 桌面 152（原 168），横屏手机 104（原 124）。按高度再兜一次底，
+    // 免得矮窗口里小地图把左上的血量/波次挤掉。
     const mapEl = document.getElementById('minimap');
-    const mapSize = Math.max(104, Math.min(
-      window.innerWidth < 720 ? 124 : 168,
-      Math.round(window.innerHeight * 0.4),
+    const mapSize = Math.max(88, Math.min(
+      window.innerWidth < 720 || window.innerHeight < 520 ? 96 : 144,
+      Math.round(window.innerHeight * 0.3),
     ));
     this.minimap = mapEl
       ? new Minimap(mapEl, this.world, { size: mapSize })
