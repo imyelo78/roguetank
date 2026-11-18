@@ -168,6 +168,7 @@ export class NetClient {
           this._interpTicks = 3;
           this._interpFrozen = 0;
           this._lastRenderAt = 0;
+          this._lerpCache = null;
           this._emit('welcome', msg);
           break;
 
@@ -370,6 +371,7 @@ export class NetClient {
     this.lastSnap = null;
     this.prevSnap = null;
     this.snaps = [];
+    this._lerpCache = null;
     this._serverOffset = null;
     this._interpDelay = 3;
     this._interpTicks = 3;
@@ -482,33 +484,60 @@ export class NetClient {
     const span = Math.max(1, B.tick - A.tick);
     const alpha = Math.max(0, Math.min(1, (targetTick - A.tick) / span));
 
-    const lerpMap = (arrA, arrB) => {
+    // 性能：这个方法**每个渲染帧**都会被 coop._applySnapshot 调用一次（60~144fps），
+    // 而战场实体是 30 辆敌人 + 几十发炮弹的量级。两个曾经纯朴的实现都会随实体数
+    // 线性变贵，卡顿恰恰集中在"车最多"的第 3 波以后：
+    //   1. find 逐实体扫 A 帧是 O(n²)——改成一次 Map 索引，O(n²)→O(n)；
+    //   2. 每帧给每个实体 {...b} 新建对象，每秒数以千计的临时对象全是 GC 口粮——
+    //      弱机上的 GC 停顿就是"打着打着卡一下"的来源。改为按 id 复用上一帧的
+    //      结果对象，本帧直接改写字段，稳态下零分配。
+    // 消费方（coop）只在本帧内读字段、立即写进渲染对象，不跨帧持有引用，
+    // 所以复用是安全的；实体消失时清掉对应缓存项，Map 不会无界增长。
+    const cache = this._lerpCache || (this._lerpCache = {
+      players: new Map(), enemies: new Map(), bullets: new Map(),
+    });
+
+    const lerpMap = (arrA, arrB, kind) => {
       const out = [];
+      const cc = cache[kind];
+      const idx = new Map();
+      for (const a of arrA) idx.set(a.id, a);
       for (const b of arrB) {
-        const a = arrA.find((it) => it.id === b.id);
-        if (!a) { out.push({ ...b, alpha: 1 }); continue; }
-        out.push({
-          ...b,
-          x: a.x + (b.x - a.x) * alpha,
-          z: a.z + (b.z - a.z) * alpha,
-          yaw: lerpAngle(a.yaw, b.yaw, alpha),
-          turretYaw: lerpAngle(a.turretYaw, b.turretYaw, alpha),
-          alpha,
-        });
+        let o = cc.get(b.id);
+        if (!o) { o = {}; cc.set(b.id, o); }
+        const a = idx.get(b.id);
+        o.id = b.id;
+        if (a) {
+          o.x = a.x + (b.x - a.x) * alpha;
+          o.z = a.z + (b.z - a.z) * alpha;
+          o.yaw = lerpAngle(a.yaw, b.yaw, alpha);
+          o.turretYaw = lerpAngle(a.turretYaw, b.turretYaw, alpha);
+        } else {
+          // 新出现的实体（刚刷出来 / 上段被夹死）没有上一帧可插：直接用最新值
+          o.x = b.x;
+          o.z = b.z;
+          o.yaw = b.yaw;
+          o.turretYaw = b.turretYaw;
+        }
+        o.hp = b.hp;
+        o.extra = b.extra;
+        if (kind === 'players') { o.down = b.down; o.revive = b.revive; }
+        else if (kind === 'enemies') o.typeCode = b.typeCode;
+        else o.team = b.team;
+        o.alpha = alpha;
+        out.push(o);
+      }
+      // 缓存回收：数组换成批量清理（每帧全量重建 Set 太贵），实体清波时集中回收
+      if (cc.size > (arrB.length << 1) + 16) {
+        for (const k of [...cc.keys()]) {
+          if (!arrB.some((b) => b.id === k)) cc.delete(k);
+        }
       }
       return out;
     };
 
     // 子弹以前直接用最新帧，等于每种 66ms 跳一格；现在一并插值。
-    const lerpBullets = (arrA, arrB) => (arrB || []).map((b) => {
-      const a = (arrA || []).find((it) => it.id === b.id);
-      if (!a) return b;
-      return {
-        ...b,
-        x: a.x + (b.x - a.x) * alpha,
-        z: a.z + (b.z - a.z) * alpha,
-      };
-    });
+    const lerpBullets = (arrA, arrB) => lerpMap(arrA || [], arrB || [], 'bullets');
 
     // 波次 / 状态 / 分数这类元数据不插值，一律取最新帧（避免 UI 回退）。
     return {
@@ -517,9 +546,9 @@ export class NetClient {
       state: newest.state,
       scores: newest.scores,
       left: newest.left,
-      players: lerpMap(A.players || [], B.players || []),
-      enemies: lerpMap(A.enemies || [], B.enemies || []),
-      bullets: lerpBullets(A.bullets || [], B.bullets || []),
+      players: lerpMap(A.players || [], B.players || [], 'players'),
+      enemies: lerpMap(A.enemies || [], B.enemies || [], 'enemies'),
+      bullets: lerpBullets(A.bullets, B.bullets),
       alpha,
     };
   }

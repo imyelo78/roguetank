@@ -219,9 +219,17 @@ export class Sound {
   _noise({ type = 'lowpass', dur = 0.2, vol = 0.3, f0 = 1200, f1 = f0, q = 0.8, delay = 0, dest = null }) {
     const t0 = this.ctx.currentTime + delay;
     const len = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    // 按长度缓存：一次爆炸要叠 4 段噪声，以前每段都现场 createBuffer +
+    // 逐采样点填随机数（0.3 秒 @48kHz 就是 1.4 万次 Math.random）。
+    // 联机第 3 波以后多车连环炸，这些全在主线程上跑——纯浪费。
+    // 同一段内容重复播听不出"复读"（外面还有滤波扫频和增益包络在变）。
+    let buf = this._noiseCache && this._noiseCache.get(len);
+    if (!buf) {
+      buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      (this._noiseCache || (this._noiseCache = new Map())).set(len, buf);
+    }
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const filter = this.ctx.createBiquadFilter();

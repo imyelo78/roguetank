@@ -957,6 +957,11 @@ export class HUD {
 
   // ---------------- HUD 数值 ----------------
   setHealth(hp, maxHp) {
+    // coop/solo 的主循环每帧都会调这里：血量没变时直接返回，
+    // 省掉 4 次样式写入 + 1 次 textContent（浏览器每次都要做样式失效处理）。
+    if (hp === this._hp && maxHp === this._maxHp) return;
+    this._hp = hp;
+    this._maxHp = maxHp;
     const ratio = Math.max(0, hp / maxHp);
     this.hpFill.style.width = `${ratio * 100}%`;
     this.hpGhost.style.width = `${ratio * 100}%`;
@@ -1012,7 +1017,11 @@ export class HUD {
     this._bossKind = null;
   }
 
-  setWave(n) { this.waveEl.textContent = String(n); }
+  setWave(n) {
+    if (n === this._wave) return;
+    this._wave = n;
+    this.waveEl.textContent = String(n);
+  }
 
   /**
    * 脚下地表指示。
@@ -1054,9 +1063,23 @@ export class HUD {
       this.modifierEl.classList.add('hidden');
     }
   }
-  setLeft(n) { this.leftEl.textContent = String(n); }
-  setKills(n) { this.killsEl.textContent = String(n); }
-  setScore(n) { this.scoreEl.textContent = String(n); }
+  // 下面三个（以及 setWave）每帧被主循环调用：textContent 写入即使值没变
+  // 也会触发 DOM 文本节点失效，战斗中是纯浪费，统一加脏检查。
+  setLeft(n) {
+    if (n === this._left) return;
+    this._left = n;
+    this.leftEl.textContent = String(n);
+  }
+  setKills(n) {
+    if (n === this._kills) return;
+    this._kills = n;
+    this.killsEl.textContent = String(n);
+  }
+  setScore(n) {
+    if (n === this._score) return;
+    this._score = n;
+    this.scoreEl.textContent = String(n);
+  }
 
   /** 用强化定义渲染徽章（图标 + 等级） */
   renderChips(list) {
