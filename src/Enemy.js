@@ -70,6 +70,7 @@ export class Enemy {
     this.tank = new Tank(scene, {
       team: 'enemy',
       detail: 'low',
+      idLamp: false,
       body: bodies.body,
       accent: bodies.accent,
       metal: bodies.metal,

@@ -440,6 +440,7 @@ export class CoopMode {
       team: 'enemy',
       type,
       detail: 'low',
+      idLamp: false,
       hp: tpl.hp === 1 ? 100 : 100,
       speed: tpl.speed * 8.5,
       body: skin.body,

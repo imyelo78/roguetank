@@ -347,9 +347,17 @@ export class Tank {
     // 用一根短杆而不是浮空球：玩家高模炮塔顶在 0.48、敌人低模在 0.34，
     // 固定高度的球会在一半车上悬空；杆子从 0.17 起，两种车都是"插在顶上"。
     // 材质走共享缓存，N 辆敌人也只多两个 draw call（杆 + 灯头）。
+    // r39：敌人不再点这根灯（idLamp: false）。
+    // 60 辆敌人时它是 120 次 draw call / 6240 个三角面，换来的只是一颗
+    // 远看 3px 的红点；而敌方车体本来就是整套暖色（锈红/橙/金），
+    // 敌我靠大色块已经分得开，这盏灯在敌人身上是纯冗余。
+    // 队友和玩家保留（最多 4 辆，且青绿/青蓝点是"队友在哪"的主要线索）。
     this.lampColor = skin.lamp;
-    add(this.turret, CYLY(0.05, 0.05, 0.46, 6), mats.metal, 0, 0.40, -0.48);
-    this.lamp = add(this.turret, SPH(0.19), basicMat(skin.lamp), 0, 0.60, -0.48);
+    this.lamp = null;
+    if (opts.idLamp !== false) {
+      add(this.turret, CYLY(0.05, 0.05, 0.46, 6), mats.metal, 0, 0.40, -0.48);
+      this.lamp = add(this.turret, SPH(0.19), basicMat(skin.lamp), 0, 0.60, -0.48);
+    }
 
     // 有射界的车（轻装 / 猎手）在地上铺一层扇面，让"炮口只能扫这么宽"看得见
     this.traverseFan = null;
