@@ -184,6 +184,11 @@ export class CoopMode {
     // 预测 / 校正相关的内部状态
     this._predAcc = 0;                                  // 预测累加器（见 update）
     this._shift = { x: 0, z: 0 };                       // 待消化的位置残差
+    // 校正量缓冲：逻辑位置被"硬贴"到服务端时，把同等的反向偏移记在这里，
+    // 由渲染层平滑消化，画面就不会跟着跳（见 _absorbResidual / _reconcile）
+    this._corr = { x: 0, z: 0 };
+    this._warmLeft = null;                              // 开局准备倒计时剩余秒数
+    this._warmShown = null;                             // 已经显示到第几秒
     this._vel = { x: 0, z: 0 };                         // 本 tick **实际**位移速度（外推用）
     this._predFrom = null;                              // 本帧预测前的起点（渲染插值用）
     this._disp = { x: 0, z: 0, yaw: 0 };                // 本帧画在哪
@@ -392,6 +397,7 @@ export class CoopMode {
     this._predFrom = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
     this._disp = { x: this.me.x, z: this.me.z, yaw: this.me.yaw };
     this._shift = { x: 0, z: 0 };
+    this._corr = { x: 0, z: 0 };
     this._predAcc = 0;
     this._moveDir = null;
 
@@ -687,6 +693,9 @@ export class CoopMode {
     // 选卡面板：服务端发 CARDS 就弹，别人选完/超时服务端会继续推进波次
     this._syncCards();
 
+    // 开局前的 3-2-1（必须在 _applySnapshot 之前，用上一帧的 live 状态）
+    this._tickWarmup(dt);
+
     // 服务端快照 → 队友 / 敌人 / 子弹
     this._applySnapshot();
 
@@ -921,9 +930,14 @@ export class CoopMode {
     if (worldLive !== this._wasLive) {
       this._wasLive = worldLive;
       if (!worldLive) {
-        this.game.hud.showMessage('战斗准备中… 3 秒后开始', 2.6);
+        // 进准备阶段：起一个按秒跳的倒计时（见 _tickWarmup）。
+        // 以前这里只挂一句静态的「战斗准备中… 3 秒后开始」，2.6 秒后消失，
+        // 玩家看不到还剩几秒，也不知道该不该动——所以现在刷 3 / 2 / 1。
+        this._warmLeft = Math.max(1, Math.round(this.game.hud?._autoStartLeft || 3));
+        this._warmShown = null;
         this.firing = false;      // 归位，别让开局瞬间自己打一炮
       } else {
+        this._warmLeft = null;
         this.game.hud.showMessage('开战！', 1.2);
       }
     }
@@ -1075,9 +1089,29 @@ export class CoopMode {
     if (vlen > 30) { vx = (vx / vlen) * 30; vz = (vz / vlen) * 30; }
     if (vlen < 0.05) { vx = 0; vz = 0; }
     const dtc = Math.min(dt, 0.05);
+    const corr = this._corr || (this._corr = { x: 0, z: 0 });
+
+    // ---- 把校正缓冲化掉 ----
+    //
+    // `_corr` 是"逻辑位置刚刚被瞬移了多少"的反向记录。这里按有限速率把它
+    // 归零，画出来的位置就始终连续：
+    //   · 小偏移（<10cm，快照 quantization）用 1.2 m/s 慢慢化，等于没有；
+    //   · 大偏移（>30cm，网络抖动导致的一次硬贴）按 x8 加速，1 米约 0.2 秒化完，
+    //     折算成速度是正常行驶的 40% 上下，看到的是"车速抖了一下"，
+    //     而不是以前那种"整屏猛窜一帧"（实测 ratio 峰值 3.36 倍）。
+    const corrMag = Math.hypot(corr.x, corr.z);
+    if (corrMag > 1e-5) {
+      const rate = Math.max(1.2, corrMag * 8);
+      const take = Math.min(corrMag, rate * dtc);
+      const k = take / corrMag;
+      corr.x -= corr.x * k;
+      corr.z -= corr.z * k;
+      if (Math.hypot(corr.x, corr.z) < 1e-4) { corr.x = 0; corr.z = 0; }
+    }
+
     // 理想外推位置（时间轴上连续，但在输入突变时会跳）
-    const wantX = this.me.x + vx * acc;
-    const wantZ = this.me.z + vz * acc;
+    const wantX = this.me.x + corr.x + vx * acc;
+    const wantZ = this.me.z + corr.z + vz * acc;
     // ---------------- 前馈项 ----------------
     //
     // ⚠ 前馈用 **dtc**，不要改成 acc。这一条是踩过坑的，写清楚免得再有人"优化"：
@@ -1122,6 +1156,9 @@ export class CoopMode {
       rz = this.me.z;
       ry = this.me.yaw;
       this._yawVel = 0;
+      // 画面直接贴到逻辑位置了，校正缓冲也该清掉，否则下一帧 want 又把
+      // 那点偏移加回来，白跳一次
+      if (this._corr) { this._corr.x = 0; this._corr.z = 0; }
     }
     this._disp.x = rx;
     this._disp.z = rz;
@@ -1133,6 +1170,56 @@ export class CoopMode {
       t.group.rotation.y = ry;
       t.group.rotation.z = this.me.down ? 0.5 : 0;
       t.setAim(this.me.turretYaw);
+    }
+  }
+
+  /**
+   * 把逻辑位置挪 (dx, dz)，同时把等量的反向偏移记进 `_corr`。
+   *
+   * 为什么要有这一层：校正**必须**立刻生效，否则客户端会一直走在错误的位置上
+   * （撞墙、被打、复活都会跟着错）。但"立刻生效"直接体现到画面上就是一帧
+   * 跳 1 米——实测网络抖动 ±60ms 时，单帧校正位移最大 1.08 米，换算成速度
+   * 是正常行驶的 4 倍多，肉眼就是"整屏一窜"。
+   *
+   * 所以逻辑位置照旧瞬移，`_corr` 记下"刚刚偷偷挪了多少"，渲染时把这点
+   * 偏移加回去——这一帧画面纹丝不动；之后由 `_reconcile` 按米/秒的速率
+   * 把 `_corr` 化掉，玩家看到的是"车速稍微快/慢了一点"，不是"跳了一下"。
+   *
+   * 超过 2.5 米（复活、传送、开局归位）不缓冲：那种情况本来就该瞬移，
+   * 硬要平滑反而会看到车从几十米外滑过来。
+   */
+  _moveMe(dx, dz) {
+    if (!dx && !dz) return;
+    const c = this._corr || (this._corr = { x: 0, z: 0 });
+    this.me.x += dx;
+    this.me.z += dz;
+    c.x -= dx;
+    c.z -= dz;
+    if (Math.hypot(c.x, c.z) > 2.5) {
+      c.x = 0;
+      c.z = 0;
+    }
+  }
+
+  /**
+   * 准备阶段的 3-2-1 倒计时。
+   *
+   * 服务端在 `autoStartT` 归零前不会处理输入（state=lobby），客户端在这段
+   * 时间里只能"看着车不动"。以前只有一句静态的「3 秒后开始」，既不知道
+   * 还剩几秒，也不知道什么时候能开炮。这里按秒刷中央大字。
+   *
+   * 剩余秒数以服务端下发的 `autoStart` 为初值，之后本地按 dt 递减——
+   * 大厅的 roster 只在有人进出时才广播，拿它直接显示会一直停在 3。
+   */
+  _tickWarmup(dt) {
+    if (this._wasLive !== false) return;
+    if (this._warmLeft == null) this._warmLeft = 3;
+    this._warmLeft -= dt;
+    // 归零前一直显示 1，避免出现 "0"
+    const n = Math.max(1, Math.ceil(this._warmLeft));
+    if (n !== this._warmShown) {
+      this._warmShown = n;
+      this.game.hud.showMessage(`战斗准备中… ${n}`, 1.05);
     }
   }
 
@@ -1205,9 +1292,12 @@ export class CoopMode {
       this._shift.z = rz - uz * along;
       // 服务端反超客户端 0.75 米以上（卡顿恢复 / 漏了模拟）：这是真错位，
       // 直接向前贴，否则整局都跟服务端错开一大截。
+      //
+      // ⚠ 贴的是 `along - 0.75`，不是整个 `along`：以前写 `ux * along`，
+      //   等于把"允许的 0.75 米"也一起抹掉，1.08 米的领先会变成 1.08 米的
+      //   一次跳动（实测抖动 ±60ms 时单帧校正最大值就是 1.08 米）。
       if (along > 0.75) {
-        this.me.x += ux * along;
-        this.me.z += uz * along;
+        this._moveMe(ux * (along - 0.75), uz * (along - 0.75));
       }
       // ---- 纵向领先量必须**有界**，否则会在保险丝上打转 ----
       //
@@ -1225,8 +1315,7 @@ export class CoopMode {
       // 而且是**一次贴齐**，不是每帧磨一点——磨出来的正是抖动。
       if (along < -LEAD_CAP) {
         const back = along + LEAD_CAP;      // 负数，即需要往回拉的距离
-        this.me.x += ux * back;
-        this.me.z += uz * back;
+        this._moveMe(ux * back, uz * back);
       }
     } else {
       // 静止：整段残差（主要是停车那一下的领先量）记进来，下面按速率滑。
@@ -1260,6 +1349,9 @@ export class CoopMode {
       this.me.z += this._shift.z;
       this._shift.x = 0;
       this._shift.z = 0;
+      // 这种量级的错位就该瞬移，别让画面从三米外滑过来
+      this._corr.x = 0;
+      this._corr.z = 0;
       return;
     }
 
@@ -1314,19 +1406,25 @@ export class CoopMode {
     // 之所以在这里再截一刀：上面主追赶有 1.2 m/s 的上限、`_clampToSnap`
     // 是"逐帧硬贴"没有上限，两条路径叠起来就可能一帧走十几厘米 ——
     // 画面上就是"车被弹了一下"。这一刀保证无论哪条判据失真，单帧位移
-    // 都不超过 MAX_STEP_PER_SEC（4.2 m/s，仍远快于正常行驶 15 m/s 的
-    // 一半以上，所以真错位照样一帧内就跟上，只是不会瞬移）。
+    // 都不超过 MAX_STEP_PER_SEC（0.55 m/s，约为正常行驶的 3.7%，
+    // 所以真错位照样能追回来，只是要花零点几秒，看不出"跳"）。
+    // 硬约束单独限速。这里**不**把上面的"领先回拉"也算进预算：
+    // 那个是稳态量（RTT 80ms 时每帧都要回拉一点点），按 0.55 m/s 卡住
+    // 会让领先量一直贴在保险丝上，反而更糟。抖动的平滑由 `_corr` 负责。
     const beforeX = this.me.x;
     const beforeZ = this.me.z;
     this._clampToSnap(snapPos);
-    const cap = dt > 0 ? MAX_STEP_PER_SEC * Math.min(dt, 0.05) + 1e-6 : Infinity;
+    const dtc = Math.min(dt > 0 ? dt : 0, 0.05);
+    // dt 为 0（同一时间戳跑了两帧）时预算必须是 0，不能是 Infinity：
+    // 否则那一帧的硬贴不被过滤，实测 ±120ms 抖动下会放出一笔 2.1 米的位移。
+    const cap = dtc > 0 ? MAX_STEP_PER_SEC * dtc + 1e-6 : 0;
     const sx = this.me.x - beforeX;
     const sz = this.me.z - beforeZ;
     const sl = Math.hypot(sx, sz);
     if (sl > cap) {
       const k = cap / sl;
-      this.me.x = beforeX + sx * k;
-      this.me.z = beforeZ + sz * k;
+      // 用 _moveMe 回退，`_corr` 才能和"实际挪了多少"保持一致
+      this._moveMe(beforeX + sx * k - this.me.x, beforeZ + sz * k - this.me.z);
     }
   }
 
@@ -1349,8 +1447,8 @@ export class CoopMode {
     const d = Math.hypot(dx, dz);
     if (d <= HARD_CAP) return;
     const k = HARD_CAP / d;
-    this.me.x = p.x + dx * k;
-    this.me.z = p.z + dz * k;
+    // 走 _moveMe：逻辑位置照样立刻贴回 HARD_CAP，但画面由 _corr 平滑消化
+    this._moveMe(p.x + dx * k - this.me.x, p.z + dz * k - this.me.z);
   }
 
   /**
