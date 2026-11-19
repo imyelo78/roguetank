@@ -100,9 +100,10 @@ console.log('\n[4] 人数缩放：数量 n^0.6，Boss 血量乘 √n');
   const s1 = scaleForPlayers(1);
   const s4 = scaleForPlayers(4);
   assert.equal(s1.countMul, 1);
-  assert.ok(Math.abs(s4.countMul - Math.pow(4, 0.6)) < 1e-9);
+  // r42：数量 n^0.5、血量 n^0.55
+  assert.ok(Math.abs(s4.countMul - Math.pow(4, 0.5)) < 1e-9);
   assert.ok(s4.countMul < 2.4, `4 人数量倍率应小于 2.4（实际 ${s4.countMul.toFixed(2)}）`);
-  assert.equal(s4.hpMul, 2);
+  assert.ok(Math.abs(s4.hpMul - Math.pow(4, 0.55)) < 1e-9);
 
   const bossHp = (n) => {
     const w = new World({ code: 'B' + n, seed: 77, maxPlayers: 4 });

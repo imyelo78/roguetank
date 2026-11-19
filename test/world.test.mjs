@@ -290,20 +290,21 @@ console.log('\n[8] 车体数值只有一份来源');
   const r4 = spawnCount(12, 4);
   const t1 = r1.byType;
   const t4 = r4.byType;
-  // W12 base = 2 + 24 + min(6,6) = 32
-  assert.equal(t1.gunner, 32, `W12 单人 gunner 应 =base=32，实际 ${t1.gunner}`);
+  // r42：W12 base = 19 + 1.4×(12-7) = 26（第 8 波起增速 1.4/波）
+  assert.equal(t1.gunner, 26, `W12 单人 gunner 应 =base=26，实际 ${t1.gunner}`);
   assert.equal(r1.scale.countMul, 1, '1 人不应有数量缩放');
-  // 4 人：32 × 4^0.6 = 32 × 2.297 = 73.5 → 74
-  const expect4 = Math.round(32 * Math.pow(4, 0.6));
+  // 4 人：26 × 4^0.5 = 52
+  const expect4 = Math.round(26 * Math.pow(4, 0.5));
   assert.equal(t4.gunner, expect4, `W12 四人 gunner 应 =${expect4}，实际 ${t4.gunner}`);
-  // 净倍率必须落在 2.2~2.4（指数 0.6 的结果），而不是旧 0.85 的 3.2
+  // 净倍率必须 =2.0（指数 0.5 的结果），而不是旧 0.6 的 2.30 / 0.85 的 3.2
   const ratio = t4.gunner / t1.gunner;
-  assert.ok(ratio > 2.2 && ratio < 2.4, `4 人数量倍率应 ≈2.30，实际 ${ratio.toFixed(2)}`);
+  assert.ok(ratio > 1.9 && ratio < 2.1, `4 人数量倍率应 ≈2.00，实际 ${ratio.toFixed(2)}`);
   // 特色兵种保底不缩成 0
   assert.ok(t4.charger >= 1 && t4.drone >= 1 && t4.shield >= 1,
     `冲锋/无人机/重盾保底 ≥1：${JSON.stringify(t4)}`);
-  // 血量缩放不受影响：4 人小兵血 = 单人 ×2（√4）
-  assert.equal(r4.scale.hpMul, 2, '4 人血量仍应是 √4 = 2');
+  // 血量缩放（r42）：4 人 = 4^0.55 ≈ 2.14
+  assert.ok(Math.abs(r4.scale.hpMul - Math.pow(4, 0.55)) < 1e-9,
+    `4 人血量倍率应 ≈${Math.pow(4, 0.55).toFixed(2)}，实际 ${r4.scale.hpMul}`);
   ok(`联机数量 n^0.6 落地：W12 gunner 单人 ${t1.gunner} → 4 人 ${t4.gunner}（×${ratio.toFixed(2)}，血量仍 ×√n）`);
 }
 

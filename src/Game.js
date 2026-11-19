@@ -745,9 +745,15 @@ export class Game {
     this.wave = n;
     const bossWave = n % 5 === 0;
     const eliteWave = !bossWave && (n % 5 === 3 || this.mods.eliteEveryWave);
-    // 战场扩大到 200×200 后，每波追加少量敌人，避免密度被摊薄
-    const count = 2 + n * 2 + Math.min(6, Math.floor(n / 2)) - (n % 5 === 3 ? 2 : 0);
-    const hp = Math.round((55 + n * 14) * this.mods.enemyHpMul);
+    // 战场扩大到 200×200 后，每波追加少量敌人，避免密度被摊薄。
+    // r42：前 7 波不变；第 8 波起增速放缓（2.5/波 → 1.4/波），
+    // 省下的数量折成单体血量（5%/波，封顶 +30%）——与联机 (core/world.js) 同一条曲线。
+    const base = (n <= 7
+      ? 2 + n * 2 + Math.min(6, Math.floor(n / 2))
+      : Math.round(19 + (n - 7) * 1.4)) - (n % 5 === 3 ? 2 : 0);
+    const hpBoost = n <= 7 ? 1 : 1 + Math.min(0.30, (n - 7) * 0.05);
+    const count = base;
+    const hp = Math.round((55 + n * 14) * this.mods.enemyHpMul * hpBoost);
     const speed = 8.5 + Math.min(4.5, n * 0.6);
     const chargers = n >= 2 && !bossWave ? Math.min(6, Math.floor(n / 2)) : 0;
 

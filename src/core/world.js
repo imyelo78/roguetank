@@ -1016,12 +1016,17 @@ export class World {
     this.wave = n;
     const bossWave = n % 5 === 0;
     const eliteWave = !bossWave && n % 5 === 3;
-    // r30 已拍板：只减联机敌军数量——指数 0.6 做在 players.js 的 countMul 里。
-    // 这里不要再乘一个固定系数：远端那版 CS=0.6 会让 2 人局只多 8% 的敌人，
-    // 和"人数越多压力越大"的直觉正好相反。
-    const base = 2 + n * 2 + Math.min(6, Math.floor(n / 2)) - (n % 5 === 3 ? 2 : 0);
+    // 数量曲线（r42）：前 7 波不变；第 8 波起增速从 2.5/波 放缓到 1.4/波。
+    // 后期波次的卡顿主要来自场上并发对象数（draw call / 实例数都随它涨），
+    // 省下的数量按 5%/波 折成单体血量（封顶 +30%），总血量基本持平——
+    // 打起来的节奏不变，但同屏坦克少了 20~30%。
+    const base = (n <= 7
+      ? 2 + n * 2 + Math.min(6, Math.floor(n / 2))
+      : Math.round(19 + (n - 7) * 1.4)) - (n % 5 === 3 ? 2 : 0);
+    const hpBoost = n <= 7 ? 1 : 1 + Math.min(0.30, (n - 7) * 0.05);
     const count = Math.round(base * this.scale.countMul);
-    const hp = Math.round((55 + n * 14) * this.scale.hpMul);
+    // hpBoost 只作用于小兵：Boss 本身就是单体，加血不影响性能只延长战斗
+    const hp = Math.round((55 + n * 14) * this.scale.hpMul * hpBoost);
     const speed = 8.5 + Math.min(4.5, n * 0.6);
 
     this.waveActive = true;
@@ -1033,7 +1038,9 @@ export class World {
 
     if (bossWave) {
       const breaker = Math.floor(n / 5) % 2 === 1;
-      // Boss 血量吃人数缩放：以前 4 个人打同一个血条，等于 4 倍 DPS 白给
+      // Boss 血量吃人数缩放：以前 4 个人打同一个血条，等于 4 倍 DPS 白给。
+      // r42：小兵的血量补偿（hpBoost）不给 Boss——它是一个单体，加血
+      // 不会减少任何渲染负担，只会把 Boss 战拖长 30%+。
       const bossHp = Math.round((1300 + n * 300) * this.scale.hpMul);
       this.pending.push({ t: 0.7, type: breaker ? 'boss_breaker' : 'boss_prism', hpScale: bossHp });
       for (let i = 0; i < 3 + Math.floor(n / 4); i++) {
