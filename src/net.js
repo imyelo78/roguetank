@@ -540,12 +540,14 @@ export class NetClient {
     const lerpBullets = (arrA, arrB) => lerpMap(arrA || [], arrB || [], 'bullets');
 
     // 波次 / 状态 / 分数这类元数据不插值，一律取最新帧（避免 UI 回退）。
+    // 宝箱是静止实体，同样取最新帧即可（不需要插值）。
     return {
       tick: newest.tick,
       wave: newest.wave,
       state: newest.state,
       scores: newest.scores,
       left: newest.left,
+      crates: newest.crates || [],
       players: lerpMap(A.players || [], B.players || [], 'players'),
       enemies: lerpMap(A.enemies || [], B.enemies || [], 'enemies'),
       bullets: lerpBullets(A.bullets, B.bullets),

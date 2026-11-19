@@ -178,7 +178,7 @@ export class Minimap {
    * @param {Array} view.mates    [{x,z}]（组队：队友位置，可选）
    * @param {Array} view.bullets  [{x,z,team}]（可选，只画朝我方飞的）
    */
-  update({ player, enemies = [], warnings = [], mates = [], bullets = [] }) {
+  update({ player, enemies = [], warnings = [], mates = [], bullets = [], crates = [] }) {
     const g = this.ctx;
     const s = this.size;
 
@@ -207,6 +207,18 @@ export class Minimap {
       g.strokeStyle = 'rgba(8,12,16,0.85)';
       g.lineWidth = 0.8;
       g.stroke();
+    }
+
+    // 战场宝箱（r43）：金色方块 + 白描边，和敌人（圆点）一眼区分
+    for (const c of crates) {
+      if (!c || !Number.isFinite(c.x)) continue;
+      const x = this._px(c.x);
+      const z = this._px(c.z);
+      g.fillStyle = '#ffc94a';
+      g.fillRect(x - 2.6, z - 2.6, 5.2, 5.2);
+      g.strokeStyle = 'rgba(255,255,255,0.9)';
+      g.lineWidth = 0.9;
+      g.strokeRect(x - 2.6, z - 2.6, 5.2, 5.2);
     }
 
     // 飞向我方的炮弹：小亮点，只在近处画，避免糊成一片

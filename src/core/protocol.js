@@ -186,8 +186,16 @@ export function encodeSnapshot(world) {
     e: ents,        // 扁平
     sc: world.players.map((p) => p.stats.score),
     ex: world.enemiesLeft === undefined ? -1 : world.enemiesLeft,
+    // 宝箱（r43）：状态同步而不是事件——'crates' 事件只在开波瞬间发一次，
+    // 客户端若正好在大厅→战场切换（active=false）就会永久错过，箱子从此
+    // 不渲染。放快照里每帧 1~3 条（空 [] 时 ~6 字节），天然覆盖迟入/重连。
+    // [id, x, z, catIdx]，catIdx 见 CRATE_CATS
+    cr: (world.crates || []).map((c) => [c.id, quantPos(c.x), quantPos(c.z), CRATE_CATS.indexOf(c.cat)]),
   };
 }
+
+/** 宝箱类别在协议里的顺序：两端共用，改动即断协议 */
+export const CRATE_CATS = ['attack', 'defense', 'mobility', 'support'];
 
 /** 解码成便于客户端消费的结构 */
 export function decodeSnapshot(snap) {
@@ -218,5 +226,6 @@ export function decodeSnapshot(snap) {
       bullets.push(item);
     }
   }
-  return { tick: snap.tick, wave: snap.w, state: snap.s, scores: snap.sc || [], players, enemies, bullets, left: snap.ex };
+  return { tick: snap.tick, wave: snap.w, state: snap.s, scores: snap.sc || [], players, enemies, bullets, left: snap.ex,
+    crates: (snap.cr || []).map(([id, x, z, cat]) => ({ id, x: dequantPos(x), z: dequantPos(z), cat: CRATE_CATS[cat] || 'support' })) };
 }

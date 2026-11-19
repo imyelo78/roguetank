@@ -452,6 +452,9 @@ export class Room {
       enemies: w.enemies,
       bullets: w.bullets,
       enemiesLeft: w.enemies.length + w.pending.length,
+      // 宝箱（r43）：漏了它快照里 cr 恒为 []，客户端永远看不到箱子——
+      // encodeSnapshot 读的是这个**临时对象**的 crates，不是 world 本体。
+      crates: w.crates || [],
     });
     const msg = JSON.stringify(snap);
     for (const m of this.members.values()) this._send(m, msg);

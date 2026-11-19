@@ -12,6 +12,8 @@ import { HALF, generateBoxes, resolveMultiSpawns } from './levelgen.js';
 import { stepBody, aimTurret, angleDiff } from './motion.js';
 // 圆-矩形碰撞：与客户端 level.js、地图生成共用，避免三处判定各写一套
 import { deepestHit, hitsAny, slideCircle, pushOut } from './collide.js';
+// 战场宝箱（r43）：空投数量/位置/开卡都是纯函数，单机 Game.js 共用同一份
+import { crateCount, cratePositions, rollCategory, rollCard, CATEGORIES } from './crates.js';
 // 地表类型场：两端同源的速度系数（地形为空时完全退化成 1.0）
 import { buildTerrain, speedAt, presetK } from './terrain.js';
 import { createPlayer, updateRevive, scaleForPlayers,
@@ -253,6 +255,8 @@ export class World {
     this.players = [];
     this.enemies = [];
     this.bullets = [];
+    this.crates = [];              // 战场宝箱（r43）：{ id, x, z, cat }
+    this._crateSeq = 0;
     this.events = [];
 
     this.tick = 0;
@@ -442,6 +446,7 @@ export class World {
     // ---- 清场：上一局的一切都不该带进新一局 ----
     this.enemies.length = 0;
     if (this.bullets) this.bullets.length = 0;
+    if (this.crates) this.crates.length = 0;
     this.pending.length = 0;
     this.events.length = 0;
     this.waveActive = false;
@@ -509,6 +514,7 @@ export class World {
       this._updatePlayers(dt);
       this._updateEnemies(dt);
       this._updateBullets(dt);
+      this._updateCrates();
       for (const e of updateRevive(this.players, dt)) {
         this._pushEvent({ kind: e.type, id: e.id, by: e.by });
       }
@@ -1061,7 +1067,75 @@ export class World {
       if (n >= 8) for (let i = 0; i < Math.max(1, Math.round(Math.min(4, Math.floor((n - 4) / 2)))); i++) this.pending.push({ t: 5.5 + i * 2.2, type: 'shield', hp: Math.round(hp * 1.3) });
     }
 
+    // 战场宝箱：每波开局空投（r43）。没被捡的箱子留着，跨波有效。
+    this._spawnCrates();
+
     this._pushEvent({ kind: 'wave', wave: n, boss: bossWave, elite: eliteWave });
+  }
+
+  /**
+   * 空投宝箱。数量随人数（1~2 人 1~2 个 / 3~4 人 2~3 个），位置远离玩家
+   * 与建筑。类别决定箱子的外观标识；内容在**拾取时**才按拾取者开出，
+   * 所以两个人抢同一个箱子各得其所，也永远不会开出满级的卡。
+   */
+  _spawnCrates() {
+    const count = crateCount(this.players.length || 1, () => this.rng.spawn());
+    const pts = cratePositions({
+      half: HALF,
+      players: this.players.filter((p) => p.alive),
+      blocked: (x, z) => this.static.blocked(x, z, 2.2),
+      rnd: () => this.rng.spawn(),
+      count,
+    });
+    if (!pts.length) return;
+    for (const pt of pts) {
+      this.crates.push({
+        id: ++this._crateSeq,
+        x: pt.x,
+        z: pt.z,
+        cat: rollCategory(() => this.rng.spawn()),
+      });
+    }
+    // 不再推 'crates' 事件：宝箱随快照做状态同步（见 protocol.js 的 cr 字段），
+    // 一次性事件会被大厅→战场切换中的客户端整个错过。
+  }
+
+  /** 拾取判定：活着且没倒地的玩家，开到 3.2m 内自动开箱 */
+  _updateCrates() {
+    if (!this.crates.length) return;
+    for (let i = this.crates.length - 1; i >= 0; i--) {
+      const c = this.crates[i];
+      let taker = null;
+      for (const p of this.players) {
+        if (!p.alive || p.down) continue;
+        if (Math.hypot(p.x - c.x, p.z - c.z) < 3.2) { taker = p; break; }
+      }
+      if (!taker) continue;
+      const card = rollCard(taker.stats, taker.stats.counts, c.cat, () => this.rng.spawn());
+      const applied = this._applyPickup(taker, card);
+      this.crates.splice(i, 1);
+      this._pushEvent({
+        kind: 'crateGet',
+        cid: c.id,
+        id: taker.id,
+        cat: c.cat,
+        card: { id: card.id, name: card.name, icon: card.icon, rarity: card.rarity, desc: card.desc },
+        hp: applied.hp,
+        maxHp: applied.maxHp,
+      });
+    }
+  }
+
+  /** 把一张卡应用到玩家（applyCard 的 world 内封装，含血量回写） */
+  _applyPickup(p, card) {
+    const s = p.stats;
+    card.apply(s, p);
+    s.counts[card.id] = (s.counts[card.id] || 0) + 1;
+    p.speedBase = s.speed;
+    p.maxHp = s.maxHp;
+    p.hp = Math.min(p.hp, p.maxHp);
+    p.killHeal = s.killHeal;
+    return { hp: Math.round(p.hp), maxHp: p.maxHp };
   }
 
   _updateWaves(dt) {
@@ -1351,6 +1425,8 @@ export class World {
       // 但"同源"只能保证今天一致，改一次生成逻辑、发一次版就会有人踩到
       // 页面缓存没更新的坑。约 44 个箱体 × 7 个数字，只在入场时发一次，值得。
       boxes: this.static.boxes.map(([x, z, w, d]) => ({ x, z, w, d })),
+      // 宝箱：重连/中途加入的人要能看见场上还没被捡的箱子
+      crates: this.crates.map((c) => ({ id: c.id, x: c.x, z: c.z, cat: c.cat })),
     };
   }
 }

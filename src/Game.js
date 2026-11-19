@@ -17,6 +17,8 @@ import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
 import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
 import { R, Rng, randomSeed } from './rng.js';
+import { crateCount, cratePositions, rollCategory, rollCard, CATEGORIES } from './core/crates.js';
+import { makeCrate } from './crate-visual.js';
 import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
 import { TouchControls, assistAim, AIM_RANGE } from './input/touch.js';
@@ -563,6 +565,17 @@ export class Game {
     this.hud.setHeat(0, false, false);
     this.hud.hideBossBar();
     this.hud.setBest(this.best);
+
+    // 战场宝箱（r43）：上一局的箱子不带回新一局
+    this.crates = [];          // { id, x, z, cat, visual }
+    this._crateSeq = 0;
+    this._clearCrateVisuals();
+  }
+
+  /** 摘掉场上所有宝箱模型（重开一局 / 退出到菜单时） */
+  _clearCrateVisuals() {
+    if (!this._crateRoot) return;
+    for (const child of [...this._crateRoot.children]) this._crateRoot.remove(child);
   }
 
   /**
@@ -876,6 +889,73 @@ export class Game {
     this.state = 'playing';
     this.touch.refresh();
     this.hud.setWave(n);
+    // 战场宝箱（r43）：每波空投，与联机 (core/world.js) 同一份数量曲线
+    this._spawnCratesSolo();
+  }
+
+  /**
+   * 单机空投。宝箱带类别标识（火力/装甲/机动/维修），内容在拾取时才
+   * 按玩家当前成长状态开出——已满级的卡永远不会从箱子里出来。
+   */
+  _spawnCratesSolo() {
+    const p = this.player.group.position;
+    const count = crateCount(1, () => R.spawn());
+    const pts = cratePositions({
+      half: this.world.half || HALF,
+      players: [p],
+      blocked: (x, z) => this.world.blocked(x, z, 2.2),
+      rnd: () => R.spawn(),
+      count,
+    });
+    if (!pts.length) return;
+    if (!this._crateRoot) {
+      this._crateRoot = new THREE.Group();
+      this._crateRoot.name = 'crates';
+      this.scene.add(this._crateRoot);
+    }
+    for (const pt of pts) {
+      const cat = rollCategory(() => R.spawn());
+      const visual = makeCrate(cat);
+      visual.group.position.x = pt.x;
+      visual.group.position.z = pt.z;
+      this._crateRoot.add(visual.group);
+      this.crates.push({ id: ++this._crateSeq, x: pt.x, z: pt.z, cat, visual });
+    }
+  }
+
+  /** 单机拾取判定 + 宝箱动画。state=playing 时每帧调用 */
+  _updateCratesSolo(dt) {
+    if (!this.crates.length && !this._crateRoot?.children.length) return;
+    for (const c of this.crates) c.visual.update(dt);
+    if (this.state !== 'playing' || !this.player.alive) return;
+    const p = this.player.group.position;
+    for (let i = this.crates.length - 1; i >= 0; i--) {
+      const c = this.crates[i];
+      if (Math.hypot(p.x - c.x, p.z - c.z) > 3.2) continue;
+
+      const card = rollCard(this.stats, this.upgradeCounts, c.cat, () => R.spawn());
+      card.apply(this.stats, this.player);
+      this.upgradeCounts[card.id] = (this.upgradeCounts[card.id] || 0) + 1;
+      this.player.speed = this.stats.speed;
+      this.player.maxHp = this.stats.maxHp;
+      this.player.hp = Math.min(this.player.hp, this.player.maxHp);
+
+      const def = CATEGORIES[c.cat] || CATEGORIES.support;
+      this.effects.explosion(
+        new THREE.Vector3(c.x, 1.2, c.z), def.color, 10, 0.7,
+      );
+      this.sound.select();
+      this.hud.showMessage(
+        `获得强化：${card.icon} ${card.name}  ·  装甲 ${Math.round(this.player.hp)}/${this.player.maxHp}`, 2.2,
+      );
+
+      this._renderChips();
+      this.hud.setHealth(this.player.hp, this.player.maxHp);
+
+      this._crateRoot.remove(c.visual.group);
+      c.visual.dispose();
+      this.crates.splice(i, 1);
+    }
   }
 
   /** 在玩家 30~60 米外的环形区域找落点，优先选被掩体挡住视线的位置 */
@@ -1748,6 +1828,7 @@ export class Game {
       player: p ? { x: p.x, z: p.z, rot: this.player.group.rotation.y } : null,
       enemies: this.enemies,
       warnings: this.warnings,
+      crates: this.crates,
     });
   }
 
@@ -1839,6 +1920,7 @@ export class Game {
       }
       this._separate();
       this._updateBullets(dt);
+      this._updateCratesSolo(dt);
       // 玩家可能在同一帧被击毁，避免“死亡后清波”覆盖结算状态
       if (this.state === 'playing') this._updateWaves(dt);
       if (this.state === 'playing') this._syncBossBar();

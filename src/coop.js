@@ -29,6 +29,7 @@ import { NetDebug } from './debug.js';
 import { assistAim, AIM_RANGE } from './input/touch.js';
 import { FOG_BASE } from './core/quality.js';
 import { ndcToScreen } from './core/viewport.js';
+import { makeCrate } from './crate-visual.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -148,6 +149,7 @@ export class CoopMode {
     this.tanks = new Map();     // id → Tank（含自己的）
     this.enemies = new Map();   // id → Tank（低细节）
     this.bullets = new Map();   // id → Bullet
+    this.crates = new Map();    // cid → makeCrate() 返回值（战场宝箱，r43）
     this.mates = new Map();     // id → { name, chassis }
     this.me = null;             // 预测用的本地状态
     this.myId = null;
@@ -267,6 +269,7 @@ export class CoopMode {
     this.enemies.clear();
     this.bullets.clear();
     this.mates.clear();
+    this._clearCrates();
 
     if (this._aimMarker && this.scene) this.scene.remove(this._aimMarker);
     this._aimMarker = null;
@@ -381,6 +384,10 @@ export class CoopMode {
     for (const e of welcome.world?.enemies || []) {
       this._upsertEnemy(e.id, e.type, e.x, e.z, e.yaw);
     }
+    // 宝箱（重连/中途加入时场上还没被捡的箱子）
+    for (const c of welcome.world?.crates || []) {
+      this._upsertCrate(c.id, c.x, c.z, c.cat);
+    }
 
     this.camera.position.set(
       this.me.x,
@@ -489,6 +496,42 @@ export class CoopMode {
 
     this.enemies.set(id, t);
     return t;
+  }
+
+  // ---------------- 战场宝箱（r43） ----------------
+
+  /** 有就更新位置，没有就建——'crates' 事件和重连 welcome 都走这里 */
+  _upsertCrate(cid, x, z, cat) {
+    let c = this.crates.get(cid);
+    if (c) {
+      c.group.position.x = x;
+      c.group.position.z = z;
+      return c;
+    }
+    c = makeCrate(cat);
+    c.group.position.x = x;
+    c.group.position.z = z;
+    this.scene.add(c.group);
+    this.crates.set(cid, c);
+    return c;
+  }
+
+  _removeCrate(cid, sparkle) {
+    const c = this.crates.get(cid);
+    if (!c) return;
+    if (sparkle) {
+      const p = c.group.position;
+      // 开箱光效：颜色随类别，数量比爆炸收敛（不遮视线）
+      const def = { attack: 0xe8523a, defense: 0x4aa8ff, mobility: 0x58d858, support: 0xffc94a }[sparkle] || 0xffc94a;
+      this.effects.explosion(new THREE.Vector3(p.x, 1.2, p.z), def, 10, 0.7);
+    }
+    this.scene.remove(c.group);
+    c.dispose();
+    this.crates.delete(cid);
+  }
+
+  _clearCrates() {
+    for (const [cid] of this.crates) this._removeCrate(cid);
   }
 
   // ---------------- 输入 ----------------
@@ -726,6 +769,7 @@ export class CoopMode {
       t.update(dt);
     }
     for (const [, t] of this.enemies) t.update(dt);
+    for (const [, c] of this.crates) c.update(dt);
 
     // 射击冷却（只用于 HUD 进度条）
     this._cd = Math.max(0, this._cd - dt);
@@ -780,11 +824,16 @@ export class CoopMode {
     for (const [, b] of this.bullets) {
       bullets.push({ x: b.pos.x, z: b.pos.z, team: b.team });
     }
+    const crates = [];
+    for (const [, c] of this.crates) {
+      crates.push({ x: c.group.position.x, z: c.group.position.z });
+    }
     mm.update({
       player: { x: this._disp.x, z: this._disp.z, rot: this._disp.yaw },
       enemies,
       mates,
       bullets,
+      crates,
     });
   }
 
@@ -1000,6 +1049,29 @@ export class CoopMode {
       if (!alive.has(id)) {
         t.dispose(this.scene);
         this.enemies.delete(id);
+      }
+    }
+
+    // ---- 宝箱（r43）：快照状态同步，不依赖一次性事件 ----
+    // 'crates' 事件只在开波瞬间发一次，客户端若正好在大厅→战场切换
+    // （active=false）就永久错过。放进快照后迟入/重连/切场景全都自愈；
+    // 开箱提示（crateGet 事件）仍然走事件通道。
+    if (s.crates) {
+      const seen = new Set();
+      for (const c of s.crates) {
+        seen.add(c.id);
+        const cr = this._upsertCrate(c.id, c.x, c.z, c.cat);
+        // 快照插值出来的位置直接贴（宝箱本来就静止）
+        cr.group.position.x = c.x;
+        cr.group.position.z = c.z;
+      }
+      for (const [cid, cr] of this.crates) {
+        if (!seen.has(cid)) {
+          // 被队友开走：无光效（那一帧 crateGet 事件已在拾取者屏幕上播过）
+          this.scene.remove(cr.group);
+          cr.dispose();
+          this.crates.delete(cid);
+        }
       }
     }
 
@@ -1663,6 +1735,29 @@ export class CoopMode {
         case 'leave':
           if (e.id !== this.myId) this.game.hud.showMessage('一名队友离开了', 2);
           break;
+        case 'crates':
+          // 兼容保留：宝箱本体现在随快照同步（见 _applySnapshot），这条
+          // 事件已不再由服务端发出；万一旧服务端还在发，也能正确建箱。
+          for (const c of e.list || []) this._upsertCrate(c.id, c.x, c.z, c.cat);
+          break;
+        case 'crateGet': {
+          // 拾取。谁开的、开了什么，全员可见（组队里"他拿了火力强化"
+          // 是有效战况信息）；开箱光效只有拾取者附近才明显，不额外做距离衰减。
+          this._removeCrate(e.cid, e.cat);
+          const mine = e.id === this.myId;
+          const hpPart = mine ? `  ·  装甲 ${e.hp}/${e.maxHp}` : '';
+          if (mine) {
+            this.game.hud.showMessage(`获得强化：${e.card.icon} ${e.card.name}${hpPart}`, 2.2);
+            if (Number.isFinite(e.hp) && Number.isFinite(e.maxHp)) {
+              this.me.maxHp = e.maxHp;
+            }
+            this.sound.select();
+          } else {
+            const p = (this.net.players || []).find((q) => q.id === e.id);
+            this.game.hud.showMessage(`${p ? p.name : '队友'} 开箱获得 ${e.card.icon} ${e.card.name}`, 1.8);
+          }
+          break;
+        }
         default:
           break;
       }
