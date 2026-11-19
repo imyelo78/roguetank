@@ -151,9 +151,14 @@ const has = (src, selector) => src.includes(selector);
     '中央大字在手机上应压到 16px（原来 32px 等于半个战场）');
   assert.match(decl(cssClean, '\nbody.is-touch #app.playing .wave-chip {'), /flex-direction: row/,
     '波次应压成一行微标');
-  // 顶栏整体上移到 9px 后，BOSS 条跟着让到中央大字下面（34 + 22 高）
-  assert.match(decl(cssClean, 'body.is-touch #app.playing .boss-bar'), /top: calc\(60px/,
-    'BOSS 血条应贴在中央大字下面，不能压在战场中央');
+  // r44：BOSS 血条从小地图右边起算（--map-size 由 Game.js 写进 :root）。
+  // 原来 top:104 / 居中 / 宽 560，正好横在玩家瞄准的视野带上，Boss 一露头就糊住弹道。
+  assert.match(decl(cssClean, '\n.boss-bar {'), /left: calc\([^;]*--map-size/,
+    'BOSS 血条应挂在小地图右边（left 依赖 --map-size）');
+  assert.doesNotMatch(decl(cssClean, '\n.boss-bar {'), /width:\s*min\(560px/,
+    'BOSS 血条宽度应从 560px 收窄，不再横跨视野');
+  assert.match(decl(cssClean, 'body.is-touch #app.playing .boss-bar'), /--map-size/,
+    '手机端 BOSS 条同样跟小地图定位，不能回到屏幕中央');
   assert.match(decl(cssClean, 'body.is-touch #app.playing .hp-block'), /max-width: 128px/,
     '装甲区应限宽，别横着占满左边');
   ok('常显五样也按手机尺寸缩了一档（装甲 / 波次 / 武器 / 中央字 / BOSS 条）');
@@ -211,13 +216,14 @@ const has = (src, selector) => src.includes(selector);
   // （.minimap-wrap 有多处定义，这里取第一条基础规则，不是文件末尾的触屏覆盖）
   const mapStart = cssClean.indexOf('.minimap-wrap {');
   const map = cssClean.slice(mapStart, cssClean.indexOf('}', mapStart)).replace(/\s+/g, ' ');
-  assert.match(map, /--map-gap: 18px/, '小地图间距应统一走 --map-gap');
+  // r44 起 --map-gap 定义在 #hud 上（BOSS 条也要用同一个值做左边距），小地图继承
+  assert.match(decl(cssClean, '\n#hud {'), /--map-gap: 18px/, '小地图间距应统一走 --map-gap');
   assert.match(map, /left: calc\(var\(--map-gap\) \+ env/, '左边距应由 --map-gap 推出');
   assert.match(map, /top: calc\(var\(--map-gap\) \+ env/, '上边距应由 --map-gap 推出');
   // 横屏时左侧安全区（刘海留白 ~44px）会让左边距虚胖，必须排除
   assert.match(decl(cssClean, '.minimap-wrap { left: var(--map-gap)'), /left: var\(--map-gap\)/,
     '横屏应脱离 safe-area-inset-left，左边距严格等于上边距');
-  assert.ok(/body\.is-touch #app\.playing \.minimap-wrap \{[^}]*--map-gap: 9px/.test(cssClean),
+  assert.ok(/body\.is-touch #app\.playing #hud \{[^}]*--map-gap: 9px/.test(cssClean),
     '战斗中应把 --map-gap 收到 9px');
   ok('小地图左右上同距，横屏不吃左侧安全区');
 

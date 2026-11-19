@@ -287,6 +287,10 @@ export class Game {
       window.innerWidth < 720 || window.innerHeight < 520 ? 96 : 144,
       Math.round(window.innerHeight * 0.3),
     ));
+    // BOSS 血条挂在小地图右边，CSS 必须知道小地图实际多宽。
+    // 尺寸是按窗口高度算出来的，CSS 猜不到，所以每局写进 :root 变量。
+    // （不在 #hud 上声明同名变量：那样它会盖掉这里的值，继承打不过自身声明）
+    document.documentElement.style.setProperty('--map-size', `${mapSize}px`);
     this.minimap = mapEl
       ? new Minimap(mapEl, this.world, { size: mapSize })
       : null;

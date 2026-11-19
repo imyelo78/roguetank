@@ -244,7 +244,12 @@ html, body {
 
 /* ---------- HUD ---------- */
 /* HUD 也要跟着 dvh：它比 canvas 高的话，右下角的小地图会被推到地址栏后面 */
-#hud { position: fixed; inset: 0; height: 100dvh; pointer-events: none; z-index: 10; }
+/* --map-gap 提到 #hud 上：小地图和 Boss 血条都要用它做左边距，
+   各自局部声明的话，Boss 条读不到小地图的覆盖值，窄屏上就会错位 */
+#hud {
+  --map-gap: 18px;
+  position: fixed; inset: 0; height: 100dvh; pointer-events: none; z-index: 10;
+}
 
 .hud-top {
   display: grid;
@@ -429,28 +434,39 @@ html, body {
 }
 
 /* ---------- Boss 血条 ---------- */
+/*
+ * 挪到左上角、挂在小地图右边。
+ *
+ * 原来在 top:104px / 水平居中 / 宽 560px —— 那正是玩家盯着瞄炮的正前方，
+ * Boss 一露头，屏幕中上部横着一条 560px 的血条，弹道、护盾、小怪全被糊住。
+ * 血条只需要"看一眼知道还剩几成"，不需要占据视野带。
+ *
+ * 左边距 = 小地图左边距 + 小地图宽度 + 26px（12 是小地图自身的 padding/边框，
+ * 14 是间隙）。--map-size 由 Game.js 按窗口高度算好写进 :root，
+ * 因为小地图尺寸是 JS 动态定的，CSS 猜不出来。
+ */
 .boss-bar {
   position: absolute;
-  top: 104px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(560px, 64vw);
-  padding: 8px 12px 9px;
-  border-radius: 9px;
+  top: calc(var(--map-gap, 18px) + env(safe-area-inset-top));
+  left: calc(var(--map-gap, 18px) + env(safe-area-inset-left) + var(--map-size, 144px) + 26px);
+  width: min(272px, 23vw);
+  min-width: 168px;
+  padding: 6px 10px 7px;
+  border-radius: 8px;
   background: rgba(12, 18, 23, .78);
   border: 1px solid rgba(255, 74, 58, .35);
   backdrop-filter: blur(7px);
   animation: bossIn .3s ease both;
 }
 @keyframes bossIn {
-  from { opacity: 0; transform: translate(-50%, -6px); }
-  to { opacity: 1; transform: translate(-50%, 0); }
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .boss-head {
   display: flex;
   align-items: baseline;
-  gap: 9px;
-  margin-bottom: 6px;
+  gap: 7px;
+  margin-bottom: 4px;
 }
 .boss-tag {
   font-size: 8px;
@@ -462,20 +478,23 @@ html, body {
   border: 1px solid rgba(255, 74, 58, .5);
 }
 #boss-name {
-  font-size: 14px;
-  letter-spacing: .08em;
+  font-size: 13px;
+  letter-spacing: .06em;
   color: #ffe9e4;
   text-shadow: 0 0 12px rgba(255, 74, 58, .55);
+  /* 破城者 / 棱镜：名字不许折行，折了血条会突然长高一倍 */
+  white-space: nowrap;
 }
 #boss-hp-text {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 9px;
   color: #b99b95;
   font-variant-numeric: tabular-nums;
-  letter-spacing: .06em;
+  letter-spacing: .04em;
+  white-space: nowrap;
 }
 .boss-track {
-  height: 10px;
+  height: 7px;
   border-radius: 3px;
   background: rgba(255, 255, 255, .08);
   border: 1px solid rgba(255, 255, 255, .09);
@@ -569,7 +588,6 @@ html, body {
    * 横屏时左侧安全区在这里没用（刘海在左边竖直中段，左上角碰不到），
    * 所以下面 @media (orientation: landscape) 里直接不吃它。
    */
-  --map-gap: 18px;
   left: calc(var(--map-gap) + env(safe-area-inset-left));
   top: calc(var(--map-gap) + env(safe-area-inset-top));
   transition: opacity .25s ease;
@@ -1416,7 +1434,8 @@ button:active { transform: translateY(0); }
   /* 窄屏不显示波次框，右列就是唯一内容 → 单列，不需要三列网格 */
   .hud-top { grid-template-columns: 1fr; padding: 14px 16px; }
   .hud-center { display: none; }
-  .boss-bar { top: 74px; width: min(440px, 88vw); }
+  /* BOSS 条不再单独覆盖 top：它跟着小地图定位（见 .boss-bar 注释），
+     窄屏只需要把 --map-gap 调小，两者一起左移 */
   .hud-right { grid-column: 1; }
   .hp-block { max-width: 180px; }
   .hud-stats { gap: 14px; }
@@ -1454,7 +1473,9 @@ button:active { transform: translateY(0); }
   .reward-hint { margin-top: 10px; font-size: 10px; }
   .panel { padding: 28px 20px 24px; }
   .panel h1 { font-size: 26px; }
-  .minimap-wrap { --map-gap: 10px; padding: 4px; }
+  /* 小地图和 BOSS 条共用 --map-gap，收边距要一起收 */
+  #hud { --map-gap: 10px; }
+  .minimap-wrap { padding: 4px; }
   /* 小屏上车体卡再压一档，保证一行放得下四个 */
   .chassis-card { padding: 6px 2px; }
   .chassis-card .chassis-icon { font-size: 15px; }
@@ -2680,8 +2701,8 @@ body.is-touch #app.playing .weapon-line i { white-space: nowrap; }
 /* 展开时条加宽，让名字行排得下 */
 body.is-touch #app.playing.peek-on .weapon-hud { width: 158px; }
 
+body.is-touch #app.playing #hud { --map-gap: 9px; }
 body.is-touch #app.playing .minimap-wrap {
-  --map-gap: 9px;
   padding: 3px;
   background: rgba(12, 18, 23, .42);
 }
@@ -2694,11 +2715,12 @@ body.is-touch #app.playing .center-msg {
   letter-spacing: .08em;
 }
 
-/* BOSS 血条：贴到波次下面，窄一档，仍要一眼看清剩多少。
-   top 让到中央大字下面（大字 34 + 22 高），两者同时出现时不叠 */
+/* BOSS 血条：手机横屏同样挂小地图右边，只压一档尺寸。
+   以前让到中央大字下面，等于仍然横在视野带正中间——打 Boss 时最挡视线 */
 body.is-touch #app.playing .boss-bar {
-  top: calc(60px + env(safe-area-inset-top));
-  width: min(320px, 56vw);
+  top: calc(var(--map-gap) + env(safe-area-inset-top));
+  width: min(220px, 20vw);
+  min-width: 150px;
   padding: 4px 8px 5px;
   border-radius: 7px;
 }
@@ -2839,5 +2861,20 @@ body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
     width: min(92vw, 460px);
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas: "fail" "record" "stats" "again" "note" "share" "tip";
+  }
+}
+
+/* ---------- BOSS 血条：竖屏窄屏兜底 ----------
+   竖屏 375 宽时，小地图右边只剩 375 − 9 − 96 − 26 ≈ 244 的可用宽度，
+   再扣掉右边安全区，血条会被挤成一条窄棍，"还剩几成"根本看不出来。
+   这种情况直接挂到小地图正下方，横向铺开。
+   放在文件最末：选择器权重与前文 is-touch 那条相同，靠顺序覆盖。 */
+@media (orientation: portrait) and (max-width: 560px) {
+  .boss-bar,
+  body.is-touch #app.playing .boss-bar {
+    left: calc(var(--map-gap, 10px) + env(safe-area-inset-left));
+    top: calc(var(--map-gap, 10px) + env(safe-area-inset-top) + var(--map-size, 96px) + 22px);
+    width: min(272px, 76vw);
+    min-width: 0;
   }
 }
