@@ -136,7 +136,6 @@ export class Enemy {
     // ---- Boss 专属状态 ----
     this.enraged = false;
     this.abilityT = boss ? (bossInfo.kind === 'breaker' ? 7 : 6) : Infinity;
-    this.blinkT = bossInfo?.kind === 'prism' ? 11 : Infinity;
     this.castT = 0;
     this.castKind = null;
     this.burst = 0;
@@ -692,6 +691,10 @@ export class Enemy {
     // 技能计时。
     // 破城者的"攻城炮击锁定"已随反龟缩压制一起移除：难度改由敌人构成与
     // 地形承担，不再用"必须不停跑位"的强制位移考验玩家。破城者只保留主炮。
+    // r45：棱镜的"相位跃迁"也删了。它的落点是"玩家周围 17~24m 的随机方位"，
+    // 与 AI 的保持距离（near 17 / far 27）几乎重合——距离没变、只换了方向，
+    // 玩家的体感就是"刚才在左前方，一转头贴到右后方"，纯瞬移，没有可读的位移过程。
+    // 联机版从来就没有这个技能，删掉后两边行为一致，也省掉"单人比联机难"的偏差。
     this.abilityT -= dt;
     if (this.abilityT <= 0) {
       this.abilityT = this.enraged ? 6.5 : 9;
@@ -699,12 +702,6 @@ export class Enemy {
         this.castKind = 'ring';
         this.castT = 0.95;
         ctx.hud.showMessage(`${this.bossName} · 折射风暴`, 1.15);
-      }
-    } else if (!breaker && this.blinkT > 0) {
-      this.blinkT -= dt;
-      if (this.blinkT <= 0) {
-        this.blinkT = this.enraged ? 8 : 11;
-        this._blink(ctx);
       }
     }
 
@@ -734,30 +731,6 @@ export class Enemy {
     ctx.shake = Math.max(ctx.shake, 0.2);
     this.castKind = null;
     this.castT = 0;
-  }
-
-  /** 棱镜：跃迁到玩家周围的安全位置 */
-  _blink(ctx) {
-    const player = ctx.player.group.position;
-    const world = ctx.world;
-    const p = this.position;
-    for (let i = 0; i < 24; i++) {
-      const a = R.combat() * Math.PI * 2;
-      const r = 17 + R.combat() * 7;
-      const x = THREE.MathUtils.clamp(player.x + Math.sin(a) * r, -world.half + 6, world.half - 6);
-      const z = THREE.MathUtils.clamp(player.z + Math.cos(a) * r, -world.half + 6, world.half - 6);
-      if (world.blocked(x, z, 2.4)) continue;
-      if (Math.hypot(x - player.x, z - player.z) < 15) continue;
-
-      ctx.effects.explosion(p.clone().setY(1.4), 0x6fe6ff, 18, 1);
-      p.set(x, 0, z);
-      this.path = [];
-      this.pathGoal.set(Infinity, 0, Infinity);
-      this.repathT = 0;
-      ctx.effects.explosion(p.clone().setY(1.4), 0x9ff4ff, 22, 1.15);
-      ctx.hud.showMessage('棱镜 · 相位跃迁', 0.8);
-      return;
-    }
   }
 
   _updateBar() {
