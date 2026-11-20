@@ -14,6 +14,13 @@ import { stepBody, aimTurret, angleDiff } from './motion.js';
 import { deepestHit, hitsAny, slideCircle, pushOut } from './collide.js';
 // 战场宝箱（r43）：空投数量/位置/开卡都是纯函数，单机 Game.js 共用同一份
 import { crateCount, cratePositions, rollCategory, rollCard, CATEGORIES } from './crates.js';
+// Boss 单一数据源（r46）：轮换表、血量公式、技能参数，单机 Enemy.js 读同一份。
+// 以前 Boss 的信息散在四个文件里，联机棱镜至今没有折射风暴就是这么漏掉的。
+import {
+  BOSS_META, BOSS_SKILLS, bossTypeForWave, pickLateBoss, bossHpFor, bossHpMul,
+  rollAwakens, awakensForWave, skillCdMul, ZONE, stepZones, laserHits,
+  resonancePull, bossStageFor, awakenMaskOf, awakenNamesOf, AWAKEN_NUM,
+} from './bosskit.js';
 // 地表类型场：两端同源的速度系数（地形为空时完全退化成 1.0）
 import { buildTerrain, speedAt, presetK } from './terrain.js';
 import { createPlayer, updateRevive, scaleForPlayers,
@@ -76,6 +83,26 @@ export function syncedStats(s) {
 /** 敌人车体转向速率（rad/s）。给足 3.0，否则急转时车头追不上行进方向就一直原地打圈 */
 const TURN_RATE = 3.0;
 
+/**
+ * 敌人类型编码（协议字段 typeCode）。
+ *
+ * 以前是 `Object.keys(ENEMY_TYPES).indexOf(type) + 1` —— 靠数组顺序。
+ * 往中间插一个类型、或者两端版本不一致，客户端就会把 Boss 渲染成 gunner
+ * （模型、血条、颜色全错），而且**不报错**，只能靠肉眼发现。
+ * 现在手写死：只能追加，不能插队，也不能改已有值。
+ */
+export const TYPE_CODE = {
+  gunner: 1, charger: 2, elite: 3, drone: 4, turret: 5, support: 6, shield: 7,
+  boss_breaker: 8, boss_prism: 9,
+  boss_wraith: 10, boss_blitz: 11, boss_bulwark: 12, boss_hive: 13,
+  boss_crucible: 14, boss_warden: 15, boss_twin: 16, boss_terminus: 17,
+};
+
+export const CODE_TO_TYPE = {};
+for (const [name, code] of Object.entries(TYPE_CODE)) CODE_TO_TYPE[code] = name;
+
+export const typeCodeOf = (type) => TYPE_CODE[type] || 0;
+
 /** 敌人模板：只保留模拟需要的字段，渲染层按 type 自己建模型 */
 export const ENEMY_TYPES = {
   gunner: { hp: 1, speed: 1, radius: 1.45, damage: 5, range: 26, fireCd: [2.0, 3.6], bulletSpeed: 42, score: 10, scale: 1 },
@@ -89,6 +116,18 @@ export const ENEMY_TYPES = {
   // 34m 外 46 m/s 要飞 0.74 秒，玩家挪 11 米，预判误差被放大到躲不躲都随缘。
   boss_breaker: { hp: 24, speed: 7.2, radius: 2.5, damage: 11, range: 34, fireCd: [1.8, 3.0], bulletSpeed: 58, score: 300, scale: 1.75, boss: true },
   boss_prism: { hp: 20, speed: 9.2, radius: 2.1, damage: 6, range: 40, fireCd: [1.3, 2.2], bulletSpeed: 62, score: 300, scale: 1.45, boss: true },
+  // ---- r46 新增八种（顺序即 typeCode，必须追加在末尾）----
+  // 形态差别写在速度/射程/射速上，机制差别在 bosskit 的技能表与各自的 AI 分支。
+  boss_wraith: { hp: 20, speed: 9.6, radius: 2.2, damage: 9, range: 30, fireCd: [1.2, 2.0], bulletSpeed: 64, score: 320, scale: 1.5, boss: true },
+  boss_blitz: { hp: 18, speed: 11.4, radius: 2.0, damage: 14, range: 16, fireCd: [2.0, 3.0], bulletSpeed: 60, score: 320, scale: 1.4, boss: true },
+  // frontArmor 0.3 = 正面只吃 30% 伤害（减 70%）。这就是"找"：绕到侧面/背面才打得动。
+  boss_bulwark: { hp: 26, speed: 4.5, radius: 2.7, damage: 12, range: 30, fireCd: [2.2, 3.4], bulletSpeed: 56, score: 340, scale: 1.85, boss: true, frontArmor: 0.3 },
+  // 蜂巢本体不动（speed 0 就是全部，别加 static：static 会跳过移动分支但也让人误以为它不该开火）
+  boss_hive: { hp: 24, speed: 0, radius: 2.6, damage: 7, range: 60, fireCd: [2.6, 3.8], bulletSpeed: 46, score: 340, scale: 1.7, boss: true },
+  boss_crucible: { hp: 24, speed: 6.8, radius: 2.6, damage: 10, range: 34, fireCd: [1.8, 2.8], bulletSpeed: 56, score: 360, scale: 1.8, boss: true },
+  boss_warden: { hp: 24, speed: 7.4, radius: 2.3, damage: 9, range: 38, fireCd: [1.6, 2.6], bulletSpeed: 60, score: 360, scale: 1.6, boss: true },
+  boss_twin: { hp: 20, speed: 9.8, radius: 1.9, damage: 8, range: 26, fireCd: [1.4, 2.2], bulletSpeed: 62, score: 300, scale: 1.35, boss: true },
+  boss_terminus: { hp: 30, speed: 8.2, radius: 2.8, damage: 14, range: 30, fireCd: [1.6, 2.6], bulletSpeed: 62, score: 500, scale: 1.9, boss: true },
 };
 
 /**
@@ -257,6 +296,10 @@ export class World {
     this.bullets = [];
     this.crates = [];              // 战场宝箱（r43）：{ id, x, z, cat }
     this._crateSeq = 0;
+    // Boss 场地标记（r46）：预警圈 / 岩浆区 / 冲刺路径 / 冲击波。
+    // { kind, x, z, r, t, dur } —— t 是剩余时间，dur 是总时长（算收缩进度用）。
+    // 走快照的 bz 字段同步，迟入玩家也能看到"它要跳到哪"。
+    this.zones = [];
     this.events = [];
 
     this.tick = 0;
@@ -447,6 +490,7 @@ export class World {
     this.enemies.length = 0;
     if (this.bullets) this.bullets.length = 0;
     if (this.crates) this.crates.length = 0;
+    if (this.zones) this.zones.length = 0;
     this.pending.length = 0;
     this.events.length = 0;
     this.waveActive = false;
@@ -513,6 +557,7 @@ export class World {
       // 若先调 updateRevive，残血玩家会在这一 tick 里先被判死，再自己去移动，导致输入看起来无效。
       this._updatePlayers(dt);
       this._updateEnemies(dt);
+      this._updateZones(dt);
       this._updateBullets(dt);
       this._updateCrates();
       for (const e of updateRevive(this.players, dt)) {
@@ -664,6 +709,14 @@ export class World {
         aimYaw = fireYaw;
       }
 
+      // ---- Boss 技能接管（r46）----
+      // 在普通移动之前：施法/冲刺/硬直期间不能既走位又开火，
+      // 否则"预警 1.2 秒"这段时间 Boss 还在疾驰，玩家根本无从判断落点。
+      //
+      // ⚠ 不能加 !passive：蜂巢本体 speed=0，会被巡逻判定一直认成"驻守"，
+      //   技能永远不触发（实测 14 秒零召唤）。Boss 本来也不靠巡逻编成。
+      if (e.boss && this._updateBossSkill(e, dt, target)) continue;
+
       // ---- 移动：远则逼近，中距压上，近则拉开（炮台不动）----
       //
       // 用户反馈："敌方坦克围过来的时候还是无法靠近，只会围绕着我的坦克转圈"。
@@ -805,8 +858,15 @@ export class World {
       }
 
       // 炮塔跟随目标（Boss 跟随提前量点）
-      const tdiff = angleDiff(fireYaw, e.turretYaw);
-      e.turretYaw += Math.sign(tdiff) * Math.min(Math.abs(tdiff), 3.2 * dt);
+      // 哨戒例外：它的 turretYaw 就是光束角度，被这么一掰（3.2 rad/s）
+      // 光束会瞬移到玩家脸上，预警性和"卡节奏"就全没了。
+      let tdiff;
+      if (!e.laserHold) {
+        tdiff = angleDiff(fireYaw, e.turretYaw);
+        e.turretYaw += Math.sign(tdiff) * Math.min(Math.abs(tdiff), 3.2 * dt);
+      } else {
+        tdiff = angleDiff(fireYaw, e.turretYaw);
+      }
 
       // 自爆兵贴近即引爆
       if (e.selfDist && dist < e.selfDist) {
@@ -862,19 +922,448 @@ export class World {
     }
   }
 
-  /** 敌方一发子弹（收拢了三处重复的 push） */
-  _enemyBullet(e, yaw) {
+  // ---------------- Boss 技能（r46）----------------
+
+  /**
+   * 场地标记：预警圈 / 岩浆区 / 冲刺路径 / 冲击波。
+   *
+   * 全部走一条 { kind, x, z, r, t, ttl, dur }，通过快照 bz 同步。
+   * 为什么不用一次性事件：预警圈有 1.2 秒的持续状态，迟入或重连的玩家
+   * 错过事件就完全读不懂画面（看到 Boss 突然出现在身后）。
+   */
+  _addZone(kind, x, z, r, dur) {
+    const zone = { kind, x, z, r, t: 0, ttl: dur, dur };
+    this.zones.push(zone);
+    return zone;
+  }
+
+  _updateZones(dt) {
+    // 判定写在 core/bosskit.js 的 stepZones 里，单机 Game.js 调同一份——
+    // 否则岩浆/炮击的结算时序在两种模式下迟早分叉。
+    stepZones(this.zones, dt, this.players,
+      (p, amount) => this._damagePlayer(p, amount, 0),
+      this.events);
+  }
+
+  /** 以 Boss 为中心的范围伤害（落地冲击波、转阶段冲击波共用） */
+  _bossShock(e, r, dmg) {
+    for (const p of this.players) {
+      if (!p.alive || p.down) continue;
+      if (Math.hypot(p.x - e.x, p.z - e.z) < r) this._damagePlayer(p, dmg, e.id);
+    }
+    this._pushEvent({ kind: 'bossShock', id: e.id, x: e.x, z: e.z, r });
+  }
+
+  _endBossCast(e, cd) {
+    e.castKind = null;
+    e.castT = 0;
+    e.castDur = 0;
+    e.skillT = cd;
+  }
+
+  /**
+   * Boss 专属技能调度。
+   *
+   * 返回 true 表示"本 tick 由技能接管"，调用方跳过普通移动与开火。
+   *
+   * 设计底线：所有技能必须可读——要么有 ≥0.9 秒的预警，要么位移本身
+   * 可读（冲刺 0.32 秒走 8 米）。绝对不允许"原地闪现"：r45 删掉棱镜的
+   * 相位跃迁，就是因为它落点距离与 AI 保持距离重合，玩家只看到位置突变。
+   */
+  _updateBossSkill(e, dt, target) {
+    const SK = BOSS_SKILLS;
+    const kind = (BOSS_META[e.type] || {}).kind;
+
+    // 觉醒"再生"：每秒回 0.5% 最大血量。放在最前面，任何技能分支返回前都已经生效。
+    if (e.regen && e.hp < e.maxHp) {
+      e.hp = Math.min(e.maxHp, e.hp + e.maxHp * AWAKEN_NUM.regenPerSec * dt);
+    }
+
+    // ---- 施法中 ----
+    if (e.castKind === 'blinkWarn') {
+      e.castT -= dt;
+      e.turretYaw = Math.atan2(target.x - e.x, target.z - e.z);
+      if (e.castT <= 0) {
+        if (e.zone) {
+          e.x = e.zone.x;
+          e.z = e.zone.z;
+          // 让预警圈快速淡出，别停在原地骗人
+          e.zone.ttl = Math.min(e.zone.ttl, 0.18);
+          e.zone.dur = Math.max(0.01, e.zone.ttl);
+        }
+        this._bossShock(e, SK.blink.shockR, SK.blink.shockDmg);
+        this._pushEvent({ kind: 'bossBlink', id: e.id, x: e.x, z: e.z });
+        e.zone = null;
+        this._endBossCast(e, SK.blink.cd);
+      }
+      return true;
+    }
+
+    if (e.castKind === 'dash') {
+      e.castT -= dt;
+      const step = (SK.dash.dist / SK.dash.dur) * dt;
+      const nx = e.x + e.dashX * step;
+      const nz = e.z + e.dashZ * step;
+      // 撞墙就提前结束：不然会贴着建筑一直"冲"，看起来像卡住
+      if (this.static.blocked(nx, nz, e.radius)) {
+        e.castT = 0;
+      } else {
+        e.x = nx;
+        e.z = nz;
+        e.yaw = Math.atan2(e.dashX, e.dashZ);
+        e.turretYaw = e.yaw;
+      }
+      // 冲刺途中撞到玩家只结算一次（否则一帧一次，直接秒人）
+      if (!e.hitDone) {
+        for (const p of this.players) {
+          if (!p.alive || p.down) continue;
+          if (Math.hypot(p.x - e.x, p.z - e.z) < SK.dash.hitR) {
+            this._damagePlayer(p, SK.dash.dmg, e.id);
+            e.hitDone = true;
+            break;
+          }
+        }
+      }
+      if (e.castT <= 0) {
+        // 硬直是给玩家的输出窗口：停火停走 1.5 秒
+        e.castKind = 'stun';
+        e.castT = SK.dash.stun;
+        e.castDur = SK.dash.stun;
+        e.zone = null;
+        this._pushEvent({ kind: 'bossStun', id: e.id, x: e.x, z: e.z });
+      }
+      return true;
+    }
+
+    if (e.castKind === 'stun') {
+      e.castT -= dt;
+      if (e.castT <= 0) this._endBossCast(e, SK.dash.cd);
+      return true;
+    }
+
+    // ---- 铁壁：护盾循环（持续型，不走 castKind）----
+    // 动词是"找"：盾在的时候正面打不动，必须先打掉壳，破防 6 秒才是输出窗口。
+    // 护盾期间仍然移动/开火——它不是木桩，是个慢速炮台。
+    if (kind === 'bulwark') {
+      e.breakT = Math.max(0, (e.breakT || 0) - dt);
+      if (e.shieldHp > 0) {
+        // 护盾环跟着本体走：玩家要能一眼看出"壳还在"
+        if (!e.zone) e.zone = this._addZone(ZONE.SHOCK, e.x, e.z, 3.6, 999);
+        e.zone.x = e.x;
+        e.zone.z = e.z;
+        e.zone.ttl = 999;
+        e.zone.dur = 999;
+        return false;
+      }
+      if (e.zone) {
+        const i = this.zones.indexOf(e.zone);
+        if (i >= 0) this.zones.splice(i, 1);
+        e.zone = null;
+      }
+      if (e.breakT > 0) return false;      // 破防中：正常打，这是玩家的窗口
+      // 破防结束，重新罩上
+      e.shieldHp = Math.round(e.maxHp * SK.generators.hpShare * SK.generators.count);
+      this._pushEvent({ kind: 'bossShield', id: e.id });
+      return false;
+    }
+
+    // ---- 蜂巢：召唤（持续型）----
+    // 动词是"分"：本体不动，但场上会一直变多。上限 9 是性能预算，
+    // 也是"清不完但也不会瞬间淹掉"的平衡点。
+    if (kind === 'hive') {
+      e.skillT = (e.skillT || 0) - dt / (e.cdMul || 1);
+      if (e.skillT > 0) return false;
+      const cap = SK.spawn.cap;
+      let mine = 0;
+      for (const o of this.enemies) if (o.alive && o.owner === e.id) mine++;
+      if (mine >= cap) { e.skillT = 2; return false; }
+      const n = Math.min(SK.spawn.count, cap - mine);
+      for (let i = 0; i < n; i++) {
+        const a = this.rng.combat() * Math.PI * 2;
+        const r = 3.5 + this.rng.combat() * 3;
+        let x = e.x + Math.sin(a) * r;
+        let z = e.z + Math.cos(a) * r;
+        if (this.static.blocked(x, z, 1.2)) { x = e.x; z = e.z; }
+        this.pending.push({
+          t: 0.15 + i * 0.25,
+          type: 'drone',
+          hp: Math.round((55 + this.wave * 14) * 0.35 * this.scale.hpMul),
+          x, z, owner: e.id,
+        });
+      }
+      e.skillT = SK.spawn.cd;
+      this._pushEvent({ kind: 'bossSpawn', id: e.id, n });
+      return true;      // 召唤那一拍停一下，别一边召一边冲
+    }
+
+    // ---- 熔核：铺岩浆（持续型的地面压制）----
+    // 动词是"站"：伤害本身不高，但它把可站立的地面一块块切掉，
+    // 玩家必须在"躲炮线"和"躲岩浆"之间找落脚点。
+    if (kind === 'crucible') {
+      e.skillT = (e.skillT || 0) - dt / (e.cdMul || 1);
+      // 炮击单独一套计时器（18s）。和铺岩浆共用 skillT 的话两者永远同时发生，
+      // 节奏会固定成"一次岩浆 + 一次炮击"，第二次就背下来了。
+      e.blastT = (e.blastT ?? SK.barrage.cd * 0.5) - dt;
+      if (e.blastT <= 0) {
+        e.blastT = SK.barrage.cd;
+        // 脚下一发 + 外围两发：站着不动必吃第一发，而躲第一发时
+        // 外围那两发正好把"空地"也切掉——这才是"没地方站"。
+        const r = 6;
+        this._addZone(ZONE.BLAST, target.x, target.z, r, SK.barrage.warn);
+        for (let i = 0; i < 2; i++) {
+          const a = this.rng.combat() * Math.PI * 2;
+          const d2 = 9 + this.rng.combat() * 5;
+          const bx = Math.max(-HALF + 6, Math.min(HALF - 6, target.x + Math.sin(a) * d2));
+          const bz = Math.max(-HALF + 6, Math.min(HALF - 6, target.z + Math.cos(a) * d2));
+          this._addZone(ZONE.BLAST, bx, bz, r, SK.barrage.warn);
+        }
+        this._pushEvent({ kind: 'bossBarrage', id: e.id });
+      }
+      if (e.skillT > 0) return false;
+      // 围着"当前目标"铺，而不是 players[0]：players[0] 可能是已倒地的那位，
+      // 多人的时候岩浆就会全泼在没人站的角落。
+      for (let i = 0; i < SK.lava.count; i++) {
+        const a = this.rng.combat() * Math.PI * 2;
+        const r = 5 + this.rng.combat() * 9;
+        const x = Math.max(-HALF + 6, Math.min(HALF - 6, target.x + Math.sin(a) * r));
+        const z = Math.max(-HALF + 6, Math.min(HALF - 6, target.z + Math.cos(a) * r));
+        if (this.static.blocked(x, z, 2)) continue;
+        this._addZone(ZONE.LAVA, x, z, SK.lava.r, SK.lava.dur);
+      }
+      // 玩家脚下一块大的：逼他立刻挪窝，而不是站着不动等岩浆散
+      this._addZone(ZONE.LAVA, target.x, target.z, SK.lava.r * 1.6, SK.lava.dur * 0.75);
+      e.skillT = SK.lava.cd;
+      this._pushEvent({ kind: 'bossLava', id: e.id, x: e.x, z: e.z });
+      return true;
+    }
+
+    // ---- 哨戒：双旋转光束（持续型）----
+    // 动词是"掐"：两道光束匀速扫，玩家要卡着间隙穿过去。
+    // 判定是「角差 × 距离」的连续命中，不是发子弹（理由见 BOSS_SKILLS.laser）。
+    if (kind === 'warden') {
+      const enr = e.maxHp > 0 && e.hp <= e.maxHp * SK.laser.enrageAt;
+      e.laserDir = e.laserDir || 1;
+      e.laserYaw = (e.laserYaw ?? e.turretYaw) + (enr ? SK.laser.enragedSpeed : SK.laser.speed) * e.laserDir * dt;
+      e.turretYaw = e.laserYaw;        // 客户端靠 turretYaw 画光束，不用动协议
+
+      // 反向：不能靠"一直顺时针跑"混过去
+      e.laserFlipT = (e.laserFlipT ?? SK.laser.cd) - dt;
+      if (e.laserFlipT <= 0) {
+        e.laserDir *= -1;
+        e.laserFlipT = SK.laser.cd;
+        this._pushEvent({ kind: 'bossFlip', id: e.id });
+      }
+
+      // 伤害按 0.2 秒结算：逐帧推 hurt 事件会把客户端音效糊成一片，
+      // 而 0.2 秒内光束只转过 0.11 弧度（10 米处约 1.1 米），漏判可以忽略。
+      e.laserAcc = (e.laserAcc || 0) + dt;
+      if (e.laserAcc >= SK.laser.tick) {
+        const per = SK.laser.dps * e.laserAcc;
+        e.laserAcc = 0;
+        for (const p of this.players) {
+          if (!p.alive || p.down) continue;
+          if (laserHits(e.x, e.z, e.laserYaw, p.x, p.z)) this._damagePlayer(p, per, e.id);
+        }
+      }
+      // 炮塔角度 = 光束角度。普通 AI 后面会以 3.2 rad/s 把 turretYaw 掰向
+      // 瞄准点，光束就会"跳"到脸上——所以整个 warden 期间禁止它追瞄准。
+      // 副作用（好的那种）：普通弹只在光束扫过玩家的那一刻才打得出去。
+      e.laserHold = true;
+      return false;   // 仍然可以慢慢移动
+    }
+
+    // ---- 双生：共鸣钳位（持续型）----
+    // 动词是"平"：两只的血量差一旦超过 15%，低的那只就被拉回来。
+    // 所以只能两边一起压，最后一起收——打死一只再打另一只不是被禁止，
+    // 而是"另一只脱离共鸣后反而更好打"，玩家会自己发现该先同步。
+    if (kind === 'twin') {
+      const other = this.enemies.find((x) => x !== e && x.alive && x.type === 'boss_twin');
+      if (other) {
+        const add = resonancePull(e.hp, other.hp, e.maxHp, dt);
+        if (add > 0) {
+          e.hp = Math.min(e.maxHp, e.hp + add);
+          e.pullT = (e.pullT || 0) + dt;
+          // 每 0.4 秒报一次，客户端据此放一次回血光效——
+          // 逐帧报的话，一场共鸣会推几百条事件
+          if (e.pullT >= 0.4) {
+            e.pullT = 0;
+            this._pushEvent({ kind: 'bossResonance', id: e.id, x: e.x, z: e.z });
+          }
+        }
+      }
+      return false;
+    }
+
+    // ---- 终焉：三阶段 ----
+    // 动词是"换"：一条血条分三段，每段换一套动作，把前面九个 Boss 的课重考一遍。
+    if (kind === 'terminus') {
+      // 转阶段中：无敌 + 站桩，让"阶段变了"这件事被看见
+      if (e.castKind === 'phase') {
+        e.castT -= dt;
+        if (e.castT <= 0) {
+          e.castKind = null;
+          e.invuln = false;
+          this._endBossCast(e, 1.0);
+        }
+        return true;
+      }
+
+      const ratio = e.maxHp > 0 ? e.hp / e.maxHp : 1;
+      const want = bossStageFor(ratio);
+      if (want > (e.stage || 0)) {
+        e.stage = want;
+        e.invuln = true;
+        e.castKind = 'phase';
+        e.castT = SK.phases.invuln;
+        e.castDur = SK.phases.invuln;
+        // 先把当前阶段的血量记下来，血条靠它算"这一阶段打了多少"
+        if (want === 2) e.speed *= SK.phases.stage3SpeedMul;
+        this._bossShock(e, SK.phases.shockR, SK.phases.shockDmg);
+        this._addZone(ZONE.SHOCK, e.x, e.z, SK.phases.shockR, SK.phases.invuln);
+        this._pushEvent({ kind: 'bossPhase', id: e.id, stage: want });
+        return true;
+      }
+
+      // 阶段一：三连点射（普通 AI 负责主炮）
+      if ((e.stage || 0) === 0) {
+        e.salvoT = (e.salvoT || 0) - dt;
+        if (e.salvoT <= 0) {
+          e.salvoT = SK.salvo.cd;
+          e.burst = SK.burst.count;
+          e.burstT = 0;
+        }
+        return false;
+      }
+
+      // 阶段二：召唤精英 + 岩浆区（复刻熔核的地面压制）
+      if (e.stage === 1) {
+        e.eliteT = (e.eliteT || SK.phases.stage2EliteCd) - dt;
+        if (e.eliteT <= 0) {
+          e.eliteT = SK.phases.stage2EliteCd;
+          for (let i = 0; i < SK.phases.stage2Elites; i++) {
+            const a = this.rng.combat() * Math.PI * 2;
+            const r = 4 + this.rng.combat() * 3;
+            this.pending.push({
+              t: 0.2 + i * 0.3, type: 'elite',
+              hp: Math.round((55 + this.wave * 14) * 4 * this.scale.hpMul),
+              x: e.x + Math.sin(a) * r, z: e.z + Math.cos(a) * r,
+            });
+          }
+          this._pushEvent({ kind: 'bossSpawn', id: e.id, n: SK.phases.stage2Elites });
+        }
+        e.lavaT = (e.lavaT || SK.phases.stage2LavaCd) - dt;
+        if (e.lavaT <= 0) {
+          e.lavaT = SK.phases.stage2LavaCd;
+          for (let i = 0; i < SK.lava.count; i++) {
+            const a = this.rng.combat() * Math.PI * 2;
+            const r = 6 + this.rng.combat() * 9;
+            const x = Math.max(-HALF + 6, Math.min(HALF - 6, target.x + Math.sin(a) * r));
+            const z = Math.max(-HALF + 6, Math.min(HALF - 6, target.z + Math.cos(a) * r));
+            if (this.static.blocked(x, z, 2)) continue;
+            this._addZone(ZONE.LAVA, x, z, SK.lava.r, SK.lava.dur);
+          }
+        }
+        return false;
+      }
+
+      // 阶段三：冲刺 + 环射，两者各自计时
+      e.dashT = (e.dashT ?? SK.phases.stage3DashCd) - dt;
+      e.ringT = (e.ringT ?? 1.2) - dt;
+      if (e.ringT <= 0) {
+        e.ringT = SK.phases.stage3RingCd;
+        const n = SK.ring.count;
+        for (let i = 0; i < n; i++) this._enemyBullet(e, e.turretYaw + (i / n) * Math.PI * 2);
+        this._pushEvent({ kind: 'bossRing', id: e.id });
+      }
+      if (e.dashT <= 0) {
+        e.dashT = SK.phases.stage3DashCd;
+        const d = Math.hypot(target.x - e.x, target.z - e.z) || 1;
+        e.dashX = (target.x - e.x) / d;
+        e.dashZ = (target.z - e.z) / d;
+        e.hitDone = false;
+        e.castKind = 'dash';
+        e.castT = SK.dash.dur;
+        e.castDur = SK.dash.dur;
+        return true;
+      }
+      return false;
+    }
+
+    // ---- 冷却 ----
+    // 狂暴词条不改各技能的 cd 常量，而是让冷却"走得更快"：
+    // 一处改动，所有技能自动生效，不会漏掉某个新加的 Boss。
+    e.skillT = (e.skillT || 0) - dt / (e.cdMul || 1);
+    if (e.skillT > 0) return false;
+
+    // ---- 选技能 ----
+    if (kind === 'wraith') {
+      // 幽影：先在玩家周围选一个"能站人"的落点，亮 1.2 秒预警圈再跳过去。
+      // 距离 12~16m：比 AI 的保持距离（12~20）略近，玩家能看到它真的压上来，
+      // 而不是"距离没变只换方向"那种瞬移观感。
+      const pt = this._blinkSpot(e, target, SK.blink.minDist, SK.blink.maxDist);
+      if (!pt) { e.skillT = 1.0; return false; }
+      e.castKind = 'blinkWarn';
+      e.castT = SK.blink.warn;
+      e.castDur = SK.blink.warn;
+      e.zone = this._addZone(ZONE.WARN, pt.x, pt.z, 2.6, SK.blink.warn);
+      e.skillT = SK.blink.cd;
+      this._pushEvent({ kind: 'bossWarn', id: e.id, x: pt.x, z: pt.z });
+      return true;
+    }
+
+    if (kind === 'blitz') {
+      // 疾风：朝玩家方向直线冲 8 米（0.32 秒），到点后硬直 1.5 秒。
+      // 冲刺方向冻结在起手瞬间，玩家往侧向一让就能躲开——这是"可读"的关键：
+      // 如果每帧重新对准，就等于必中。
+      const d = Math.hypot(target.x - e.x, target.z - e.z) || 1;
+      e.dashX = (target.x - e.x) / d;
+      e.dashZ = (target.z - e.z) / d;
+      e.hitDone = false;
+      e.castKind = 'dash';
+      e.castT = SK.dash.dur;
+      e.castDur = SK.dash.dur;
+      e.zone = this._addZone(ZONE.DASH, e.x, e.z, SK.dash.hitR, SK.dash.dur);
+      e.skillT = SK.dash.cd;
+      this._pushEvent({ kind: 'bossDash', id: e.id, x: e.x, z: e.z });
+      return true;
+    }
+
+    return false;
+  }
+
+  /** 在玩家周围找一个不撞建筑、且离玩家 [minD, maxD] 的落点 */
+  _blinkSpot(e, target, minD, maxD) {
+    for (let i = 0; i < 20; i++) {
+      const a = this.rng.combat() * Math.PI * 2;
+      const r = minD + this.rng.combat() * (maxD - minD);
+      const x = Math.max(-HALF + 4, Math.min(HALF - 4, target.x + Math.sin(a) * r));
+      const z = Math.max(-HALF + 4, Math.min(HALF - 4, target.z + Math.cos(a) * r));
+      if (this.static.blocked(x, z, e.radius + 0.4)) continue;
+      const d = Math.hypot(x - target.x, z - target.z);
+      if (d < minD * 0.85) continue;
+      return { x, z };
+    }
+    return null;
+  }
+
+  /**
+   * 敌方一发子弹（收拢了三处重复的 push）
+   * opts 可选覆盖：{ damage, speed, life }
+   * 例：哨戒的旋转激光要「伤害低、弹速快、寿命短」，不能走 Boss 默认的 damage/bulletSpeed
+   */
+  _enemyBullet(e, yaw, opts) {
+    const speed = opts && opts.speed != null ? opts.speed : e.bulletSpeed;
     this.bullets.push({
       id: nextId(),
       x: e.x + Math.sin(yaw) * 1.6,
       z: e.z + Math.cos(yaw) * 1.6,
       yaw,
-      vx: Math.sin(yaw) * e.bulletSpeed,
-      vz: Math.cos(yaw) * e.bulletSpeed,
+      vx: Math.sin(yaw) * speed,
+      vz: Math.cos(yaw) * speed,
       team: 1,
       owner: e.id,
-      damage: e.damage,
-      life: 2.6,
+      damage: opts && opts.damage != null ? opts.damage : e.damage,
+      life: opts && opts.life != null ? opts.life : 2.6,
     });
   }
 
@@ -969,6 +1458,33 @@ export class World {
   }
 
   _hitEnemy(e, damage, ownerId, bullet) {
+    // 终焉转阶段的无敌（2 秒）：这是"阶段变了"的读条窗，也是玩家换位置的时间。
+    // 子弹照飞、照有火花，但血量不动——所以客户端要能看到阶段提示，
+    // 否则会被当成"打不动 / 卡了"。
+    if (e.invuln) {
+      this._pushEvent({ kind: 'immune', id: e.id, x: e.x, z: e.z });
+      return;
+    }
+    // 铁壁的护盾：伤害全打在壳上，本体一滴不掉。
+    // 打空的那一刻进入破防（breakT），这 6 秒才是真血条在掉。
+    // 注意这里要 return —— 不能继续走下面的 frontArmor 与扣血，
+    // 否则"打盾"会顺带削本体，绕后找弱点就失去意义了。
+    if (e.shieldHp > 0) {
+      const absorbed = Math.min(e.shieldHp, damage);
+      e.shieldHp -= absorbed;
+      this._pushEvent({ kind: 'shieldHit', id: e.id, x: e.x, z: e.z });
+      if (e.shieldHp <= 0.001) {
+        e.shieldHp = 0;
+        e.breakT = BOSS_SKILLS.generators.breakDur;
+        this._pushEvent({ kind: 'bossBreak', id: e.id, x: e.x, z: e.z });
+      }
+      return;
+    }
+
+    // 觉醒"装甲"：所有伤害 ×0.75（与"正面减伤"相乘，铁壁+装甲会很硬，
+    // 但那是 55 波以后的事）
+    if (e.dmgMul && e.dmgMul !== 1) damage *= e.dmgMul;
+
     // 重盾兵：正面来的伤害减半（打侧后有效）
     if (e.frontArmor) {
       const incoming = Math.atan2(bullet.x - e.x, bullet.z - e.z);
@@ -1003,6 +1519,18 @@ export class World {
         if (owner.killHeal) owner.hp = Math.min(owner.maxHp, owner.hp + owner.killHeal);
       }
       this._pushEvent({ kind: 'kill', id: e.id, x: e.x, z: e.z, by: ownerId, boss: !!e.boss });
+
+      // 蜂巢倒下，召唤物一起散：否则玩家打完本体还要满地图清 9 只无人机，
+      // 波次也永远清不到 0（enemiesLeft 卡住 → 选卡不弹 → 卡死）。
+      if (e.type === 'boss_hive') {
+        for (const o of this.enemies) {
+          if (o.alive && o.owner === e.id) {
+            o.hp = 0;
+            o.alive = false;
+            this._pushEvent({ kind: 'kill', id: o.id, x: o.x, z: o.z, by: ownerId, boss: false });
+          }
+        }
+      }
     }
   }
 
@@ -1043,13 +1571,29 @@ export class World {
     this.huntSent = false;
 
     if (bossWave) {
-      const breaker = Math.floor(n / 5) % 2 === 1;
-      // Boss 血量吃人数缩放：以前 4 个人打同一个血条，等于 4 倍 DPS 白给。
-      // r42：小兵的血量补偿（hpBoost）不给 Boss——它是一个单体，加血
-      // 不会减少任何渲染负担，只会把 Boss 战拖长 30%+。
-      const bossHp = Math.round((1300 + n * 300) * this.scale.hpMul);
-      this.pending.push({ t: 0.7, type: breaker ? 'boss_breaker' : 'boss_prism', hpScale: bossHp });
-      for (let i = 0; i < 3 + Math.floor(n / 4); i++) {
+      // 轮换走 bosskit：W5 破城者 → W10 棱镜 → … → W50 终焉；55 波起随机抽取
+      // （不与上一波重复）。以前这里只按 floor(n/5) 的奇偶二选一，
+      // 加新 Boss 就必须在单机、联机、HUD 三处各改一遍。
+      const type = bossTypeForWave(n) || pickLateBoss(() => this.rng.spawn(), this._lastBossType);
+      this._lastBossType = type;
+      const meta = BOSS_META[type] || BOSS_META.boss_breaker;
+      // Boss 血量不吃小兵的 hpBoost（单体加血只会拖长战斗），人数缩服用
+      // bossHpMul（c^0.8）：小兵那份 c^0.45 是配合"数量也涨"的，
+      // 用在 Boss 上会让四人房比单人还快一倍。
+      const bossHp = bossHpFor(n, type, bossHpMul(this.players.length || 1));
+      // 55 波起抽觉醒词条（数量随波次：1 / 2 / 3）。抽签用确定性流，
+      // 同一房间的双端会抽到同一组——否则"客户端显示装甲、服务端按无装甲算"。
+      const awaken = rollAwakens(n, () => this.rng.spawn());
+      const twins = meta.twins || 1;
+      for (let i = 0; i < twins; i++) {
+        this.pending.push({ t: 0.7 + i * 1.6, type, hpScale: bossHp, awaken });
+      }
+      // Boss 波护卫封顶 8：3 + floor(n/4) 到第 40 波是 13 只，再叠召唤类
+      // 会突破"同屏 ≤18"的硬预算（r42 刚因为对象数太多减过量）。
+      // "召唤"词条同样受这个上限约束——它加的是压力，不是渲染开销。
+      const escort = Math.min(8, Math.round((3 + Math.floor(n / 4))
+        * (awaken.includes('summon') ? AWAKEN_NUM.escortMul : 1)));
+      for (let i = 0; i < escort; i++) {
         this.pending.push({ t: 1.7 + i * 0.9, type: 'gunner', hp: Math.round(hp * 0.8) });
       }
     } else {
@@ -1233,7 +1777,9 @@ export class World {
 
     const kind = this._patrolKindFor(it.type, tpl);
     let route = null;
-    let pt = null;
+    // 指定位置优先（蜂巢召唤用）：召唤物要出现在本体身边，
+    // 不能走 _spawnPoint 随机撒到地图另一头。
+    let pt = (Number.isFinite(it.x) && Number.isFinite(it.z)) ? { x: it.x, z: it.z } : null;
     if (kind === 'route') {
       route = this.patrolRoutes[Math.floor(this.rng.spawn() * this.patrolRoutes.length)];
       pt = this._routeSpawnPoint(route.anchor);
@@ -1257,7 +1803,8 @@ export class World {
       // （breaker=7.2 m/s）。混乘的后果：第 5 波破城者 = 基础 10 × 7.2 = 72 m/s，
       // 是玩家（15 m/s）的近 5 倍——"跑起来像飞一样"。Boss 直接用绝对值，
       // 与单机 Enemy.js 的行为对齐。
-      speed: tpl.boss ? tpl.speed : (8.5 + Math.min(4.5, this.wave * 0.6)) * tpl.speed,
+      speed: (tpl.boss ? tpl.speed : (8.5 + Math.min(4.5, this.wave * 0.6)) * tpl.speed)
+        * ((it.awaken || []).includes('haste') ? AWAKEN_NUM.speedMul : 1),
       radius: tpl.radius,
       damage: tpl.damage,
       range: tpl.range,
@@ -1265,15 +1812,33 @@ export class World {
       score: tpl.score,
       alive: true,
       boss: !!tpl.boss,
+      // ---- Boss 技能状态（r46）----
+      // skillT：距离下一次技能；castKind/castT/castDur：正在进行的施法；
+      // zone：本次施法对应的场地标记（与 this.zones 里同一个对象，算收缩进度用）
+      skillT: tpl.boss ? 2.2 + this.rng.combat() * 1.6 : 0,
+      castKind: null,
+      castT: 0,
+      castDur: 0,
+      zone: null,
+      stage: 0,
+      // 觉醒词条（55 波起）：awakenMask 进快照给客户端显示，
+      // 数值效果在 _spawn 里一次性折算成乘区，之后每帧只做加法。
+      awakenMask: awakenMaskOf(it.awaken || []),
+      awaken: it.awaken || [],
+      dmgMul: (it.awaken || []).includes('armor') ? AWAKEN_NUM.dmgMul : 1,
+      cdMul: skillCdMul(it.awaken || []),
+      regen: (it.awaken || []).includes('regen'),
       static: !!tpl.static,
       frontArmor: tpl.frontArmor || 0,
       healAura: tpl.healAura || 0,
       selfDist: tpl.selfDestruct || 0,
+      // 召唤物的归属：蜂巢死了要连带清场，也用来数"场上还有几只它的人"
+      owner: it.owner || 0,
       fireCd: 1.0 + this.rng.combat() * 1.4,
       fireCdRange: tpl.fireCd || [2, 3],
       strafeSide: this.rng.combat() > 0.5 ? 1 : -1,
       blockedT: 0,
-      typeCode: Object.keys(ENEMY_TYPES).indexOf(it.type) + 1,
+      typeCode: typeCodeOf(it.type),
       // 巡逻状态只存在于服务端模拟里；快照不传航点，客户端也看不到
       patrol: route ? createPatrolState(route, () => this.rng.spawn()) : null,
     };

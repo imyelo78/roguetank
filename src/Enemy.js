@@ -4,6 +4,9 @@ import { R } from './rng.js';
 import { enemySkin } from './teams.js';
 import { solveIntercept, AIM_DEFAULTS, flatPitch, dirFrom } from './core/aim.js';
 import { createPatrolState, stepPatrol, wakePatrol, sendHunting, PATROL } from './core/patrol.js';
+// Boss 档案（名称 / kind / 核心色 / 尺寸 / 伤害）与联机共用同一份数据源
+import { BOSS_META, BOSS_SKILLS, ZONE, laserHits, resonancePull, bossStageFor, stageBarRatio,
+  awakenMaskOf, AWAKEN_NUM, skillCdMul } from './core/bosskit.js';
 
 const BAR_W = 2.24;
 const LOS_INTERVAL = 0.2;
@@ -24,26 +27,28 @@ const BAR_FILL_ELITE_MAT = new THREE.MeshBasicMaterial({
 
 // Boss 核心：共享几何体，按类型共享材质
 const CORE_GEO = new THREE.SphereGeometry(0.4, 12, 10);
-const CORE_MATS = {
-  breaker: new THREE.MeshBasicMaterial({
-    color: 0xff6a2a, transparent: true, opacity: 0.9,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  }),
-  prism: new THREE.MeshBasicMaterial({
-    color: 0x6fe6ff, transparent: true, opacity: 0.9,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  }),
-};
 
-const BOSS_INFO = {
-  boss_breaker: { name: '破城者', kind: 'breaker' },
-  boss_prism: { name: '棱镜', kind: 'prism' },
-};
+// 核心材质按 kind 生成：配色来自 core/bosskit.js 的 BOSS_META.core。
+// 以前这里是手写两份（橙 / 青），加 Boss 就得再添一段，且很容易和
+// 联机 coop.js 那份对不上——联机的棱镜血条配色至今就是错的。
+const CORE_MATS = {};
+for (const m of Object.values(BOSS_META)) {
+  CORE_MATS[m.kind] = new THREE.MeshBasicMaterial({
+    color: m.core, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+}
+
+// 单机侧只关心"叫什么、属于哪个 kind"；尺寸/伤害/速度都已进 BOSS_META。
+const BOSS_INFO = {};
+for (const [type, m] of Object.entries(BOSS_META)) {
+  BOSS_INFO[type] = m;
+}
 
 const tmpGoal = new THREE.Vector3();
 
 export class Enemy {
-  constructor(scene, { x, z, hp = 60, speed = 9, camera, type = 'gunner', damage, patrolRoute = null }) {
+  constructor(scene, { x, z, hp = 60, speed = 9, camera, type = 'gunner', damage, patrolRoute = null, awaken = null }) {
     const charger = type === 'charger';
     const elite = type === 'elite';
     const bossInfo = BOSS_INFO[type];
@@ -54,7 +59,7 @@ export class Enemy {
     const support = type === 'support';    // 补给车：治疗光环、会逃跑
     const shield = type === 'shield';      // 重盾兵：正面减伤，绕后有戏
 
-    const scale = boss ? (bossInfo.kind === 'breaker' ? 1.75 : 1.45)
+    const scale = boss ? bossInfo.scale
       : drone ? 0.62
       : turret ? 0.95
       : support ? 1.05
@@ -81,7 +86,7 @@ export class Enemy {
       rotY: R.combat() * Math.PI * 2,
     });
     this.tank.group.scale.setScalar(scale);
-    this.tank.radius = boss ? (bossInfo.kind === 'breaker' ? 2.5 : 2.1)
+    this.tank.radius = boss ? bossInfo.radius
       : drone ? 0.9
       : turret ? 1.3
       : support ? 1.5
@@ -96,11 +101,31 @@ export class Enemy {
     this.turretStatic = turret;
     this.support = support;
     if (shield) this.tank.isShielded = true;   // 供子弹结算做正面减伤
+    // 铁壁（r46）：正面只吃 30% 伤害。isShielded 让 Game 去做方向判定，
+    // armorMul 替换掉重盾兵写死的 0.2——同一套机制，不同强度。
+    if (bossInfo && bossInfo.kind === 'bulwark') {
+      this.tank.isShielded = true;
+      this.tank.armorMul = 0.3;
+    }
+    // 护盾值挂在 tank 上：Game 的命中结算拿到的就是 tank，不是 Enemy
+    this.tank.shieldHp = 0;
+    this.breakT = 0;
     this.selfDestruct = charger ? { damage: 16, radius: 4.6 }
       : drone ? { damage: 10, radius: 3.5 } : null;
+    // 觉醒词条（55 波起）：与联机 world.js::_spawn 同一套折算。
+    // 只在这里算一次乘区，之后每帧只做加法，不会两边算出不同的数。
+    this.awaken = awaken || [];
+    this.awakenMask = awakenMaskOf(this.awaken);
+    this.dmgMul = this.awaken.includes('armor') ? AWAKEN_NUM.dmgMul : 1;
+    this.tank.dmgMul = this.dmgMul;
+    this.cdMul = skillCdMul(this.awaken);
+    this.regen = this.awaken.includes('regen');
+    if (this.awaken.includes('haste')) this.tank.speed *= AWAKEN_NUM.speedMul;
+
     this.bossKind = bossInfo ? bossInfo.kind : null;
     this.bossName = bossInfo ? bossInfo.name : null;
-    this.damage = damage ?? (boss ? (bossInfo.kind === 'breaker' ? 15 : 8)
+    this.coreColor = bossInfo ? bossInfo.core : 0xff6a2a;
+    this.damage = damage ?? (boss ? bossInfo.damage
       : turret ? 12 : shield ? 8 : drone ? 10 : elite ? 10 : support ? 0 : 7);
     this.baseScale = scale;
     this.camera = camera;
@@ -141,6 +166,21 @@ export class Enemy {
     this.burst = 0;
     this.burstT = 0;
     this.coreT = R.combat() * 6;
+
+    // ---- Boss 技能状态（r46）----
+    // 与联机 core/world.js 的 _updateBossSkill 是同一套状态机与同一份参数
+    // （core/bosskit.js 的 BOSS_SKILLS），只是表现层不同：这边直接建特效，
+    // 那边把状态写进快照让客户端画。两边逻辑分开写就一定会分叉——
+    // 联机棱镜至今没有折射风暴，就是分开写的代价。
+    this.skillT = boss ? 2.2 + R.combat() * 1.6 : Infinity;
+    this.castKind = null;
+    this.castT = 0;
+    this.castDur = 0;
+    this.castPos = new THREE.Vector3();
+    this.dashDir = new THREE.Vector3(0, 0, 1);
+    this.hitDone = false;
+    this.bossNear = boss ? bossInfo.near : 0;
+    this.bossFar = boss ? bossInfo.far : 0;
 
     if (boss) {
       this.core = new THREE.Mesh(CORE_GEO, CORE_MATS[bossInfo.kind]);
@@ -570,8 +610,17 @@ export class Enemy {
     if (!this.enraged && hpRatio < 0.4) {
       this.enraged = true;
       this.abilityT = Math.min(this.abilityT, 1.5);
+      this.skillT = Math.min(this.skillT, 1.2);
       ctx.hud.showMessage(`${this.bossName} · 狂暴`, 1.3);
-      ctx.effects.explosion(p.clone().setY(2), breaker ? 0xff6a2a : 0x6fe6ff, 26, 1.3);
+      ctx.effects.explosion(p.clone().setY(2), this.coreColor, 26, 1.3);
+    }
+
+    // ---- Boss 技能接管（r46）----
+    // 放在普通 AI 之前：施法 / 冲刺 / 硬直期间不能既走位又开火，
+    // 否则"预警 1.2 秒"这段时间 Boss 还在疾驰，玩家根本无从判断落点。
+    if (this._updateBossSkill(dt, ctx, dist, dx, dz)) {
+      this._updateBar();
+      return;
     }
 
     const aimYaw = Math.atan2(dx, dz);
@@ -586,8 +635,9 @@ export class Enemy {
     }
 
     // 保持距离 + 侧移
-    const near = breaker ? 13 : 17;
-    const far = breaker ? 21 : 27;
+    // 每种 Boss 的保持距离来自 bosskit（幽影要贴到 8 米才够压迫感）
+    const near = this.bossNear;
+    const far = this.bossFar;
 
     // 区域压制：被拉出锚点太远就回防，不再从地图一头追到另一头。
     // Boss 用的是和杂兵同一份 core/patrol.js（kind='boss' 有独立的警戒/leash）。
@@ -733,10 +783,352 @@ export class Enemy {
     this.castT = 0;
   }
 
+  // ---------------- Boss 技能（r46） ----------------
+
+  /**
+   * 与联机 core/world.js 的 _updateBossSkill 是同一套状态机、同一份参数。
+   * 返回 true = 本帧由技能接管，跳过普通 AI。
+   */
+  _updateBossSkill(dt, ctx, dist, dx, dz) {
+    const SKILL = BOSS_SKILLS;
+    const kind = this.bossKind;
+
+    // 觉醒"再生"：每秒回 0.5% 最大血量（联机同参数，见 AWAKEN_NUM）
+    if (this.regen && this.tank.hp < this.tank.maxHp) {
+      this.tank.hp = Math.min(this.tank.maxHp, this.tank.hp + this.tank.maxHp * AWAKEN_NUM.regenPerSec * dt);
+    }
+    const p = this.position;
+    const player = ctx.player.group.position;
+
+    if (this.castKind === 'blinkWarn') {
+      this.castT -= dt;
+      this.tank.aimTowards(Math.atan2(dx, dz), dt, 6);
+      if (this.castT <= 0) {
+        const to = this.castPos.clone();
+        // 消失点的余波 → 落点的冲击波，"去了哪"看得见
+        ctx.effects.explosion(p.clone().setY(1.4), 0x6b4bd8, 16, 1);
+        p.set(to.x, 0, to.z);
+        this.path = [];
+        this.pathGoal.set(Infinity, 0, Infinity);
+        this.repathT = 0;
+        ctx.effects.explosion(p.clone().setY(1.4), 0x9b7bff, 24, 1.2);
+        if (ctx.bossShock) ctx.bossShock(p, SKILL.blink.shockR, SKILL.blink.shockDmg);
+        ctx.shake = Math.max(ctx.shake, 0.28);
+        this.castKind = null;
+        this.skillT = this.enraged ? SKILL.blink.enragedCd : SKILL.blink.cd;
+      }
+      return true;
+    }
+
+    if (this.castKind === 'dash') {
+      this.castT -= dt;
+      const step = (SKILL.dash.dist / SKILL.dash.dur) * dt;
+      const nx = p.x + this.dashDir.x * step;
+      const nz = p.z + this.dashDir.z * step;
+      const world = ctx.world;
+      // 撞墙提前结束：不然会贴着建筑一直"冲"，看起来像卡住
+      if (world && world.blocked(nx, nz, this.tank.radius)) {
+        this.castT = 0;
+      } else {
+        p.x = nx;
+        p.z = nz;
+        this.tank.group.rotation.y = Math.atan2(this.dashDir.x, this.dashDir.z);
+      }
+      if (!this.hitDone && ctx.bossShock &&
+        Math.hypot(player.x - p.x, player.z - p.z) < SKILL.dash.hitR) {
+        ctx.bossShock(p, SKILL.dash.hitR, SKILL.dash.dmg);
+        this.hitDone = true;
+      }
+      // 拖尾：只做视觉，不参与判定
+      if (Math.random() < 0.5) ctx.effects.explosion(p.clone().setY(0.7), 0xffd23a, 2, 0.4);
+      if (this.castT <= 0) {
+        // 硬直 = 给玩家的输出窗口
+        this.castKind = 'stun';
+        this.castT = SKILL.dash.stun;
+        this.castDur = SKILL.dash.stun;
+        ctx.hud.showMessage(`${this.bossName} · 硬直`, 0.7);
+      }
+      return true;
+    }
+
+    if (this.castKind === 'stun') {
+      this.castT -= dt;
+      if (this.castT <= 0) {
+        this.castKind = null;
+        this.skillT = this.enraged ? SKILL.dash.enragedCd : SKILL.dash.cd;
+      }
+      return true;
+    }
+
+    // ---- 铁壁：护盾循环（持续型）----
+    if (kind === 'bulwark') {
+      this.breakT = Math.max(0, this.breakT - dt);
+      if (this.tank.shieldHp > 0) return false;    // 有壳：正常移动开火
+      if (this.breakT > 0) return false;            // 破防中：玩家的窗口
+      this.tank.shieldHp = Math.round(
+        this.tank.maxHp * SKILL.generators.hpShare * SKILL.generators.count);
+      ctx.hud.showMessage(`${this.bossName} · 护盾展开`, 0.9);
+      return false;
+    }
+
+    // ---- 蜂巢：召唤（持续型）----
+    if (kind === 'hive') {
+      this.skillT -= dt / (this.cdMul || 1);
+      if (this.skillT > 0) return false;
+      const cap = SKILL.spawn.cap;
+      let mine = 0;
+      for (const o of ctx.enemies) if (o.alive && o.summoner === this) mine++;
+      // 上限到了：返回 true 只是"这一帧不给普通 AI"，避免继续往下
+      // 再执行一次通用的 skillT -= dt（那样冷却会以两倍速度走）
+      if (mine >= cap) { this.skillT = 2; return true; }
+      const n = Math.min(SKILL.spawn.count, cap - mine);
+      const hp = Math.round((55 + ctx.wave * 14) * 0.35);
+      for (let i = 0; i < n; i++) {
+        const a = R.combat() * Math.PI * 2;
+        const r = 3.5 + R.combat() * 3;
+        if (ctx.spawnDrone) {
+          ctx.spawnDrone(this, p.x + Math.sin(a) * r, p.z + Math.cos(a) * r, hp);
+        }
+      }
+      this.skillT = SKILL.spawn.cd;
+      ctx.hud.showMessage(`${this.bossName} · 释放无人机`, 0.9);
+      return true;
+    }
+
+    // ---- 熔核：铺岩浆 + 全屏炮击（持续型）----
+    // 动词是"站"：伤害不高，但它一块块切掉能站的地面。只有岩浆的话
+    // 玩家走出去就完了，所以配一发"脚下 + 外围两发"的炮击，
+    // 逼他在岩浆缝里找落脚点。
+    if (kind === 'crucible') {
+      this.skillT -= dt / (this.cdMul || 1);
+      this.blastT = (this.blastT ?? SKILL.barrage.cd * 0.5) - dt;
+      if (this.blastT <= 0) {
+        this.blastT = SKILL.barrage.cd;
+        const r = 6;
+        if (ctx.addZone) {
+          ctx.addZone(ZONE.BLAST, player.x, player.z, r, SKILL.barrage.warn);
+          for (let i = 0; i < 2; i++) {
+            const a = R.combat() * Math.PI * 2;
+            const d2 = 9 + R.combat() * 5;
+            const bx = THREE.MathUtils.clamp(player.x + Math.sin(a) * d2, -ctx.world.half + 6, ctx.world.half - 6);
+            const bz = THREE.MathUtils.clamp(player.z + Math.cos(a) * d2, -ctx.world.half + 6, ctx.world.half - 6);
+            ctx.addZone(ZONE.BLAST, bx, bz, r, SKILL.barrage.warn);
+          }
+        }
+        ctx.hud.showMessage(`${this.bossName} · 全屏炮击`, 0.9);
+      }
+      if (this.skillT > 0) return false;
+      if (ctx.addZone) {
+        for (let i = 0; i < SKILL.lava.count; i++) {
+          const a = R.combat() * Math.PI * 2;
+          const rr = 5 + R.combat() * 9;
+          const x = THREE.MathUtils.clamp(player.x + Math.sin(a) * rr, -ctx.world.half + 6, ctx.world.half - 6);
+          const z = THREE.MathUtils.clamp(player.z + Math.cos(a) * rr, -ctx.world.half + 6, ctx.world.half - 6);
+          if (ctx.world.blocked(x, z, 2)) continue;
+          ctx.addZone(ZONE.LAVA, x, z, SKILL.lava.r, SKILL.lava.dur);
+        }
+        // 脚下一块大的：不挪窝就要挨烧
+        ctx.addZone(ZONE.LAVA, player.x, player.z, SKILL.lava.r * 1.6, SKILL.lava.dur * 0.75);
+      }
+      this.skillT = SKILL.lava.cd;
+      ctx.hud.showMessage(`${this.bossName} · 熔岩喷发`, 0.9);
+      return true;
+    }
+
+    // ---- 哨戒：双旋转光束（持续型）----
+    // 动词是"掐"：两道光束匀速扫，玩家要卡着间隙穿过去。
+    // 判定调 core/bosskit.js 的 laserHits，与联机同一份。
+    if (kind === 'warden') {
+      this.laserDir = this.laserDir || 1;
+      this.laserYaw = (this.laserYaw ?? this.tank.turretYaw) + (this.enraged ? SKILL.laser.enragedSpeed : SKILL.laser.speed) * this.laserDir * dt;
+      // 本体要压上来：它的普通弹射程只有 38 米，如果站着不动，
+      // 玩家在 45 米外就能把它磨死（光束 40 米够不着）。所以这里自己走位，
+      // 不走下面那套 AI——那套会 aimTowards 把炮塔从光束角度掰走。
+      if (dist > this.bossFar) this._navigate(dt, ctx, player.x, player.z, 0.6);
+      else if (dist < this.bossNear) this._navigate(dt, ctx, p.x - dx / dist * 10, p.z - dz / dist * 10, 0.5);
+      this.tank.setAim(this.laserYaw);
+      this.laserFlipT = (this.laserFlipT ?? SKILL.laser.cd) - dt;
+      if (this.laserFlipT <= 0) {
+        this.laserDir *= -1;
+        this.laserFlipT = SKILL.laser.cd;
+      }
+      this.laserAcc = (this.laserAcc || 0) + dt;
+      if (this.laserAcc >= SKILL.laser.tick) {
+        const per = SKILL.laser.dps * this.laserAcc;
+        this.laserAcc = 0;
+        if (ctx.hurtPlayer && laserHits(p.x, p.z, this.laserYaw, player.x, player.z)) {
+          ctx.hurtPlayer(per, true);
+        }
+      }
+      return true;
+    }
+
+    // ---- 双生：共鸣钳位（持续型）----
+    // 与联机 world.js 同一条规则（core/bosskit.js::resonancePull）：
+    // 两只血量差超过 15%，低的那只被拉回来。所以必须两边一起压。
+    if (kind === 'twin') {
+      const other = ctx.enemies.find((o) => o !== this && o.alive && o.bossKind === 'twin');
+      if (other) {
+        const add = resonancePull(this.tank.hp, other.tank.hp, this.tank.maxHp, dt);
+        if (add > 0) {
+          this.tank.hp = Math.min(this.tank.maxHp, this.tank.hp + add);
+          this.pullT = (this.pullT || 0) + dt;
+          if (this.pullT >= 0.4) {
+            this.pullT = 0;
+            ctx.effects.explosion(p.clone().setY(1.8), 0xb388ff, 12, 0.45);
+          }
+        }
+      }
+      return false;
+    }
+
+    // ---- 终焉：三阶段 ----
+    // 一条血条分三段，每段换一套动作。阶段一是普通炮台（普通 AI 自己会打
+    // 三连点射），阶段二召唤 + 岩浆，阶段三冲刺 + 环射。
+    if (kind === 'terminus') {
+      if (this.castKind === 'phase') {
+        this.castT -= dt;
+        if (this.castT <= 0) {
+          this.castKind = null;
+          this.tank.invuln = false;
+          this.skillT = 1.0;
+        }
+        return true;
+      }
+
+      const ratio = this.tank.hp / this.tank.maxHp;
+      const want = bossStageFor(ratio);
+      if (want > (this.stage || 0)) {
+        this.stage = want;
+        this.tank.invuln = true;
+        this.castKind = 'phase';
+        this.castT = SKILL.phases.invuln;
+        this.castDur = SKILL.phases.invuln;
+        if (want === 2) this.tank.speed *= SKILL.phases.stage3SpeedMul;
+        ctx.bossShock(p, SKILL.phases.shockR, SKILL.phases.shockDmg);
+        if (ctx.addZone) ctx.addZone(ZONE.SHOCK, p.x, p.z, SKILL.phases.shockR, SKILL.phases.invuln);
+        ctx.effects.explosion(p.clone().setY(2), this.coreColor, 34, 1.4);
+        ctx.hud.showMessage(`${this.bossName} · 第 ${want + 1} 阶段`, 1.4);
+        ctx.shake = Math.max(ctx.shake, 0.5);
+        return true;
+      }
+
+      if ((this.stage || 0) === 1) {
+        this.eliteT = (this.eliteT ?? SKILL.phases.stage2EliteCd) - dt;
+        if (this.eliteT <= 0) {
+          this.eliteT = SKILL.phases.stage2EliteCd;
+          for (let i = 0; i < SKILL.phases.stage2Elites; i++) {
+            const a = R.combat() * Math.PI * 2;
+            const r = 4 + R.combat() * 3;
+            if (ctx.spawnElite) ctx.spawnElite(p.x + Math.sin(a) * r, p.z + Math.cos(a) * r);
+          }
+          ctx.hud.showMessage(`${this.bossName} · 召唤护卫`, 0.9);
+        }
+        this.lavaT = (this.lavaT ?? SKILL.phases.stage2LavaCd) - dt;
+        if (this.lavaT <= 0) {
+          this.lavaT = SKILL.phases.stage2LavaCd;
+          if (ctx.addZone) {
+            for (let i = 0; i < SKILL.lava.count; i++) {
+              const a = R.combat() * Math.PI * 2;
+              const r = 6 + R.combat() * 9;
+              const x = THREE.MathUtils.clamp(player.x + Math.sin(a) * r, -ctx.world.half + 6, ctx.world.half - 6);
+              const z = THREE.MathUtils.clamp(player.z + Math.cos(a) * r, -ctx.world.half + 6, ctx.world.half - 6);
+              if (ctx.world.blocked(x, z, 2)) continue;
+              ctx.addZone(ZONE.LAVA, x, z, SKILL.lava.r, SKILL.lava.dur);
+            }
+          }
+        }
+        return false;
+      }
+
+      if (this.stage === 2) {
+        this.ringT = (this.ringT ?? 1.2) - dt;
+        if (this.ringT <= 0) {
+          this.ringT = SKILL.phases.stage3RingCd;
+          const n = SKILL.ring.count;
+          const yaw0 = Math.atan2(dx, dz);
+          for (let i = 0; i < n; i++) {
+            const a = yaw0 + (i / n) * Math.PI * 2;
+            ctx.fire(tank, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), this.damage * 0.7, 'enemy', {
+              speed: 42, color: 0xffc9d8, glow: 0xff3b6b, scale: 0.9,
+            });
+          }
+          ctx.hud.showMessage(`${this.bossName} · 环射`, 0.8);
+        }
+        this.dashT = (this.dashT ?? SKILL.phases.stage3DashCd) - dt;
+        if (this.dashT <= 0) {
+          this.dashT = SKILL.phases.stage3DashCd;
+          const d = Math.hypot(dx, dz) || 1;
+          this.dashDir.set(dx / d, 0, dz / d);
+          this.hitDone = false;
+          this.castKind = 'dash';
+          this.castT = SKILL.dash.dur;
+          this.castDur = SKILL.dash.dur;
+          return true;
+        }
+        return false;
+      }
+
+      return false;   // 阶段一：交给普通 AI 的主炮与三连点射
+    }
+
+    // 狂暴词条：不改各技能的 cd 常量，让冷却"走得更快"，一处改动全覆盖
+    this.skillT -= dt / (this.cdMul || 1);
+    if (this.skillT > 0) return false;
+
+    if (kind === 'wraith') {
+      // 落点必须是贴身（5~8m）：预警圈 6m 的冲击波才够得着玩家。
+      // 原本按 12~16m 设计，结果"跳到远处放个圈"，等于没有威胁。
+      const spot = this._blinkSpot(ctx, player, SKILL.blink.minDist, SKILL.blink.maxDist);
+      if (!spot) { this.skillT = 1.0; return false; }
+      this.castPos.set(spot.x, 0, spot.z);
+      this.castKind = 'blinkWarn';
+      this.castT = SKILL.blink.warn;
+      this.castDur = SKILL.blink.warn;
+      this.skillT = this.enraged ? SKILL.blink.enragedCd : SKILL.blink.cd;
+      ctx.effects.warn(this.castPos, 2.6, SKILL.blink.warn, 0x9b7bff);
+      ctx.hud.showMessage(`${this.bossName} · 相位跃迁`, 0.9);
+      return true;
+    }
+
+    if (kind === 'blitz') {
+      // 方向在起手瞬间冻结：每帧重新对准就等于必中，玩家没法躲
+      const d = Math.hypot(dx, dz) || 1;
+      this.dashDir.set(dx / d, 0, dz / d);
+      this.hitDone = false;
+      this.castKind = 'dash';
+      this.castT = SKILL.dash.dur;
+      this.castDur = SKILL.dash.dur;
+      this.skillT = this.enraged ? SKILL.dash.enragedCd : SKILL.dash.cd;
+      ctx.hud.showMessage(`${this.bossName} · 突进`, 0.8);
+      return true;
+    }
+
+    return false;
+  }
+
+  /** 在玩家周围找一个不撞建筑、且落在 [minD, maxD] 的点位 */
+  _blinkSpot(ctx, player, minD, maxD) {
+    const world = ctx.world;
+    for (let i = 0; i < 20; i++) {
+      const a = R.combat() * Math.PI * 2;
+      const r = minD + R.combat() * (maxD - minD);
+      const x = THREE.MathUtils.clamp(player.x + Math.sin(a) * r, -world.half + 6, world.half - 6);
+      const z = THREE.MathUtils.clamp(player.z + Math.cos(a) * r, -world.half + 6, world.half - 6);
+      if (world.blocked(x, z, this.tank.radius + 0.4)) continue;
+      if (Math.hypot(x - player.x, z - player.z) < minD * 0.85) continue;
+      return { x, z };
+    }
+    return null;
+  }
+
   _updateBar() {
     if (!this.bar.visible) return;
     this.bar.lookAt(this.camera.position);
-    const ratio = Math.max(0.001, this.tank.hp / this.tank.maxHp);
+    let ratio = Math.max(0.001, this.tank.hp / this.tank.maxHp);
+    // 终焉：三个阶段的血条各算一条满格（见 bosskit 的 stageBarRatio）。
+    // 不这么做的话，进二阶段时血条只有 66%，玩家会以为"血条被吃了一段"。
+    if (this.bossKind === 'terminus') ratio = Math.max(0.001, stageBarRatio(this.tank.hp / this.tank.maxHp, this.stage || 0));
     this.fill.scale.x = ratio;
     this.fill.position.x = -(1 - ratio) * (BAR_W / 2);
   }

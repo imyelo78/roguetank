@@ -108,6 +108,25 @@ export class Effects {
     this._push(flash, { life: 0.18, grow: 9 });
   }
 
+  /**
+   * Boss 技能的地面预警圈（r46）：从半径收拢到中心，收满即触发。
+   *
+   * 复用爆炸用的环形池子，所以不会泄漏；靠 grow 传负值做收缩。
+   * 真正的判定时机在 Enemy 的 castT 上，这里的圈只负责"让玩家看懂"——
+   * 观感差半帧没关系，但**不能没有**：r45 删掉的棱镜跃迁就是栽在
+   * "只有结果、没有预告"上。
+   */
+  warn(pos, radius = 6, dur = 1.2, color = 0x9b7bff) {
+    const ring = this._acquire('ring');
+    ring.material.color.setHex(color);
+    ring.material.opacity = 0.85;
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.copy(pos).setY(0.1);
+    ring.scale.setScalar(radius);
+    // 指数收缩：1.5 的速率在 1.2 秒后约剩 16%，正好是"收拢到中心"的观感
+    this._push(ring, { life: dur, grow: -1.5, fade: true });
+  }
+
   /** 炮口闪光 */
   muzzle(pos, dir) {
     const m = this._acquire('muzzle');

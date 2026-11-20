@@ -18,6 +18,9 @@ import { Sound } from './sound.js';
 import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
 import { R, Rng, randomSeed } from './rng.js';
 import { crateCount, cratePositions, rollCategory, rollCard, CATEGORIES } from './core/crates.js';
+import { BOSS_META, BOSS_SKILLS, bossTypeForWave, pickLateBoss, bossHpFor, ZONE, stepZones,
+  stageBarRatio, rollAwakens, AWAKEN_NUM, awakenNamesOf } from './core/bosskit.js';
+import { ZoneVisual, BeamVisual } from './zone-visual.js';
 import { makeCrate } from './crate-visual.js';
 import { createNav } from './nav.js';
 import { Minimap } from './minimap.js';
@@ -277,6 +280,16 @@ export class Game {
     this.patrolRoutes = [];
     this.effects = new Effects(this.scene);
     this.effects.budget = q.particles;
+    // Boss 场地标记（r46）：与联机同一套数据形状和渲染器（src/zone-visual.js）。
+    // 单机这边自己维护一份 zones，判定走 core/bosskit.js 的 stepZones，
+    // 所以"岩浆多久掉一次血""炮击什么时候炸"两种模式不可能对不上。
+    this.zones = [];
+    this.zoneVis = new ZoneVisual(this.scene);
+    this.beamVis = new BeamVisual(this.scene);
+    this._beamList = [];
+    // stepZones 要的目标形状（{x,z,alive,down}），复用同一个对象，别每帧新建
+    this._zoneTarget = { x: 0, z: 0, alive: true, down: false };
+    this._zoneEvents = [];
 
     // 小地图（静态障碍烘焙一次）
     // 挪到左上角后不需要再给右下的摇杆让位，尺寸整体收一档：
@@ -781,6 +794,10 @@ export class Game {
     this.waveTime = 0;
     this.huntSent = false;
     this.pending = [];
+    // 岩浆 / 炮击预警属于"上一波那个 Boss 留下的东西"，开新波必须清干净，
+    // 否则第 36 波开局脚下还烫着第 35 波的岩浆。
+    this.zones.length = 0;
+    this.beamVis.clear();
     this.playerCd = 0;
     this.heat = 0;
     this.overheated = false;
@@ -788,17 +805,32 @@ export class Game {
 
     if (bossWave) {
       this.sound.bossIn();
-      const breaker = Math.floor(n / 5) % 2 === 1;
-      const type = breaker ? 'boss_breaker' : 'boss_prism';
-      const name = breaker ? '破城者' : '棱镜';
-      this.pending.push({
-        t: 0.7,
-        hp: 1300 + n * 300,
-        speed: breaker ? 7.2 : 9.2,
-        type,
-        warn: 1.5,
-      });
-      const adds = 3 + Math.floor(n / 4);
+      // 轮换与血量都走 bosskit（与联机同一份）：W5 破城者 → W10 棱镜 →
+      // W15 幽影 → … → W50 终焉，55 波起随机。以前这里是 floor(n/5) 的
+      // 奇偶三元，加一个 Boss 就要在单机、联机、HUD 三处各改一遍。
+      const bossType = bossTypeForWave(n) || pickLateBoss(() => R.spawn(), this._lastBossType);
+      this._lastBossType = bossType;
+      const bossMeta = BOSS_META[bossType] || BOSS_META.boss_breaker;
+      const bossHp = bossHpFor(n, bossType, 1);
+      // 觉醒词条（55 波起）：与联机同一份池子、同一套数值。
+      // 抽签流用 R.stream 而不是 R.combat——词条要可复现，重开同一局不该变。
+      const awaken = rollAwakens(n, R.stream('awaken'));
+      // 双生要出两只；两只的间隔给 1.6 秒，避免同时落地把玩家夹住
+      const twins = bossMeta.twins || 1;
+      for (let i = 0; i < twins; i++) {
+        this.pending.push({
+          t: 0.7 + i * 1.6,
+          hp: bossHp,
+          speed: bossMeta.speed,
+          type: bossType,
+          warn: 1.5,
+          awaken,
+        });
+      }
+      // 护卫封顶 8 只：3 + floor(n/4) 到第 40 波是 13 只，再叠召唤类会破
+      // "同屏 ≤18"的预算（r42 刚因为对象太多减过量）。
+      const adds = Math.min(8, Math.round((3 + Math.floor(n / 4))
+        * (awaken.includes('summon') ? AWAKEN_NUM.escortMul : 1)));
       for (let i = 0; i < adds; i++) {
         this.pending.push({
           t: 1.7 + i * 0.9,
@@ -807,7 +839,7 @@ export class Game {
           type: 'gunner',
         });
       }
-      this.hud.showMessage(`第 ${n} 波  ·  ${name} 来袭`, 2.2);
+      this.hud.showMessage(`第 ${n} 波  ·  ${bossMeta.name} 来袭`, 2.2);
     } else {
       if (eliteWave) {
         // 精英小队：2~3 辆错峰入场，单体血量相应下调（5.2x → 4x）
@@ -1007,7 +1039,7 @@ export class Game {
   }
 
   /** 落点预警 0.8s（Boss 1.5s）后再真正生成敌人，避免刷在脸上 */
-  _beginSpawn(hp, speed, type = 'gunner', warn = 0.8) {
+  _beginSpawn(hp, speed, type = 'gunner', warn = 0.8, awaken = null) {
     const boss = type.startsWith('boss_');
     const spot = boss
       ? this._findSpawnPoint(32, 44)
@@ -1039,7 +1071,7 @@ export class Game {
     this.scene.add(mesh);
 
     this.warnings.push({
-      x: spot.x, z: spot.z, t: warn, hp, speed, type, mesh, radius, dur: warn,
+      x: spot.x, z: spot.z, t: warn, hp, speed, type, mesh, radius, dur: warn, awaken,
     });
   }
 
@@ -1059,9 +1091,9 @@ export class Game {
     )];
   }
 
-  _spawnEnemyAt(hp, speed, x, z, type) {
+  _spawnEnemyAt(hp, speed, x, z, type, awaken = null) {
     const enemy = new Enemy(this.scene, {
-      x, z, hp, speed, type,
+      x, z, hp, speed, type, awaken,
       camera: this.camera,
       patrolRoute: this._patrolRouteFor(type, x, z),
     });
@@ -1098,9 +1130,105 @@ export class Game {
         this.scene.remove(w.mesh);
         w.mesh.material.dispose();
         this.warnings.splice(i, 1);
-        this._spawnEnemyAt(w.hp, w.speed, w.x, w.z, w.type);
+        this._spawnEnemyAt(w.hp, w.speed, w.x, w.z, w.type, w.awaken);
       }
     }
+  }
+
+  /**
+   * 玩家受伤的统一入口（r46）。
+   *
+   * 以前"玩家掉血"这段（吃抗性卡 + HUD + 音效 + 死亡）在 bossShock、
+   * 子弹命中、自爆三处各写一遍；岩浆和激光是持续伤害，每秒要结算好几次，
+   * 再复制一遍就别想改了。
+   *
+   * @param {number} amount 伤害（可以是小数：持续伤害按 dps × dt 累加）
+   * @param {boolean} [quiet] 不播音效（持续伤害每 0.2 秒响一次会糊成一片）
+   */
+  hurtPlayer(amount, quiet = false) {
+    if (!this.player.alive || this.state !== 'playing') return;
+    const dmg = Math.max(1, Math.round(amount * (this.stats.damageTakenMul ?? 1)));
+    const died = this.player.takeDamage(dmg);
+    if (!quiet) this.sound.hurt();
+    this.hud.hurt();
+    this.hud.setHealth(this.player.hp, this.player.maxHp);
+    if (!quiet) this.shake = Math.max(this.shake, 0.25);
+    if (died) this._onPlayerDeath();
+  }
+
+  /**
+   * Boss 范围伤害（r46）：幽影的落地冲击波、疾风的冲刺撞击共用。
+   *
+   * 和联机 World._damagePlayer 保持同样的语义（吃 damageTakenMul），
+   * 否则"单人抗性卡"在两种模式下价值不一样。
+   */
+  bossShock(pos, radius, damage) {
+    if (!this.player.alive) return;
+    const p = this.player.group.position;
+    if (Math.hypot(p.x - pos.x, p.z - pos.z) >= radius) return;
+    this.hurtPlayer(damage);
+  }
+
+  /**
+   * 场地标记（r46）：岩浆区、炮击预警。
+   *
+   * 与联机 World._addZone 同一条数据结构，渲染走同一个 ZoneVisual，
+   * 结算走同一个 core/bosskit.js::stepZones。
+   */
+  addZone(kind, x, z, r, dur) {
+    const zone = { kind, x, z, r, t: 0, ttl: dur, dur };
+    this.zones.push(zone);
+    return zone;
+  }
+
+  _updateZones(dt) {
+    const pos = this.player.group.position;
+    const t = this._zoneTarget;
+    t.x = pos.x;
+    t.z = pos.z;
+    t.alive = this.player.alive;
+    t.down = false;
+    const evs = this._zoneEvents;
+    evs.length = 0;
+    stepZones(this.zones, dt, [t], (_t, amount) => this.hurtPlayer(amount, true), evs);
+    // 炮击落地：stepZones 只负责判定和"炸了"这件事，表现留给这边
+    for (const ev of evs) {
+      const p = new THREE.Vector3(ev.x, 1, ev.z);
+      this.effects.explosion(p.clone(), 0xff3b1a, 30, 1.2);
+      this.sound.explosionAt(p, 1.5, this.listener());
+      this.shake = Math.max(this.shake, 0.5);
+    }
+  }
+
+  /** 哨戒的两道光束：位置/角度直接读 Boss 本体，判定在 Enemy 那边 */
+  _syncBeams() {
+    const list = this._beamList;
+    list.length = 0;
+    for (const e of this.enemies) {
+      if (e.bossKind !== 'warden' || !e.alive || e.laserYaw === undefined) continue;
+      const p = e.position;
+      const len = BOSS_SKILLS.laser.len;
+      list.push({ x: p.x, z: p.z, yaw: e.laserYaw, len });
+      list.push({ x: p.x, z: p.z, yaw: e.laserYaw + Math.PI, len });
+    }
+    this.beamVis.sync(list);
+  }
+
+
+  /** 蜂巢召唤的无人机（r46）：绑定召唤者，本体一死就一起清 */
+  spawnDrone(summoner, x, z, hp) {
+    const enemy = new Enemy(this.scene, {
+      x, z, hp, speed: 9, type: 'drone', camera: this.camera, patrolRoute: null,
+    });
+    enemy.summoner = summoner;
+    this.enemies.push(enemy);
+    this.effects.explosion(new THREE.Vector3(x, 1, z), 0xc06bd8, 6, 0.6);
+  }
+
+  /** 终焉二阶段的精英护卫（r46）：走同一套小兵 AI，只是血更厚 */
+  spawnElite(x, z) {
+    const hp = Math.round((55 + this.wave * 14) * 4);
+    this._spawnEnemyAt(hp, 9, x, z, 'elite');
   }
 
   /** 冲锋兵贴脸自爆 */
@@ -1450,11 +1578,26 @@ export class Game {
       let dmg = hitTarget === this.player
         ? Math.max(1, Math.round(b.damage * (this.stats.damageTakenMul ?? 1)))
         : b.damage;
-      // 重盾兵：命中方向与车头同向（正面）时 80% 减伤，绕后无减伤
+      // 铁壁的护盾（r46）：伤害全打在壳上，本体一滴不掉。
+      // 打空那一刻给对应 Enemy 记 6 秒破防——这才是玩家的输出窗口。
+      if (hitTarget !== this.player && hitTarget.shieldHp > 0) {
+        hitTarget.shieldHp -= dmg;
+        this.effects.explosion(b.pos.clone(), 0x9aa2b0, 3, 0.45);
+        if (hitTarget.shieldHp <= 0) {
+          hitTarget.shieldHp = 0;
+          const owner = this.enemies.find((e) => e.tank === hitTarget);
+          if (owner) owner.breakT = BOSS_SKILLS.generators.breakDur;
+          this.hud.showMessage('护盾破碎 · 输出窗口', 1.1);
+          this.shake = Math.max(this.shake, 0.35);
+        }
+        continue;
+      }
+      // 重盾兵：命中方向与车头同向（正面）时减伤，绕后无减伤。
+      // armorMul 让铁壁用同一套判定但减 70%（0.3），而不是复制一份逻辑。
       if (hitTarget !== this.player && hitTarget.isShielded) {
         const facing = hitTarget.group.rotation.y;
         const dot = Math.sin(facing) * b.dir.x + Math.cos(facing) * b.dir.z;
-        if (dot > 0.25) dmg = Math.max(1, Math.round(dmg * 0.2));
+        if (dot > 0.25) dmg = Math.max(1, Math.round(dmg * (hitTarget.armorMul ?? 0.2)));
       }
       const died = hitTarget.takeDamage(dmg);
       this.effects.spark(b.pos);
@@ -1504,6 +1647,16 @@ export class Game {
     }
 
     if (enemy.isBoss) {
+      // 蜂巢倒下，召唤物一起散（与联机同一处理）：否则玩家要满地图清剩下的
+      // 无人机，波次永远清不到 0，选卡不弹 → 卡死。
+      if (enemy.bossKind === 'hive') {
+        for (const o of this.enemies.slice()) {
+          if (o.summoner !== enemy) continue;
+          this.effects.explosion(o.position.clone().setY(1), 0xc06bd8, 8, 0.7);
+          this.scene.remove(o.tank.group);
+          this.enemies.splice(this.enemies.indexOf(o), 1);
+        }
+      }
       this.score += Math.round((1200 + this.wave * 80) * this.mods.killScoreMul);
       this.shake = Math.max(this.shake, 0.85);
       this.hud.showMessage(`${enemy.bossName} 已击破`, 1.8);
@@ -1547,11 +1700,26 @@ export class Game {
   /** 每帧同步顶部 Boss 血条 */
   _syncBossBar() {
     const boss = this.enemies.find((e) => e.isBoss && e.alive);
-    if (boss) {
-      this.hud.showBossBar(boss.bossName, boss.bossKind, boss.tank.hp, boss.tank.maxHp, boss.enraged);
-    } else {
+    if (!boss) {
       this.hud.hideBossBar();
+      return;
     }
+    let hp = boss.tank.hp;
+    let maxHp = boss.tank.maxHp;
+    let name = boss.bossName;
+    // 终焉：血条按阶段重算（三个阶段各一条满格），名字后加阶段号——
+    // 否则玩家只会看到"血条突然退回一大段"，读不出"换阶段了"。
+    if (boss.bossKind === 'terminus') {
+      const stage = boss.stage || 0;
+      hp = stageBarRatio(boss.tank.hp / boss.tank.maxHp, stage) * 1000;
+      maxHp = 1000;
+      name = `${boss.bossName} · ${['Ⅰ', 'Ⅱ', 'Ⅲ'][stage]}`;
+    }
+    // 55 波起的觉醒词条：直接标在名字后面。单独做一行 UI 会挤占左上角，
+    // 而玩家真正需要的只是"这只和上次不一样，哪里不一样"。
+    const words = awakenNamesOf(boss.awakenMask || 0);
+    if (words) name = `${name}〔${words}〕`;
+    this.hud.showBossBar(name, boss.bossKind, hp, maxHp, boss.enraged);
   }
 
   // ---------------- 肉鸽流程 ----------------
@@ -1706,8 +1874,8 @@ export class Game {
     for (let i = this.pending.length - 1; i >= 0; i--) {
       this.pending[i].t -= dt;
       if (this.pending[i].t <= 0) {
-        const { hp, speed, type } = this.pending[i];
-        this._beginSpawn(hp, speed, type);
+        const { hp, speed, type, awaken } = this.pending[i];
+        this._beginSpawn(hp, speed, type, undefined, awaken);
         this.pending.splice(i, 1);
       }
     }
@@ -1924,6 +2092,7 @@ export class Game {
       }
       this._separate();
       this._updateBullets(dt);
+      this._updateZones(dt);
       this._updateCratesSolo(dt);
       // 玩家可能在同一帧被击毁，避免“死亡后清波”覆盖结算状态
       if (this.state === 'playing') this._updateWaves(dt);
@@ -1958,6 +2127,8 @@ export class Game {
     this.player.update(dt);
     this._updateCamera(dt);
     this.effects.update(dt);
+    this.zoneVis.sync(this.zones);
+    this._syncBeams();
     this.renderer.render(this.scene, this.camera);
   }
 

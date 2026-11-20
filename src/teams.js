@@ -61,6 +61,18 @@ const ENEMY_SKINS = {
   // BOSS：破阵者是深绯，棱镜是冷青（唯一的冷色 BOSS，用体型和血条区分）
   boss_breaker: { body: 0x8a2e24, accent: 0x4a1410, metal: 0x2a2220 },
   boss_prism: { body: 0x2f6f86, accent: 0x1d4354, metal: 0x223038 },
+  // r46 新增八种：车身压暗，发光留给核心（core/bosskit.js 的 core 色）。
+  // 约束来自 teamcolor.test：敌方车身必须"偏暖"（红 ≥ 蓝）且不能发绿——
+  // 这是玩家（军绿/青）与敌人一眼分开的底线。所以八个都落在暖色段，
+  // 靠明度与红绿比例区分：暗紫红 / 橙黄 / 暖灰 / 品红 / 深橙 / 亮银 / 玫紫 / 玫红。
+  boss_wraith: { body: 0x5e2a5a, accent: 0x321630, metal: 0x242230 },
+  boss_blitz: { body: 0xc06a18, accent: 0x6a3808, metal: 0x302e22 },
+  boss_bulwark: { body: 0x736662, accent: 0x3d3532, metal: 0x2a2f36 },
+  boss_hive: { body: 0x9a3068, accent: 0x521838, metal: 0x2b2432 },
+  boss_crucible: { body: 0x8f3f1c, accent: 0x4c1f0c, metal: 0x2e2420 },
+  boss_warden: { body: 0xb8b0a0, accent: 0x6a6458, metal: 0x21302c },
+  boss_twin: { body: 0x8a3a7a, accent: 0x4a1e40, metal: 0x262233 },
+  boss_terminus: { body: 0x7a1f33, accent: 0x42101b, metal: 0x2a2028 },
 };
 
 /** 敌方识别灯：血红，和敌方血条同色 */

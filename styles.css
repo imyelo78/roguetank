@@ -446,6 +446,10 @@ html, body {
  * 因为小地图尺寸是 JS 动态定的，CSS 猜不出来。
  */
 .boss-bar {
+  /* Boss 主题色默认值（破城者）。各 kind 只覆盖这个变量，四条配色规则共用。
+     ⚠ 不要另写一条 `.boss-bar { --bk: … }`：测试按"最后一个 .boss-bar {"取规则，
+     多一条会把真规则挡掉（mobilehud 会报 left 不含 --map-size）。 */
+  --bk: 255, 74, 58;
   position: absolute;
   top: calc(var(--map-gap, 18px) + env(safe-area-inset-top));
   left: calc(var(--map-gap, 18px) + env(safe-area-inset-left) + var(--map-size, 144px) + 26px);
@@ -509,21 +513,35 @@ html, body {
   box-shadow: 0 0 12px rgba(255, 74, 58, .55);
   transition: width .12s linear;
 }
-.boss-bar[data-kind="prism"] {
-  border-color: rgba(56, 216, 255, .35);
+/* Boss 主题色（r46）：每个 kind 一个 RGB 三元组，下面四条规则共用。
+   以前只有 prism 一条特例，其余全走默认橙红——联机把 kind 传成
+   'boss_prism' 时连那条也不生效，棱镜的血条一直是破城者的配色。
+   现在 kind 由 bosskit 统一给（breaker/prism/wraith/...），配色跟着变量走。 */
+.boss-bar[data-kind="prism"]    { --bk: 56, 216, 255; }
+.boss-bar[data-kind="wraith"]   { --bk: 155, 123, 255; }
+.boss-bar[data-kind="blitz"]    { --bk: 255, 210, 58; }
+.boss-bar[data-kind="bulwark"]  { --bk: 150, 162, 176; }
+.boss-bar[data-kind="hive"]     { --bk: 205, 110, 226; }
+.boss-bar[data-kind="crucible"] { --bk: 255, 122, 47; }
+.boss-bar[data-kind="warden"]   { --bk: 89, 240, 192; }
+.boss-bar[data-kind="twin"]     { --bk: 179, 136, 255; }
+.boss-bar[data-kind="terminus"] { --bk: 255, 59, 107; }
+
+.boss-bar[data-kind] {
+  border-color: rgba(var(--bk), .35);
 }
-.boss-bar[data-kind="prism"] .boss-tag {
-  color: #d4f8ff;
-  background: rgba(56, 216, 255, .22);
-  border-color: rgba(56, 216, 255, .5);
+.boss-bar[data-kind] .boss-tag {
+  color: #fff;
+  background: rgba(var(--bk), .22);
+  border-color: rgba(var(--bk), .5);
 }
-.boss-bar[data-kind="prism"] #boss-name {
-  color: #e2fbff;
-  text-shadow: 0 0 12px rgba(56, 216, 255, .6);
+.boss-bar[data-kind] #boss-name {
+  color: #fff;
+  text-shadow: 0 0 12px rgba(var(--bk), .6);
 }
-.boss-bar[data-kind="prism"] #boss-fill {
-  background: linear-gradient(90deg, #1fb6e8, #7bf0d0);
-  box-shadow: 0 0 12px rgba(56, 216, 255, .55);
+.boss-bar[data-kind] #boss-fill {
+  background: linear-gradient(90deg, rgba(var(--bk), 1), rgba(var(--bk), .55));
+  box-shadow: 0 0 12px rgba(var(--bk), .55);
 }
 .boss-bar.enraged {
   animation: bossEnrage .65s ease-in-out infinite alternate;

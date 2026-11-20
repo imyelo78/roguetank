@@ -20,7 +20,8 @@ import { SELF_SKIN, MATE_SKIN, enemySkin } from './teams.js';
 import { followStep, validateFollow } from './core/camera.js';
 import { WEAPONS } from './weapons.js';
 import { createStats } from './upgrades.js';
-import { ENEMY_TYPES } from './core/world.js';
+import { ENEMY_TYPES, CODE_TO_TYPE } from './core/world.js';
+import { BOSS_META, BOSS_SKILLS, stageBarRatio, awakenNamesOf } from './core/bosskit.js';
 import { aimTurret, angleDiff } from './core/motion.js';
 import { createNav } from './nav.js';
 import { NetClient, predict, TICK_RATE } from './net.js';
@@ -30,6 +31,7 @@ import { assistAim, AIM_RANGE } from './input/touch.js';
 import { FOG_BASE } from './core/quality.js';
 import { ndcToScreen } from './core/viewport.js';
 import { makeCrate } from './crate-visual.js';
+import { ZoneVisual, BeamVisual } from './zone-visual.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -106,9 +108,9 @@ const LEAD_CAP = 1.15;
  */
 const CARD_CLOSE_GRACE = 1500;
 
-/** 敌人类型码 → 类型名（与服务端 ENEMY_TYPES 的键顺序一致） */
-const TYPE_BY_CODE = Object.keys(ENEMY_TYPES);
-const CODE_TO_TYPE = (c) => TYPE_BY_CODE[(c - 1)] || 'gunner';
+// 敌人类型码 ↔ 类型名：编码表在 core/world.js 里写死（TYPE_CODE），
+// 不再靠数组下标反推——往中间插一个类型就会整体错位，而且不报错。
+const typeOfCode = (c) => CODE_TO_TYPE[c] || 'gunner';
 
 const BULLET_COLOR = {
   player: { color: 0xfff3c4, glow: 0xffb03a },
@@ -150,6 +152,9 @@ export class CoopMode {
     this.enemies = new Map();   // id → Tank（低细节）
     this.bullets = new Map();   // id → Bullet
     this.crates = new Map();    // cid → makeCrate() 返回值（战场宝箱，r43）
+    this.zoneVis = new ZoneVisual(scene);   // Boss 预警圈 / 危险区（r46）
+    this.beamVis = new BeamVisual(scene);   // 哨戒的旋转光束（r46）
+    this._beamList = [];
     this.mates = new Map();     // id → { name, chassis }
     this.me = null;             // 预测用的本地状态
     this.myId = null;
@@ -275,6 +280,8 @@ export class CoopMode {
     this._aimMarker = null;
     // 特效对象池里的材质要显式释放（GC 不会回收 WebGL 显存）
     this.effects?.dispose();
+    this.zoneVis?.dispose();
+    this.beamVis?.dispose();
     this.debug?.destroy();
     this.scene = null;
     this.effects = null;
@@ -1028,13 +1035,23 @@ export class CoopMode {
 
     // ---- 敌人 ----
     const alive = new Set();
+    // 哨戒的光束：服务端把光束角度写在 turretYaw 里（它没有别的炮塔），
+    // 所以画光束不需要改协议。
+    const beams = this._beamList;
+    beams.length = 0;
     for (const e of s.enemies) {
       alive.add(e.id);
-      const t = this._upsertEnemy(e.id, CODE_TO_TYPE(e.typeCode), e.x, e.z, e.yaw);
+      const etype = typeOfCode(e.typeCode);
+      const t = this._upsertEnemy(e.id, etype, e.x, e.z, e.yaw);
       // 快照是插值出来的，位置已经平滑，直接贴
       t.group.position.set(e.x, 0, e.z);
       t.group.rotation.y = e.yaw;
       t.setAim(e.turretYaw);
+      if (etype === 'boss_warden') {
+        const len = BOSS_SKILLS.laser.len;
+        beams.push({ x: e.x, z: e.z, yaw: e.turretYaw, len });
+        beams.push({ x: e.x, z: e.z, yaw: e.turretYaw + Math.PI, len });
+      }
 
       // 血条：协议里 e.hp 是 0~100 的百分比（encodeSnapshot 已归一化）。
       // 12/13 版完全没消费这个字段，所以联机敌人的血条既没创建也不掉血。
@@ -1051,6 +1068,7 @@ export class CoopMode {
         this.enemies.delete(id);
       }
     }
+    this.beamVis.sync(beams);
 
     // ---- 宝箱（r43）：快照状态同步，不依赖一次性事件 ----
     // 'crates' 事件只在开波瞬间发一次，客户端若正好在大厅→战场切换
@@ -1074,6 +1092,11 @@ export class CoopMode {
         }
       }
     }
+
+    // ---- Boss 场地标记（r46）：预警圈 / 岩浆区 / 冲刺 / 冲击波 ----
+    // 同样走快照状态而不是事件：幽影的预警圈要亮 1.2 秒，迟入的玩家
+    // 必须能看到"它要跳到哪"，错过一次事件就完全读不懂画面。
+    this.zoneVis.sync(s.zones);
 
     // ---- 子弹：按 id 增量同步 ----
     const live = new Set();
@@ -1642,7 +1665,7 @@ export class CoopMode {
     if (!s) return;
     let boss = null;
     for (const e of s.enemies || []) {
-      const type = CODE_TO_TYPE(e.typeCode);
+      const type = typeOfCode(e.typeCode);
       if (type.startsWith('boss')) { boss = { e, type }; break; }
     }
     if (!boss) {
@@ -1653,8 +1676,24 @@ export class CoopMode {
       return;
     }
     this._bossId = boss.e.id;
-    const name = boss.type === 'boss_breaker' ? '破城者' : '棱镜之眼';
-    this.game.hud.showBossBar(name, boss.type, boss.e.hp, 100, boss.e.hp < 40);
+    // 名字与配色都从 bosskit 取：以前这里写死"破城者 / 棱镜之眼"，
+    // 而单机叫"棱镜"；更糟的是 kind 传的是 'boss_prism'，而 CSS 只认
+    // data-kind="prism"，联机棱镜的血条一直是破城者的橙红色。
+    const meta = BOSS_META[boss.type] || BOSS_META.boss_breaker;
+    let hp = boss.e.hp;
+    let name = meta.name;
+    // 终焉三阶段：快照里 hp 是"整条血"的百分比，血条要按阶段重算，
+    // 否则进二阶段时血条只剩 66%，看起来像被吞了一段。阶段号走 bt 快照。
+    const st = (s.bossStates || []).find((b) => b.id === boss.e.id);
+    if (meta.kind === 'terminus') {
+      const stage = st ? st.stage : 0;
+      hp = stageBarRatio(Math.max(0, Math.min(1, hp / 100)), stage) * 100;
+      name = `${meta.name} · ${['Ⅰ', 'Ⅱ', 'Ⅲ'][stage] || 'Ⅰ'}`;
+    }
+    // 觉醒词条走 bt 快照里的位掩码（服务端抽签，客户端只负责显示）
+    const words = awakenNamesOf(st ? st.mask : 0);
+    if (words) name = `${name}〔${words}〕`;
+    this.game.hud.showBossBar(name, meta.bar, hp, 100, hp < 40);
   }
 
   /** 服务端事件 → 表现（音效、爆炸、飘字） */
@@ -1728,6 +1767,27 @@ export class CoopMode {
         case 'boom':
           this.effects.explosion(new THREE.Vector3(e.x, 1, e.z), 0xff5a2a, 18, 1);
           this.sound.explosionAt({ x: e.x, z: e.z }, 1.2, this.game.listener());
+          break;
+        // Boss 落地冲击波 / 熔核炮击落地（r46）：预警是靠 bz 快照画的，
+        // 但"炸开了"这一下必须有个响亮的画面，否则玩家只看到地上的圈消失。
+        case 'bossShock':
+          this.effects.explosion(new THREE.Vector3(e.x, 1, e.z), 0xff3b1a, Math.max(14, (e.r || 6) * 4), 1.15);
+          this.sound.explosionAt({ x: e.x, z: e.z }, 1.35, this.game.listener());
+          break;
+        // 终焉转阶段：公告 + 一团大爆炸。无敌 2 秒的窗口里玩家会一直开炮，
+        // 没有提示的话只会觉得"打上去了但没伤害"。
+        case 'bossPhase': {
+          const t = (this.net?.lastSnap?.enemies || []).find((q) => q.id === e.id);
+          const meta = t ? BOSS_META[typeOfCode(t.typeCode)] : null;
+          const nm = meta ? meta.name : 'BOSS';
+          this.game.hud.showMessage(`${nm} · 第 ${['Ⅰ', 'Ⅱ', 'Ⅲ'][e.stage] || 'Ⅱ'} 阶段`, 1.4);
+          if (t) this.effects.explosion(new THREE.Vector3(t.x, 2, t.z), 0xff3b6b, 34, 1.4);
+          this.sound.explosionAt(t ? { x: t.x, z: t.z } : { x: 0, z: 0 }, 1.5, this.game.listener());
+          break;
+        }
+        // 双生的共鸣回血：一道紫色闪光，让"血条在往回涨"这件事有个来源
+        case 'bossResonance':
+          if (e.x !== undefined) this.effects.explosion(new THREE.Vector3(e.x, 1.8, e.z), 0xb388ff, 10, 0.4);
           break;
         case 'join':
           if (e.id !== this.myId) this.game.hud.showMessage(`${e.name || '队友'} 加入了战斗`, 2);

@@ -485,6 +485,13 @@ export class Tank {
 
   takeDamage(amount) {
     if (!this.alive) return false;
+    // 无敌（终焉转阶段 2 秒 / 未来的护盾读条）：伤害整段丢弃。
+    // 放在 Tank 而不是每个调用点，是因为伤害来源有子弹、溅射、
+    // 撞击三种，漏一个就会出现"某把武器能穿过无敌"的怪事。
+    if (this.invuln) return false;
+    // 觉醒"装甲"：受击方自己带减伤乘区。伤害来源有子弹 / 溅射 / 撞击三种，
+    // 写在 Tank 里能一次覆盖，漏一处就会出现"某把武器无视装甲"。
+    if (this.dmgMul && this.dmgMul !== 1) amount *= this.dmgMul;
     this.hp = Math.max(0, this.hp - amount);
     if (this.onDamaged) this.onDamaged(amount);
     if (this.hp <= 0) {

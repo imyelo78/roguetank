@@ -9,7 +9,10 @@
 // 版本 3：联机成长（每波各自 3 选 1）+ 建筑随种子变化。
 // 必须升版本：v2 客户端收到 CARDS 消息会安静地忽略，玩家会觉得"说好的选卡呢"；
 // 更危险的是 v2 客户端按自己的常量生成建筑，换种子后直接撞假墙。
-export const PROTOCOL_VERSION = 3;
+// 版本 4（r46）：Boss 扩到 10 种，新增 bosskit 技能状态同步（bz / bt）。
+// 必须升版本：v3 客户端不认识幽影的跃迁预警圈，会看到 Boss"原地闪现"——
+// 正是 r45 刚从单机删掉的那个观感；而服务端按 v3 解包会把 bz 当未知字段丢掉。
+export const PROTOCOL_VERSION = 4;
 
 /**
  * 构建标识。**每次出包都要改**，只用于诊断，不参与协议校验。
@@ -19,7 +22,7 @@ export const PROTOCOL_VERSION = 3;
  * 排查方向直接跑偏。页面会把本地 BUILD 和服务端 /healthz 的 build 对比，
  * 不一致就在左上角红条提示；房间码旁边也会显示当前构建号，截图即可确认版本。
  */
-export const BUILD = 'r30';
+export const BUILD = 'r46';
 export const TICK_RATE = 30;
 /**
  * 快照率。**必须能整除 TICK_RATE**，否则相邻快照的 tick 差会在两个值之间锯齿，
@@ -191,6 +194,17 @@ export function encodeSnapshot(world) {
     // 不渲染。放快照里每帧 1~3 条（空 [] 时 ~6 字节），天然覆盖迟入/重连。
     // [id, x, z, catIdx]，catIdx 见 CRATE_CATS
     cr: (world.crates || []).map((c) => [c.id, quantPos(c.x), quantPos(c.z), CRATE_CATS.indexOf(c.cat)]),
+    // Boss 场地标记（r46）：[kind, x, z, r×10, t×100]。
+    // 走快照而不是事件，理由同宝箱：预警圈有 1.2 秒的持续状态，
+    // 迟入的玩家必须能看到"它要跳到哪"，错过一次事件就完全读不懂画面。
+    bz: (world.zones || []).map((z) => [
+      z.kind, quantPos(z.x), quantPos(z.z), Math.round(z.r * 10),
+      Math.max(0, Math.min(100, Math.round(z.t * 100))),
+    ]),
+    // Boss 阶段 + 觉醒词条位（bitmask）：终焉三阶段、双生两只、55 波后的词条
+    bt: (world.enemies || [])
+      .filter((e) => e.boss)
+      .map((e) => [e.id, e.stage || 0, e.awakenMask || 0]),
   };
 }
 
@@ -227,5 +241,16 @@ export function decodeSnapshot(snap) {
     }
   }
   return { tick: snap.tick, wave: snap.w, state: snap.s, scores: snap.sc || [], players, enemies, bullets, left: snap.ex,
-    crates: (snap.cr || []).map(([id, x, z, cat]) => ({ id, x: dequantPos(x), z: dequantPos(z), cat: CRATE_CATS[cat] || 'support' })) };
+    crates: (snap.cr || []).map(([id, x, z, cat]) => ({ id, x: dequantPos(x), z: dequantPos(z), cat: CRATE_CATS[cat] || 'support' })),
+    // Boss 场地标记（r46）：一张通用表装下所有"地上画了个东西"的状态——
+    // 跃迁预警圈、岩浆区、冲刺路径、转阶段冲击波都走同一条 [kind,x,z,r,t]，
+    // 以后加 Boss 不用再动协议。
+    // kind: 0 跃迁预警 1 岩浆危险区 2 冲刺路径 3 转阶段冲击波
+    // t: 0~100，kind=0 时是收缩进度，其余是剩余寿命比例
+    zones: (snap.bz || []).map(([kind, x, z, r, t]) => ({
+      kind, x: dequantPos(x), z: dequantPos(z), r: r / 10, t: t / 100,
+    })),
+    // Boss 阶段与觉醒词条位：双生要区分两只、终焉要区分三阶段
+    bossStates: (snap.bt || []).map(([id, stage, mask]) => ({ id, stage, mask })),
+  };
 }
