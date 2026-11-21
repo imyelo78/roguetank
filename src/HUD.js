@@ -169,6 +169,14 @@ export class HUD {
     // 手机端「战况」胶囊（战斗时点头部展开/收起）
     this.peekBtn = $('hud-peek');
     this._peekTimer = 0;
+
+    // 暂停：按钮 + 面板。只在单人局出现（联机世界在服务端跑，暂停没有意义）
+    this.pauseBtn = $('hud-pause');
+    this.pauseEl = $('pause');
+    this.pauseWave = $('pause-wave');
+    this.pauseKills = $('pause-kills');
+    this.pauseScore = $('pause-score');
+    this.pauseTime = $('pause-time');
     // 1280×720 这类笔记本是主力尺寸，展开后 203px 高也压不到面板（横向根本不重叠），
     // 所以门槛压到 700：只有真的很矮的窗口才默认收起。
     const khSmall = window.innerWidth < 900 || window.innerHeight < 700;
@@ -211,6 +219,39 @@ export class HUD {
       this.peekBtn.setAttribute('aria-label', want ? '收起战况' : '展开战况');
     }
     if (want) this._peekTimer = setTimeout(() => this._setPeek(false), PEEK_MS);
+  }
+
+  // ---------------- 暂停（单人局） ----------------
+
+  /**
+   * 战斗中是否给「暂停」按钮留位置。
+   * 联机局里必须收起来：世界由服务端 tick 驱动，本地"暂停"只会让画面定格、
+   * 人还在挨打，比没有按钮更误导。
+   */
+  setPausable(on) {
+    this.pauseBtn?.classList.toggle('hidden', !on);
+    if (!on) this.hidePause();
+  }
+
+  /** 弹出暂停面板，顺带把本局数据摆出来（世界已冻结，读到的就是定格那一刻） */
+  showPause({ wave = 1, kills = 0, score = 0, time = '0:00' } = {}) {
+    if (!this.pauseEl) return;
+    if (this.pauseWave) this.pauseWave.textContent = String(wave);
+    if (this.pauseKills) this.pauseKills.textContent = String(kills);
+    if (this.pauseScore) this.pauseScore.textContent = String(score);
+    if (this.pauseTime) this.pauseTime.textContent = time;
+    this.pauseEl.classList.remove('hidden');
+    // #app.playing 控制 cursor:none。暂停要能看见光标点按钮，
+    // 所以摘掉它；同时 HUD 那套"战斗中"的样式退回去 —— 面板后面是虚化的，
+    // 这点变化看不出来，和选卡 / 结算的处理方式一致。
+    this.app.classList.remove('playing');
+    this.app.classList.add('paused');
+    this._setPeek(false);
+  }
+
+  hidePause() {
+    this.pauseEl?.classList.add('hidden');
+    this.app?.classList.remove('paused');
   }
 
   /**
@@ -582,7 +623,7 @@ export class HUD {
     this.lobby?.classList.add('hidden');
   }
 
-  bind({ onStart, onRestart, onPick, onWeapon, onCoop }) {
+  bind({ onStart, onRestart, onPick, onWeapon, onCoop, onPause, onResume, onQuit }) {
     this.initMenuBoard();
 
     // 开局强制填写呼号：空值就地提示，不弹窗打断
@@ -666,6 +707,14 @@ export class HUD {
     this.peekBtn?.addEventListener('click', () => {
       this._setPeek(!this.app.classList.contains('peek-on'));
     });
+
+    // ---- 暂停 / 退出 ----
+    // 按钮只负责"叫一声"，冻结与状态迁移都在 Game 里：
+    // HUD 不知道 world 怎么停，也不该知道。
+    this.pauseBtn = this.pauseBtn || $('hud-pause');
+    this.pauseBtn?.addEventListener('click', () => onPause?.());
+    $('pause-resume')?.addEventListener('click', () => onResume?.());
+    $('pause-quit')?.addEventListener('click', () => onQuit?.());
 
     if (this.callsignEl) {
       this.callsignEl.addEventListener('change', () => {
@@ -781,6 +830,7 @@ export class HUD {
     this.overlay.classList.add('hidden');
     this.reward.classList.add('hidden');
     this.gameover.classList.add('hidden');
+    this.hidePause();
     this.hud.classList.remove('hidden');
     this.crosshair.classList.remove('hidden');
     this.app.classList.add('playing');
@@ -944,6 +994,8 @@ export class HUD {
     this.crosshair.classList.add('hidden');
     this.app.classList.remove('playing');
     this._setPeek(false);
+    // 阵亡后暂停按钮与暂停面板都不该还挂着
+    this.setPausable(false);
   }
 
   setBest(best) {

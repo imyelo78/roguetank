@@ -81,6 +81,7 @@ export class Game {
   constructor(canvas) {
     this.canvas = canvas;
     this.state = 'menu';
+    this.paused = false;
     this.keys = new Set();
     this.firing = false;
     this.mouseNDC = new THREE.Vector2(0, 0);
@@ -131,7 +132,12 @@ export class Game {
     window.addEventListener('keydown', unlockAudio, { once: true });
 
     // 切到后台就停配乐调度并挂起音频时钟（省电，也避免回来时那一串补排的音符）
-    document.addEventListener('visibilitychange', () => this.sound.setHidden(document.hidden));
+    document.addEventListener('visibilitychange', () => {
+      this.sound.setHidden(document.hidden);
+      // 顺手暂停：手机切 App / 桌面切标签页时主循环会被节流，
+      // 不暂停的话回来往往已经躺了。pause() 自带"只有单机战斗中才生效"的守卫。
+      if (document.hidden) this.pause();
+    });
 
     // ---- 触屏：左半屏走位、右半屏瞄准（浮动方向摇杆）+ 按住连发 ----
     // 触摸不直接进战斗逻辑，先翻译成与键鼠同款的 keys / firing / 瞄准朝向，
@@ -392,6 +398,26 @@ export class Game {
         return;
       }
 
+      // 单机：Esc = 暂停 / 继续。
+      // 放在打字判断之后、其他按键之前：呼号框里按 Esc 应该只是失焦，
+      // 不该顺手把仗停下来。
+      if (e.key === 'Escape' && this.mode === 'solo') {
+        if (this.paused) {
+          this.resume();
+          e.preventDefault();
+          return;
+        }
+        if (this.state === 'playing') {
+          this.pause();
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // 暂停期间不收战斗输入：否则 WASD / 空格会攒进 keys 里，
+      // 恢复那一刻坦克"自己"动一下、或者直接对着空处开一炮
+      if (this.paused) return;
+
       // F3：联机诊断信息（快照速率 / 抖动 / 停顿）。卡顿时先看这个。
       if (e.key === 'F3') {
         this._toggleNetDebug();
@@ -486,7 +512,7 @@ export class Game {
     });
 
     window.addEventListener('mousedown', (e) => {
-      if (e.button === 0 && this.state === 'playing') this.firing = true;
+      if (e.button === 0 && this.state === 'playing' && !this.paused) this.firing = true;
     });
     window.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.firing = false;
@@ -511,6 +537,9 @@ export class Game {
       },
       onPick: (id) => this._pickCard(id),
       onWeapon: (id) => this.pickWeapon(id),
+      onPause: () => this.pause(),
+      onResume: () => this.resume(),
+      onQuit: () => this.quitToMenu(),
     });
 
     // 进大厅前把网络回调接好（点「组队」时才真正连）
@@ -659,6 +688,7 @@ export class Game {
     if (document.activeElement && document.activeElement !== document.body) {
       document.activeElement.blur?.();
     }
+    this.paused = false;
     this.keys.clear();
     this.firing = false;
     this.chassisId = normalizeChassisId(chassisId);
@@ -701,6 +731,8 @@ export class Game {
     this.hud.setHealth(this.player.hp, this.player.maxHp);
 
     this.hud.startPlaying();
+    // 单人局才给暂停按钮（联机在 coop.js 里显式关掉）
+    this.hud.setPausable(true);
     this.state = 'playing';
     // 新一局从"没有触屏朝向"开始：否则上一局最后指的方向会带进来，
     // 开局第一炮就朝一个玩家没选过的角度
@@ -716,6 +748,97 @@ export class Game {
   restart() {
     // 重开换一张图，保持新鲜感
     this.start(this.chassisId, { name: this.callsign });
+  }
+
+  /**
+   * 暂停（单人局）。
+   *
+   * 冻结方式是 update() 里直接 return —— 波次计时、敌人、子弹、特效全停，
+   * 不是"把速度乘 0"那种半吊子做法（那样计时器还在走，暂停久了会直接跳波）。
+   * 画面仍然每帧重画：WebGL 画布默认不保留缓冲，停止渲染会被合成器刷黑。
+   *
+   * 联机局没有这个入口：世界由服务端 tick 驱动，本地按 Esc 停不了服务器，
+   * 单方面"暂停"只会让画面定格、人还在挨打。
+   */
+  pause() {
+    if (this.mode !== 'solo' || this.state !== 'playing' || this.paused) return;
+    this.paused = true;
+    this.keys.clear();
+    this.firing = false;
+    // 摇杆立即收起：点击暂停那一下的落点可能正好压住右下摇杆
+    this.touch.refresh();
+    this.hud.showPause({
+      wave: this.wave,
+      kills: this.kills,
+      score: this.score,
+      time: formatTime(this.runTime),
+    });
+  }
+
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.hud.hidePause();
+    // showPause 摘掉了 playing（要让光标可见），这里补回来
+    this.hud.app?.classList.add('playing');
+    this.touch.refresh();
+    // 暂停期间 THREE.Clock 仍在走，恢复第一帧的 dt 会很大，
+    // 主循环里的 Math.min(dt, 0.05) 兜住了：最多往前走 50ms，不会瞬移。
+  }
+
+  /**
+   * 退出本局回主菜单。
+   * 不上传成绩、不写最佳：中途撂下的局不该进排行榜，
+   * 否则"打到第 20 波就退"能刷出一个比真打完还漂亮的记录。
+   */
+  quitToMenu() {
+    // 组队有自己的一套（要断线、给服务端清理席位），不要在这里重复实现
+    if (this.mode !== 'solo') {
+      this.leaveCoop();
+      return;
+    }
+    this.paused = false;
+    this.state = 'menu';
+    this.keys.clear();
+    this.firing = false;
+    this.hud.hidePause();
+    this.hud.setPausable(false);
+    this.touch.refresh();
+    this.sound.stopMusic(0.5);
+
+    // 清场：不清的话菜单背景里停着上一局的战场（敌人原地不动、箱子还在闪）
+    this._clearField();
+    this.crates = [];
+    this._clearCrateVisuals();
+    this.zones = [];
+    this.zoneVis?.sync?.(this.zones);
+    this.hud.hideBossBar();
+    this.hud.setModifier(null);
+    this.hud.setLeft(0);
+    this.hud.renderChips([]);
+
+    // 车体回到出生点：菜单后面那辆坦克不该是"打烂在战场上"的样子
+    this._resetPlayer();
+    this.camera.position.set(PLAYER_START.x, CAM_HEIGHT, PLAYER_START.z + CAM_BACK);
+    this.camLook.set(PLAYER_START.x, 1, PLAYER_START.z);
+    this.camera.lookAt(this.camLook);
+    this.aimMarker.visible = false;
+    this._setPeekOff();
+
+    this.hud.overlay?.classList.remove('hidden');
+    this.hud.hud?.classList.add('hidden');
+    this.hud.crosshair?.classList.add('hidden');
+    this.hud.gameover?.classList.add('hidden');
+    this.hud.reward?.classList.add('hidden');
+    this.hud.app?.classList.remove('playing');
+    // 榜单与最佳成绩重新拉一次：这局不上榜，但别人可能刚破了纪录
+    this.hud.invalidateMenuBoard?.();
+  }
+
+  /** 「战况」展开态是 #app 上的类，退出战斗时要收回（HUD 那边私有，这里补一刀） */
+  _setPeekOff() {
+    this.hud._setPeek?.(false);
+    this.hud.app?.classList.remove('peek-on');
   }
 
   /**
@@ -738,11 +861,11 @@ export class Game {
    */
   soloTouchTarget() {
     return {
-      enabled: () => this.state === 'playing',
+      enabled: () => this.state === 'playing' && !this.paused,
       move: (x, z) => { this.touchMove.x = x; this.touchMove.z = z; },
       // 只交朝向：瞄准点由 _updateAim 按固定半径算，手指不会挡住目标
       aim: (angle) => { this.touchAimAngle = angle; },
-      fire: (on) => { this.firing = on && this.state === 'playing'; },
+      fire: (on) => { this.firing = on && this.state === 'playing' && !this.paused; },
     };
   }
 
@@ -2069,6 +2192,13 @@ export class Game {
   }
 
   update(dt) {
+    // 暂停：世界完全冻结，只把最后一帧重画一遍。
+    // （WebGL 画布默认不保留绘制缓冲，彻底不渲染会被合成器刷成黑屏）
+    if (this.paused) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
     this.hud.update(dt);
     this._qualityWatch(dt);
     this._updateNetDebug(dt);

@@ -420,6 +420,8 @@ export class CoopMode {
     this._ready = true;
     this.game.hud.showRoomChip(this.code, list.length);
     this.game.hud.startPlaying();
+    // 联机不给暂停按钮：世界由服务端 tick 驱动，本地暂停只会"画面定格、人还在挨打"
+    this.game.hud.setPausable(false);
   }
 
   _addMate(p, st) {

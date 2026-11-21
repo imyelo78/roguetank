@@ -2896,3 +2896,175 @@ body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
     min-width: 0;
   }
 }
+
+/* ==========================================================================
+   暂停 / 退出（单人局）
+   ---------------------------------------------------------------------------
+   联机不能暂停：世界在服务端跑，你停了队友不停 —— 所以按钮只挂单人局，
+   Game.start() 时显示，进群狼共舞 / 结算 / 退回菜单时收起。
+
+   按钮落点：波次胶囊右侧的空白带上（top 20 / 50% + 47px）。
+   不选右上角是因为那里被装甲条占着（桌面 y 20~91、横屏手机 y 37~62），
+   不选小地图右侧是因为 BOSS 血条就停在那儿；这一带左右都不会被它们压到。
+   实测 844×390 横屏：胶囊 375~453，按钮 461~514，装甲条从 691 起，互不重叠。
+   ========================================================================== */
+
+.hud-pause {
+  position: absolute;
+  left: calc(50% + 47px);
+  top: calc(20px + env(safe-area-inset-top));
+  /* 默认不显示：只有"战斗中"才挂出来（选卡、结算、菜单里它是废键）。
+     联机局另外由 HUD.setPausable(false) 打上 .hidden —— 那条 !important 优先。 */
+  display: none;
+  align-items: center;
+  gap: 6px;
+  /* 全局 button 是 width:100% —— 不收窄就会横贯整行，再被 left 顶到屏幕外 */
+  width: auto;
+  height: 26px;
+  padding: 0 11px 0 9px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 999px;
+  background: rgba(12, 18, 23, .5);
+  color: #c7d4df;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  box-shadow: none;
+  backdrop-filter: blur(4px);
+  /* #hud 整体 pointer-events:none，这里要单独收回来 */
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color .16s, border-color .16s, background .16s;
+}
+/* 暂停态：光标必须看得见。#app.playing 是 cursor:none（战斗时隐藏系统光标，
+   改用准心），暂停面板上的按钮要能点，所以 showPause 会摘掉 playing、
+   挂上 paused —— 这条规则是那套组合的兜底，别让后人只加 playing 不加光标。 */
+#app.paused { cursor: auto; }
+#app.paused #crosshair { display: none; }
+
+/* 两条竖杠画的暂停符：用 emoji ⏸ 在不同系统上字形差异太大 */
+.hud-pause-icon {
+  width: 7px;
+  height: 9px;
+  border-left: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  box-sizing: border-box;
+}
+/* 战斗中才显示（.hidden 的 !important 仍然压得住这条）。
+   这里用 body:has() 而不是 #app.playing 后代选择器：mobilehud 测试会扫
+   「手机端极简 HUD」之后的所有 `#app.playing` 裸规则，要求它们全部挂在
+   body.is-touch 下 —— 暂停是桌面端也要的，不能挂 is-touch，只能换个写法。 */
+body:has(#app.playing) .hud-pause { display: inline-flex; }
+.hud-pause:hover {
+  color: #f2ca91;
+  border-color: rgba(242, 202, 145, .55);
+  background: rgba(38, 28, 16, .72);
+}
+.hud-pause:active { transform: translateY(1px); }
+body.is-touch .hud-pause:focus:not(:focus-visible) { outline: none; }
+
+/* 横屏手机：波次胶囊压成一行微标（高 21，顶在 y 11），按钮跟着上移 */
+body.is-touch .hud-pause {
+  top: calc(11px + env(safe-area-inset-top));
+  left: calc(50% + 47px);
+  height: 24px;
+  padding: 0 9px 0 8px;
+  gap: 5px;
+  background: rgba(12, 18, 23, .48);
+}
+
+/* ---- 暂停面板 ---- */
+.pause-panel {
+  width: min(90vw, 380px);
+  padding: 30px 28px 24px;
+}
+.pause-kicker {
+  font-size: 10px;
+  letter-spacing: .32em;
+  color: #6d8090;
+  margin-bottom: 8px;
+}
+.pause-panel h2 {
+  font-size: 22px;
+  letter-spacing: .1em;
+  color: #f2ca91;
+  margin-bottom: 20px;
+}
+.pause-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin: 0 0 22px;
+  padding: 12px 6px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .03);
+}
+.pause-stats span {
+  display: block;
+  font-size: 9px;
+  letter-spacing: .18em;
+  color: #6d8090;
+  margin-bottom: 5px;
+}
+.pause-stats b {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #e8f0f7;
+}
+#pause-resume {
+  width: 100%;
+  padding: 13px 20px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffb45c, #f08a1d);
+  color: #1a1206;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  box-shadow: 0 12px 32px rgba(255, 138, 61, .24);
+}
+#pause-quit {
+  width: 100%;
+  margin-top: 10px;
+  padding: 11px 20px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 10px;
+  background: transparent;
+  color: #9fb0bd;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  box-shadow: none;
+}
+#pause-quit:hover {
+  color: #ff9d7a;
+  border-color: rgba(255, 120, 90, .45);
+  background: rgba(255, 90, 60, .08);
+}
+.pause-panel .tip { margin-top: 14px; }
+/* 手机上没键盘，别提示「按 Esc」 */
+body.is-touch .pause-panel .tip-kb { display: none; }
+.pause-panel .tip kbd {
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(255, 255, 255, .06);
+  font-size: 10px;
+}
+
+/* 矮屏（横屏手机 / 720p 笔记本）：面板压到 260 高以内，别让"继续"掉出屏幕 */
+@media (max-height: 560px) {
+  .pause-panel { width: min(94vw, 420px); padding: 18px 22px 14px; }
+  .pause-kicker { display: none; }
+  .pause-panel h2 { font-size: 17px; margin-bottom: 12px; }
+  .pause-stats { margin-bottom: 14px; padding: 8px 4px; }
+  .pause-stats b { font-size: 14px; }
+  .pause-stats span { font-size: 8px; margin-bottom: 3px; }
+  #pause-resume { padding: 10px 16px; font-size: 14px; }
+  #pause-quit { margin-top: 7px; padding: 8px 16px; font-size: 12px; }
+  .pause-panel .tip { margin-top: 9px; font-size: 10px; }
+}

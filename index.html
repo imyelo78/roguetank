@@ -32,6 +32,16 @@
       <i class="hud-peek-dot"></i><span>战况</span>
     </button>
 
+    <!--
+      暂停：只挂在单人局（联机世界由服务端驱动，暂停没有意义——你停了别人不停）。
+      位置在波次胶囊右侧的空白带上：左右都不压小地图和装甲条，
+      横屏手机 844×390 实测该带 y 10~34 完全空着。
+      no-touch：touch.js 会跳过带这个类的元素，否则点暂停会顺手推一下坦克。
+    -->
+    <button id="hud-pause" class="hud-pause no-touch hidden" type="button" aria-label="暂停（Esc）">
+      <i class="hud-pause-icon" aria-hidden="true"></i><span>暂停</span>
+    </button>
+
     <div class="hud-top">
       <!-- 左上角空出来给小地图（.minimap-wrap 绝对定位在左上）。
            血量搬到右上，与击杀/得分同列：右列 = 装甲条 + 数字，垂直排。 -->
@@ -268,6 +278,26 @@
       <p id="lb-me" class="lb-me hidden"></p>
       <ol id="lb-body" class="lb-list"></ol>
       <button id="lb-close" class="ghost-btn">关闭</button>
+    </div>
+  </div>
+
+  <!-- ================= 暂停 =================
+       战斗中按 Esc 或点右上「暂停」进入。世界完全冻结（Game.update 直接 return），
+       所以这里可以放心展示本局数据；两个出口：继续 / 退出到主菜单。
+       退出去不结算、不上传成绩——中途撂下的局不该进排行榜。 -->
+  <div id="pause" class="overlay hidden">
+    <div class="panel pause-panel">
+      <p class="pause-kicker">PAUSED</p>
+      <h2>战斗暂停</h2>
+      <div class="pause-stats">
+        <div><span>波次</span><b id="pause-wave">1</b></div>
+        <div><span>击杀</span><b id="pause-kills">0</b></div>
+        <div><span>得分</span><b id="pause-score">0</b></div>
+        <div><span>存活</span><b id="pause-time">0:00</b></div>
+      </div>
+      <button id="pause-resume" class="primary">继续战斗</button>
+      <button id="pause-quit" class="ghost-btn">退出到主菜单</button>
+      <p class="tip"><span class="tip-kb">按 <kbd>Esc</kbd> 继续 · </span>退出后本局成绩不保留</p>
     </div>
   </div>
 
