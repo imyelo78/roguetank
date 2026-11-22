@@ -62,7 +62,6 @@ const CYLY = (rt, rb, h, seg, spin = 0) => geo(`cy:${rt}:${rb}:${h}:${seg}:${spi
   if (spin) g.rotateY(spin);
   return g;
 });
-const SPH = (r) => geo(`s:${r}`, () => new THREE.SphereGeometry(r, 8, 6));
 
 function add(parent, geometry, material, x, y, z, rx = 0, ry = 0, rz = 0, shadow = false) {
   const m = new THREE.Mesh(geometry, material);
@@ -99,12 +98,16 @@ function makeMats({ body, accent, metal }) {
     dark: mat(0x181c20, { roughness: 0.94, metalness: 0.1 }),
     wheel: mat(0x252b31, { roughness: 0.86, metalness: 0.3 }),
     glass: mat(0x9fe3f5, { emissive: 0x2d7d99, emissiveIntensity: 0.85, roughness: 0.28, metalness: 0.4 }),
-    lamp: mat(0xffe4a6, { emissive: 0xffb347, emissiveIntensity: 0.9, roughness: 0.4 }),
   };
 }
 
 // ======================================================================
 // 行走机构：履带 + 负重轮（负重轮参与滚动动画）
+//
+// r49 曾把 16 个负重轮全删（768 个三角面，占玩家车一半以上），r50 又加回来：
+// 删掉之后履带是一整块深色长方体，侧影读起来像"雪橇"，在游戏里比省下来的
+// 那几个三角面显眼得多。轮子只有玩家高模有（hi），敌人低模仍然不建，
+// 所以大量敌人时的开销不变。
 // ======================================================================
 function addRunningGear(group, s, mats, hi, wheels) {
   for (const sd of [-1, 1]) {
@@ -130,15 +133,18 @@ function addRunningGear(group, s, mats, hi, wheels) {
 }
 
 // ======================================================================
-// 车体：均衡型 —— 标准主战坦克（斜首上 + 侧裙 + 尾部格栅）
+// 车体：均衡型 —— 标准主战坦克（侧裙 + 尾部格栅）
 // ======================================================================
 function buildBalanced(group, s, mats, hi) {
   const wheels = [];
   addRunningGear(group, s, mats, hi, wheels);
 
+  // r50：斜首上装甲整块删除。
+  // 那块 4.36×0.46×1.05 的倾斜板后端翘到 y≈1.42，比车顶（1.31）高出一截，
+  // 从侧前方看就是个尖角朝前的三角形——玩家反复问"这是什么、护盾吗"。
+  // 亮色（accent）时像发光板，换深色又像车头黑了一块；干脆去掉，
+  // 车体就是一只干净的方箱，车头只剩下面那条首下挡泥板。
   add(group, BOX(s.hw, s.hh, s.hl), mats.body, 0, s.hy, 0, 0, 0, 0, true);
-  // 斜首上装甲
-  add(group, BOX(s.hw - 0.04, 0.46, 1.05), mats.accent, 0, s.hy + 0.3, s.hl * 0.3, 0.52, 0, 0, true);
   // 首下挡泥板
   add(group, BOX(s.hw + 0.06, 0.14, 0.46), mats.metal, 0, s.hy - 0.18, s.hl * 0.5 - 0.12);
   // 侧裙
@@ -153,8 +159,6 @@ function buildBalanced(group, s, mats, hi) {
     for (let i = -1; i <= 1; i++) {
       add(group, BOX(s.hw - 0.36, 0.04, 0.05), mats.metal, 0, s.hy + s.hh * 0.5 + 0.06, -s.hl * 0.34 + i * 0.14);
     }
-    // 尾部排气（朝后伸出）
-    add(group, CYLZ(0.11, 0.13, 0.34, 8), mats.dark, -s.hw * 0.28, s.hy + 0.2, -s.hl * 0.5, 0, Math.PI, 0);
   }
 
   // ---- 炮塔：八角铸造塔 ----
@@ -164,38 +168,39 @@ function buildBalanced(group, s, mats, hi) {
 
   add(turret, CYLY(0.62, 0.86, 0.62, 8, Math.PI / 8), mats.body, 0, 0.06, 0, 0, 0, 0, true);
   add(turret, CYLY(0.58, 0.64, 0.12, 8, Math.PI / 8), mats.accent, 0, 0.42, 0);
-  // 炮盾
-  add(turret, BOX(0.56, 0.44, 0.34), mats.accent, 0, 0.08, 0.72, 0, 0, 0, true);
-  // 车长塔 + 舱盖
+  // 炮盾：覆盖炮塔正面的装甲板（r50 按需求加回）。
+  // r53：材质从 dark 改成 accent，与炮塔顶盖同色——需求要的就是"和顶盖一样的一块"。
+  // 尺寸 0.56×0.44×0.16：后表面对齐八边形前沿（约 0.62），正面到 0.78，
+  // 只比塔面高出一层薄板厚度，斜上方视角不会露出悬空的楔形。
+  // ⚠ 别和"三角形"混了：玩家说的那个三角是斜首上装甲（r50 已整块删除），
+  //   不是这里。当初就是照着"改成色块"把炮盾改了一遍，改错了对象。
+  add(turret, BOX(0.56, 0.44, 0.16), mats.accent, 0, 0.08, 0.70, 0, 0, 0, true);
+  // 车长塔。舱盖不在这里建——它现在同时承担"阵营识别灯"，
+  // 由构造函数用 skin.lamp 的发光材质补上（见 Tank 构造函数里的 idLamp 块）。
+  // 烟幕弹发射器（r53 删除）：炮塔右后侧那 3 根后倾小管，侧视才看得见，
+  // 又和炮管、抽气装置挤在同一片区域，远看只是几道杂线。
   add(turret, CYLY(0.29, 0.33, 0.2, 10), mats.accent, -0.3, 0.5, -0.16);
-  add(turret, CYLY(0.21, 0.23, 0.07, 10), mats.metal, -0.3, 0.63, -0.16);
-  if (hi) {
-    // 高射机枪
-    add(turret, CYLY(0.11, 0.13, 0.14, 8), mats.metal, 0.42, 0.5, 0.05);
-    add(turret, CYLZ(0.045, 0.045, 0.85, 7), mats.dark, 0.42, 0.62, 0.05);
-    // 天线
-    add(turret, CYLZ(0.018, 0.018, 0.95, 5), mats.dark, -0.56, 0.44, -0.36, -0.2, 0, 0.14);
-    // 烟幕弹发射器
-    for (let i = 0; i < 3; i++) {
-      add(turret, CYLZ(0.055, 0.055, 0.24, 6), mats.dark, 0.62 - i * 0.11, 0.2, -0.3, -0.5, 0, 0);
-    }
-    // 探照灯
-    add(turret, CYLX(0.13, 0.13, 0.16, 8), mats.lamp, -0.62, 0.28, 0.28, 0, 0, 0);
-  }
 
-  // ---- 主炮 ----
+  // ---- 主炮：一根等径细圆柱 + 中段抽气装置 ----
+  // r49 去掉了炮口制退器（方盒子接圆柱，两种造型语言）；r50 去掉锥度：
+  // 原来是根部 0.13 / 炮口 0.16（CYLZ 的第一个半径落在 +Z 的炮口端），
+  // 远看炮口显胖。现在前后统一 0.115，比原来的平均值还细。
+  // 抽气装置保留（需求明确要它），但跟着炮管一起收细：0.185 → 0.14，
+  // 相对炮管只有 1.22 倍，读作"炮管中段的加厚环"，而不是套了个粗筒。
   const BARREL_LEN = 2.25;
-  add(turret, CYLZ(0.13, 0.16, BARREL_LEN, 12), mats.metal, 0, 0.08, 0.6, 0, 0, 0, true);
-  // 抽气装置
-  add(turret, CYLZ(0.185, 0.185, 0.36, 10), mats.dark, 0, 0.08, 1.15);
-  // 炮口制退器
-  add(turret, BOX(0.34, 0.3, 0.3), mats.dark, 0, 0.08, 0.6 + BARREL_LEN - 0.16, 0, 0, 0, true);
+  add(turret, CYLZ(0.115, 0.115, BARREL_LEN, 12), mats.metal, 0, 0.08, 0.6, 0, 0, 0, true);
+  add(turret, CYLZ(0.14, 0.14, 0.36, 10), mats.dark, 0, 0.08, 1.15);
 
   const muzzle = new THREE.Object3D();
   muzzle.position.set(0, 0.08, 0.6 + BARREL_LEN);
   turret.add(muzzle);
 
-  return { turret, muzzle, wheels, wheelRadius: s.wr };
+  // 识别舱盖的挂点：车长塔顶面。由 builder 交出去，而不是让构造函数猜——
+  // 猜错一次的实际后果：按 detail 判断，队友（豹式车体 + low 细节）的舱盖
+  // 被放到 0.52，而它的塔顶在 0.6，整块埋进塔体里，灯直接消失。
+  // 塔中心 (-0.3, 0.5, -0.16)、高 0.2 → 顶面 0.6；舱盖中心 0.63、厚 0.07，
+  // 底面 0.595 与顶面重叠 0.005，任何角度都没缝。
+  return { turret, muzzle, wheels, wheelRadius: s.wr, lampSeat: { x: -0.3, y: 0.63, z: -0.16 } };
 }
 
 // ======================================================================
@@ -206,7 +211,12 @@ function buildStandard(group, s, mats, hi) {
   addRunningGear(group, s, mats, hi, wheels);
 
   add(group, BOX(s.hw, s.hh, s.hl), mats.body, 0, s.hy, 0, 0, 0, 0, true);
-  add(group, BOX(s.hw - 0.05, 0.44, 0.95), mats.accent, 0, s.hy + 0.28, s.hl * 0.32, 0.5, 0, 0, true);
+  // r54：斜首上装甲整块删除，与玩家车（r50）统一。
+  // 原来是 4.15×0.44×0.95 的板子绕 X 转 0.5 rad 盖在车头顶上：侧看是一道斜面，
+  // 正前方看就是车头正中一块凸起的斜块。玩家车早就没它了，敌人却还有，
+  // 同一场里"我的车是方箱、对面的车头顶多一截"——造型语言不统一。
+  // 敌人是合批的：这块还是个独立的 PartBatch（每种配色各一次 draw call），
+  // 一并少掉一批 12 三角面的实例。
 
   const turret = new THREE.Group();
   turret.position.y = s.hy + s.hh * 0.5 + 0.28;
@@ -224,7 +234,10 @@ function buildStandard(group, s, mats, hi) {
   muzzle.position.set(0, 0.06, 0.55 + BARREL_LEN);
   turret.add(muzzle);
 
-  return { turret, muzzle, wheels, wheelRadius: s.wr };
+  // 低模的塔更矮：中心 (-0.28, 0.4, -0.16)、高 0.18 → 顶面 0.49，舱盖中心 0.52。
+  // 敌人现在一律 idLamp: false（r39）；这个挂点留给"将来要给低模点灯"的场合，
+  // 免得又按错高度埋进塔里。
+  return { turret, muzzle, wheels, wheelRadius: s.wr, lampSeat: { x: -0.28, y: 0.52, z: -0.16 } };
 }
 
 // 只有一款车：豹式。
@@ -340,24 +353,23 @@ export class Tank {
     // 炮塔静止位置（后座动画以此为基准；猎手型战斗室本身有 z 偏移）
     this.turretBaseZ = this.turret.position.z;
 
-    // ---- 阵营识别灯 ----
+    // ---- 阵营识别灯：就长在车长塔的舱盖上 ----
     // 车体色负责"大色块敌我"，但草绿地形 + 黄昏侧光下，敌军铁锈红有时会
-    // 读成"深绿"。炮塔顶这根灯杆是自发光的（emissive 不吃光照），
-    // 远距离就是一个色点：青绿=自己、青蓝=队友、血红=敌人。
+    // 读成"深绿"。舱盖是自发光的（basicMat，不吃光照），远距离就是一个色点：
+    // 青绿=自己、青蓝=队友、血红=敌人。
     //
-    // 用一根短杆而不是浮空球：玩家高模炮塔顶在 0.48、敌人低模在 0.34，
-    // 固定高度的球会在一半车上悬空；杆子从 0.17 起，两种车都是"插在顶上"。
-    // 材质走共享缓存，N 辆敌人也只多两个 draw call（杆 + 灯头）。
-    // r39：敌人不再点这根灯（idLamp: false）。
-    // 60 辆敌人时它是 120 次 draw call / 6240 个三角面，换来的只是一颗
-    // 远看 3px 的红点；而敌方车体本来就是整套暖色（锈红/橙/金），
-    // 敌我靠大色块已经分得开，这盏灯在敌人身上是纯冗余。
-    // 队友和玩家保留（最多 4 辆，且青绿/青蓝点是"队友在哪"的主要线索）。
+    // r53 之前这里是一根 0.46 高的杆 + 一块 0.38 直径的圆盘，单独立在炮塔顶上。
+    // 玩家要的"识别色点"并不需要一根杆——舱盖本身就是炮塔顶上最好认的一小块平面，
+    // 换成发光材质即可，删掉杆和盘省下 2 个网格 / 56 个三角面（全车共 35 个网格）。
+    //
+    // 位置用 builder 交回来的 lampSeat（各自车长塔的塔顶），不按细节档位猜：
+    // 队友是"豹式车体 + low 细节"，塔顶在 0.6 而不是低模的 0.49，
+    // 按 detail 猜会把舱盖整个埋进塔体里，灯直接消失。
     this.lampColor = skin.lamp;
     this.lamp = null;
     if (opts.idLamp !== false) {
-      add(this.turret, CYLY(0.05, 0.05, 0.46, 6), mats.metal, 0, 0.40, -0.48);
-      this.lamp = add(this.turret, SPH(0.19), basicMat(skin.lamp), 0, 0.60, -0.48);
+      const seat = parts.lampSeat || { x: -0.3, y: 0.63, z: -0.16 };
+      this.lamp = add(this.turret, CYLY(0.21, 0.23, 0.07, 10), basicMat(skin.lamp), seat.x, seat.y, seat.z);
     }
 
     // 有射界的车（轻装 / 猎手）在地上铺一层扇面，让"炮口只能扫这么宽"看得见

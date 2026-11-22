@@ -10,6 +10,9 @@ node_modules/
 # 本地榜单数据（node server.mjs 写这里）
 .data/
 
+# 工作区元数据（记忆日志、临时渲染夹具的产出）——本地用，不进仓库
+.workbuddy/
+
 # 系统文件
 .DS_Store
 Thumbs.db

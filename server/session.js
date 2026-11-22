@@ -88,6 +88,11 @@ export function attachSession(socket, { join, onLog = () => {} }) {
       case C2S.PICK:
         ctx.room.onPick(ctx.id, msg.id);
         break;
+      // 暂停 / 返回战场：把人从 world 里摘下来 / 原样放回去（见 Room.setAway）。
+      // 连接不断，所以席位、房间码、成长都还在。
+      case C2S.AWAY:
+        ctx.room.setAway(ctx.id, !!msg.on);
+        break;
       case C2S.PING:
         send({ k: S2C.PONG, t0: msg.t0, t1: Date.now() });
         break;

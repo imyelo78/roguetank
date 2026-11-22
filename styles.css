@@ -9,12 +9,7 @@
   --panel: rgba(17, 23, 29, .92);
 }
 
-/*
- * 高度用 dvh，不用 %：手机上 100% 走的是 layout viewport（地址栏隐藏时的高度），
- * 地址栏一露出来，页面底部连同 HUD、摇杆、选卡按钮一起被推到屏幕外。
- * 100dvh 跟随"当前真正能看见的高度"，地址栏伸缩时自己会重排。
- * 上面那行 100% 是给不支持 dvh 的老浏览器的退路。
- */
+/* [1] 高度用 dvh，不用 %：手机上 100% 走的是 layout viewport（地址栏隐藏时的高度）… */
 html, body {
   width: 100%;
   height: 100%;
@@ -346,13 +341,9 @@ html, body {
    否则 .hud-center 会自动落到第 1 列，波次框跑到左边去。 */
 .hud-center { grid-column: 2; text-align: center; }
 
-/* 地表指示：脚下是什么地形、跑得动跑不动。
-   位置放在 WAVE 正下方，是玩家视野的落点区（瞄具在中间），
-   不用抬眼看也能瞥到 —— 沼泽里被追时要靠它做决定。 */
+/* [2] 地表指示：脚下是什么地形、跑得动跑不动。 */
 .terrain-chip {
-  /* 块级 + width:fit-content 才独占一行。
-     用 inline-flex 的话它会和 WAVE 框排在同一行（已经踩过一次：
-     截图里「沼泽 68%」贴在 WAVE 右边，像是个无关的小徽章）。 */
+  /* [3] 块级 + width:fit-content 才独占一行。 */
   display: flex;
   width: fit-content;
   margin: 6px auto 0;
@@ -434,21 +425,9 @@ html, body {
 }
 
 /* ---------- Boss 血条 ---------- */
-/*
- * 挪到左上角、挂在小地图右边。
- *
- * 原来在 top:104px / 水平居中 / 宽 560px —— 那正是玩家盯着瞄炮的正前方，
- * Boss 一露头，屏幕中上部横着一条 560px 的血条，弹道、护盾、小怪全被糊住。
- * 血条只需要"看一眼知道还剩几成"，不需要占据视野带。
- *
- * 左边距 = 小地图左边距 + 小地图宽度 + 26px（12 是小地图自身的 padding/边框，
- * 14 是间隙）。--map-size 由 Game.js 按窗口高度算好写进 :root，
- * 因为小地图尺寸是 JS 动态定的，CSS 猜不出来。
- */
+/* [4] 挪到左上角、挂在小地图右边。 */
 .boss-bar {
-  /* Boss 主题色默认值（破城者）。各 kind 只覆盖这个变量，四条配色规则共用。
-     ⚠ 不要另写一条 `.boss-bar { --bk: … }`：测试按"最后一个 .boss-bar {"取规则，
-     多一条会把真规则挡掉（mobilehud 会报 left 不含 --map-size）。 */
+  /* [5] Boss 主题色默认值（破城者）。 */
   --bk: 255, 74, 58;
   position: absolute;
   top: calc(var(--map-gap, 18px) + env(safe-area-inset-top));
@@ -513,10 +492,7 @@ html, body {
   box-shadow: 0 0 12px rgba(255, 74, 58, .55);
   transition: width .12s linear;
 }
-/* Boss 主题色（r46）：每个 kind 一个 RGB 三元组，下面四条规则共用。
-   以前只有 prism 一条特例，其余全走默认橙红——联机把 kind 传成
-   'boss_prism' 时连那条也不生效，棱镜的血条一直是破城者的配色。
-   现在 kind 由 bosskit 统一给（breaker/prism/wraith/...），配色跟着变量走。 */
+/* [6] Boss 主题色（r46）：每个 kind 一个 RGB 三元组，下面四条规则共用。 */
 .boss-bar[data-kind="prism"]    { --bk: 56, 216, 255; }
 .boss-bar[data-kind="wraith"]   { --bk: 155, 123, 255; }
 .boss-bar[data-kind="blitz"]    { --bk: 255, 210, 58; }
@@ -598,14 +574,7 @@ html, body {
    移到左上后两个角落各归其主：左上信息、右下操作。 */
 .minimap-wrap {
   position: absolute;
-  /*
-   * 左边距 = 上边距，且整体再往左上收一档（原来是 22 / 18，看着像贴歪了）。
-   * 不能一个写 22px + inset-left、一个写 18px + inset-top：横屏手机的
-   * safe-area-inset-left 是刘海留白（~44px），而 inset-top 一般是 0，
-   * 于是左边距凭空比上边距宽一倍——玩家看到的就是"小地图没贴到角上"。
-   * 横屏时左侧安全区在这里没用（刘海在左边竖直中段，左上角碰不到），
-   * 所以下面 @media (orientation: landscape) 里直接不吃它。
-   */
+  /* [7] 左边距 = 上边距，且整体再往左上收一档（原来是 22 / 18，看着像贴歪了）。 */
   left: calc(var(--map-gap) + env(safe-area-inset-left));
   top: calc(var(--map-gap) + env(safe-area-inset-top));
   transition: opacity .25s ease;
@@ -709,13 +678,7 @@ html, body {
 .center-msg.show { opacity: 1; transform: none; }
 
 /* ---------- 覆盖层 ---------- */
-/*
- * overlay 用 100dvh + 可滚动：
- * - 高度跟着 dvh 走，地址栏在不在都不会把面板顶出屏幕；
- * - 内容比屏幕高时（手机横屏选卡、结算面板）允许滚动，而不是上下各裁一半；
- * - 居中靠子元素的 margin:auto，而不是 align-items:center ——
- *   后者在内容溢出时会把顶部裁掉且滚不上去，这是 flex 居中的老坑。
- */
+/* [8] overlay 用 100dvh + 可滚动： 后者在内容溢出时会把顶部裁掉且滚不上去，这是 flex 居中的老坑。 */
 .overlay {
   position: fixed;
   top: 0;
@@ -830,7 +793,7 @@ kbd {
 .mode-card.off:hover { background: rgba(255, 255, 255, .028); border-color: var(--line); }
 
 /* ---------- 车体选择：一行四张 ---------- */
-.chassis-block { margin-bottom: 14px; }
+
 .chassis-cards {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -890,12 +853,8 @@ kbd {
   color: var(--amber-soft);
   margin-top: 1px;
 }
-.chassis-card em.dim { color: #6a7c8c; }
 
-/* ---------- 操作说明：右下角浮动 ----------
-   从主面板里搬出来的原因很实际：呼号 + 模式 + 车体三块已经占满一屏，
-   再加五行键位，1366×768 的笔记本上会把「出击」按钮挤出可视区。
-   解耦之后面板多高都不影响它，窄屏还能收成一行。 */
+/* [9] 操作说明：右下角浮动 */
 .key-help {
   position: fixed;
   right: 22px;
@@ -931,15 +890,8 @@ kbd {
   transition: transform .18s ease;
 }
 .key-help.collapsed .key-help-caret { transform: rotate(-90deg); }
-/* 旧版键位样式已删除（首页按设计稿重写过，改为绝对定位四行）。
-   这里曾经有一整段 padding:7px 10px 9px / gap:5px / font-size:11px 的规则，
-   以及一条 `.key-help-list span { margin-left: auto }` —— 后者在绝对定位的
-   span 上会把文字推出容器、跑到面板左边画布外（实测"切换解锁过的武器"
-   只有一半可见）。留着就是给下一个人挖坑，直接删干净。
-   新规则见文件末尾「首页右上角常驻排行榜 / 右下角操作说明」两段。 */
+/* [10] 旧版键位样式已删除（首页按设计稿重写过，改为绝对定位四行）。 */
 .key-help.collapsed .key-help-list { display: none; }
-
-
 
 /* ---------- 呼号与开始按钮 ---------- */
 .callsign {
@@ -1025,18 +977,7 @@ kbd {
 }
 
 /* 排行榜模式切换（每日挑战 / 训练） */
-.lb-modes {
-  display: flex;
-  gap: 0;
-  justify-content: center;
-  margin-bottom: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-  width: fit-content;
-  margin-left: auto;
-  margin-right: auto;
-}
+
 .lb-mode {
   padding: 7px 22px;
   border: none;
@@ -1104,8 +1045,7 @@ kbd {
 .lb-list li span { color: var(--muted); text-align: right; }
 .lb-list li em { font-style: normal; color: var(--amber-soft); text-align: right; font-weight: 700; }
 .lb-list li.me { background: rgba(255, 166, 61, .12); outline: 1px solid rgba(255, 166, 61, .35); }
-.lb-list li.lb-day { cursor: pointer; grid-template-columns: 26px 1fr auto; }
-.lb-list li.lb-day:hover { background: rgba(255, 166, 61, .09); }
+
 .lb-list li.lb-empty { display: block; text-align: center; color: var(--muted); background: none; padding: 22px 0; }
 .ghost-btn {
   padding: 9px 26px;
@@ -1192,9 +1132,7 @@ kbd {
   border-bottom-width: 2px;
 }
 
-/* 最佳记录：原来是面板里一整块强调卡（9px 上下内边距 + 边框 + 底色），
-   现在缩成 tip 行里的一段内联文本 —— 首页高度紧张，
-   而"我上次打到第几波"是次要信息，不配占掉 40px。 */
+/* [11] 最佳记录：原来是面板里一整块强调卡（9px 上下内边距 + 边框 + 底色）… */
 .best {
   display: inline-flex;
   align-items: baseline;
@@ -1416,11 +1354,7 @@ button:active { transform: translateY(0); }
   .card { min-height: 64px; }
 }
 
-/*
- * 横屏手机的可用高度常年在 320~400px（再减掉地址栏），而宽度 800+ 会走三列布局，
- * 于是「三列大卡」的总高顶出屏幕，上下各被裁一截 —— 这就是选卡在手机上"展不全"的原因。
- * 这里按高度而不是宽度做压缩：横屏不缺横向空间，缺的是纵向。
- */
+/* [12] 横屏手机的可用高度常年在 320~400px（再减掉地址栏），而宽度 800+ 会走三列布局… */
 @media (max-height: 560px) {
   .overlay {
     padding: calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right))
@@ -1460,11 +1394,7 @@ button:active { transform: translateY(0); }
   .stat b { font-size: 16px; }
   .center-msg { font-size: 22px; }
   .cards { grid-template-columns: 1fr; gap: 8px; }
-  /*
-   * 竖排卡用显式 grid 区域，不能靠自动放置：
-   * 一旦有元素没写 grid-column，它会被塞进 40px 的图标列，
-   * 描述文字就变成一行两三个字的竖条（360 宽的手机上实测如此）。
-   */
+  /* [13] 竖排卡用显式 grid 区域，不能靠自动放置： 一旦有元素没写 grid-column… */
   .card {
     display: grid;
     grid-template-columns: 44px 1fr;
@@ -1511,40 +1441,6 @@ button:active { transform: translateY(0); }
 @media (max-width: 520px) {
   .chassis-card i { flex-direction: column; line-height: 1.35; }
   .mode-card i { font-size: 9px; }
-}
-
-/* ---------- 好友挑战：开局横幅 ---------- */
-.ch-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin: 0 0 14px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 166, 61, .38);
-  background: linear-gradient(90deg, rgba(255, 166, 61, .14), rgba(255, 166, 61, .03));
-}
-.ch-tag {
-  font-size: 10.5px;
-  letter-spacing: .12em;
-  padding: 2px 7px;
-  border-radius: 4px;
-  background: var(--amber);
-  color: #1a1206;
-  font-weight: 700;
-}
-.ch-banner b {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  letter-spacing: .14em;
-  color: var(--amber-soft);
-  font-size: 14px;
-}
-.ch-banner i {
-  font-style: normal;
-  font-size: 11px;
-  color: var(--muted);
-  flex-basis: 100%;
 }
 
 /* 挑战局锁定车体：其它卡片压暗但保留信息 */
@@ -1792,14 +1688,7 @@ button:active { transform: translateY(0); }
 .gl-fallback b { color: var(--amber-soft); font-size: 13px; }
 .gl-fallback span { color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
 
-/* ==========================================================================
-   首页（主菜单）—— 1:1 还原 Pixso 设计稿「web 1920 / 图纸 2:1」
-
-   设计稿是 1920×1080 的绝对坐标。这里不写死像素，先用 --s 把「1920 基准」
-   缩放到当前视口，再用 calc() 按设计稿数值表达。好处是 1366×768 的笔记本上
-   整块面板等比缩小，不会出现"面板没变、旁边浮动卡片挤到面板上"。
-   数值全部来自 DSL（get_node_dsl），不是目测。
-   ========================================================================== */
+/* [14] 首页（主菜单）—— 1:1 还原 Pixso 设计稿「web 1920 / 图纸 2:1」 缩放到当前视口… */
 :root {
   --home-bg: #171717;          /* 3:2 满屏遮罩 rgba(23,23,23,.88) 压在场景上 */
   --home-panel: #232931;       /* 3:365 面板底 */
@@ -1857,9 +1746,7 @@ button:active { transform: translateY(0); }
   opacity: .85;
   z-index: 1;
 }
-/* 设计稿菱形贴的是面板四角内侧（面板 570,277~1350,797；菱形 596/1308, 302/752）。
-   这里不写死视口坐标——面板宽度随 --s 变，居中之后左右位置也跟着变。
-   直接把菱形挂进 .menu-panel 的角上，用绝对定位内缩 26px。 */
+/* [15] 设计稿菱形贴的是面板四角内侧（面板 570,277~1350,797；菱形 596/1308, 302/752）。 */
 .d-tl { top: calc(26px * var(--s, 1)); left: calc(26px * var(--s, 1)); }
 .d-tr { top: calc(26px * var(--s, 1)); right: calc(26px * var(--s, 1)); }
 .d-bl { bottom: calc(26px * var(--s, 1)); left: calc(26px * var(--s, 1)); }
@@ -1947,10 +1834,8 @@ button:active { transform: translateY(0); }
 .mode-card.off { opacity: .45; cursor: not-allowed; border-style: dashed; }
 .mode-card.off:hover { background: rgba(255, 255, 255, .10); border-color: rgba(170, 170, 170, .8); transform: none; }
 
-/* ---------- 车体：只有豹式一张，做成一条紧凑信息条 ----------
-   设计稿里没有车体选择（当时是四款车），合并成一款后不再需要四宫格。
-   放进 280 宽的输入框上方，保持与呼号、按钮同宽对齐。 */
-.chassis-block { margin-bottom: calc(18px * var(--s, 1)); width: 100%; display: flex; justify-content: center; }
+/* [16] 车体：只有豹式一张，做成一条紧凑信息条 */
+
 .chassis-cards { display: flex; justify-content: center; gap: calc(10px * var(--s, 1)); }
 .chassis-card {
   box-sizing: border-box;
@@ -2050,20 +1935,7 @@ button:active { transform: translateY(0); }
 .tip .link:hover { color: var(--home-orange); }
 .tip .best b { color: var(--home-cream); }
 
-/* ==========================================================================
-   首页右上角常驻排行榜（设计稿 3:48：176×385 @1721,27）
-   ---------------------------------------------------------------------------
-   所有数值都对着设计稿节点写的，注释里标了节点名和坐标，改之前先回设计稿核对：
-     矩形 12  0,0   176×385 圆角10  #ffffff@.10 + #333333@.80
-     矩形 13  1,1   174×60         #1a1a1a@.50   （顶部标题条）
-     矩形 18  9,10  78×22  圆角5   #f2ca91@.80   （"今日排行"胶囊底）
-     今日排行 20,11  14px/700
-     总排行榜 102,11 14px/700
-     你的名次 10,42   9px
-     人上榜20 129,42  9px 右对齐
-     组合1..10  L9  T65/97/129/161/193/225/257/289/321/353   160×25
-     线       23,94  146×257      （行间竖分隔条）
-   ========================================================================== */
+/* [17] 首页右上角常驻排行榜（设计稿 3:48：176×385 @1721,27） 所有数值都对着设计稿节点写的… */
 .menu-board {
   position: fixed;
   top: calc(27px * var(--s, 1));
@@ -2126,11 +1998,7 @@ button:active { transform: translateY(0); }
 .mb-tab[data-board="all"] {
   left: calc(102px * var(--s, 1));
 }
-/* 胶囊底：设计稿只有一个，画在"今日排行"下面（矩形 18  78×22 @9,10）。
-   但两个 tab 都可点，所以改成"跟随 .sel"：
-     · 选中今日  → 胶囊左沿 9（= 20 - 11），宽 78，正好盖住四个字多的那一截
-     · 选中总榜  → 胶囊跟着移到 102 - 11 = 91，同样 78 宽
-   设计稿只给了今日态，总榜态按同一规格平移，视觉语言一致。 */
+/* [18] 胶囊底：设计稿只有一个，画在"今日排行"下面（矩形 18 78×22 @9,10）。 */
 .mb-tab.sel::before {
   content: '';
   position: absolute;
@@ -2193,9 +2061,7 @@ button:active { transform: translateY(0); }
   height: calc(32px * var(--s, 1));
   box-sizing: border-box;
 }
-/* 行间竖分隔条：设计稿「线」146×257 @23,94（相对面板）。
-   它从第 2 行顶（T97 上方 3px）一直拉到最后，实际就是行与行之间的分隔。
-   用每行右侧的 1px 竖线实现，视觉等价且不用绝对布局。 */
+/* [19] 行间竖分隔条：设计稿「线」146×257 @23,94（相对面板）。 */
 .mb-row::after {
   content: '';
   position: absolute;
@@ -2207,15 +2073,7 @@ button:active { transform: translateY(0); }
 }
 .mb-row:last-child::after { display: none; }
 
-/* 行内元素按设计稿绝对定位（基准是 160×25 的行盒，上沿在 T 处、
-   文字 top 是相对该行的偏移）：
-     名次    L0   T6   10px  #f6e4bd
-     昵称    L12  T4   12px  #ffffff
-     分数    L117 T0   11px  #f2ca91  右对齐到 160
-     第N波   L96  T13  8px   #ffffff@.6  右对齐
-     杀敌    L122 T13  8px   @.6
-     时长    L144 T13  8px   @.6          右对齐到 160
-*/
+/* [20] 行内元素按设计稿绝对定位（基准是 160×25 的行盒… */
 .mb-row .r {
   position: absolute;
   left: 0;
@@ -2274,16 +2132,7 @@ button:active { transform: translateY(0); }
   color: rgba(255, 255, 255, .55);
 }
 
-/* ==========================================================================
-   右下角操作说明（设计稿 3:47：176×218 @1721,836）
-   ---------------------------------------------------------------------------
-     矩形 12  0,0   176×218 圆角10  #ffffff@.10 + #333333@.80
-     矩形 13  1,1   174×36         #1a1a1a@.50   （标题条）
-     操作说明 9,8   14px/700       #f2ca91
-     下箭头1  161,15  8×8          （折叠箭头，纯图形，不是字符）
-     键帽 22×22 圆角5 #ffffff@.15，长键 46×22
-     四行基线：T52 / T94 / T135 / T176，行高 22，行距约 41
-   ========================================================================== */
+/* [21] 右下角操作说明（设计稿 3:47：176×218 @1721,836） 四行基线：T52 / T94 / T135 … */
 .key-help {
   position: fixed;
   right: calc(23px * var(--s, 1));
@@ -2357,11 +2206,7 @@ button:active { transform: translateY(0); }
 .key-help-list {
   list-style: none;
   margin: 0;
-  /* 四行基线 T52/94/135/176，行高 22：
-       第一行从 T52 开始 → padding-top 52
-       行间空隙 = (94-52-22)=20、(135-94-22)=19、(176-135-22)=19
-     用固定高度 22 + margin 精确摆放，不用 flex 的 gap（gap 只能等距，
-     而设计稿三处间距是 20/19/19，差 1px 也不能凑） */
+  /* [22] 四行基线 T52/94/135/176，行高 22： 第一行从 T52 开始 → padding-top 52 行间… */
   padding: calc(52px * var(--s, 1)) 0 0 calc(12px * var(--s, 1));
   position: absolute;
   left: 0;
@@ -2373,9 +2218,7 @@ button:active { transform: translateY(0); }
   flex-direction: column;
   align-items: flex-start;
 }
-/* 四行键位：绝对定位到设计稿的行基线 T52/94/135/176。
-   ⚠ li 必须 position:static（默认值），否则 li>span 的 right 会相对 li 计算，
-     文字跑到面板外（实测 x=-69）。让绝对定位越过 li 直接落到 .key-help 上。 */
+/* [23] 四行键位：绝对定位到设计稿的行基线 T52/94/135/176。 */
 .key-help-list li {
   position: static;   /* 关键：让 li>span 的 absolute 落到 .key-help 上 */
   display: flex;
@@ -2388,9 +2231,7 @@ button:active { transform: translateY(0); }
 .key-help-list li + li:nth-child(2) { margin-top: calc(20px * var(--s, 1)); }
 .key-help-list li + li:nth-child(3) { margin-top: calc(19px * var(--s, 1)); }
 .key-help-list li + li:nth-child(4) { margin-top: calc(19px * var(--s, 1)); }
-/* 键帽组：不能再给 li 设绝对定位（会抢走 span 的参照系），
-   所以用一个独立的换算把四行放到 T52/94/135/176。
-   li 是 static + flex，纵向位置靠 .key-help-list 的 padding 与行间 margin 得到。 */
+/* [24] 键帽组：不能再给 li 设绝对定位（会抢走 span 的参照系）， 所以用一个独立的换算把四行放到 T52/94/135/176。 */
 
 /* 键帽 22×22 圆角5，#ffffff@.15；WASD 之间间隔 7（设计稿 L17/48/77/106） */
 .key-help-list .kk,
@@ -2415,13 +2256,7 @@ button:active { transform: translateY(0); }
 /* 宽键固定 46（设计稿 矩形 9/10/11 都是 46×22） */
 .key-help-list .kw { min-width: calc(46px * var(--s, 1)); }
 
-/* 说明文字贴面板右沿（设计稿"行驶/瞄准/开炮"右沿都在 x=169，
-   "切换解锁过的武器"更长，从 73 起、右沿同样 169）。
-   ⚠ 两个坑，都踩过：
-     1) 不能用 margin-left:auto —— 绝对定位元素上的 auto 边距会把它推出容器；
-     2) right 的参照是**最近的定位祖先**。如果 <li> 自己是 position:absolute，
-        这里 right:7px 就是相对 <li>（宽只有键帽那么宽），文字会跑到 x=-69，
-        也就是面板左边画布外。所以 li 必须是 static，让绝对定位落到 .key-help 上。 */
+/* [25] 说明文字贴面板右沿（设计稿"行驶/瞄准/开炮"右沿都在 x=169， "切换解锁过的武器"更长，从 73 起、右沿同样 169）。 */
 .key-help-list li > span {
   position: absolute;
   right: calc(7px * var(--s, 1));
@@ -2440,10 +2275,7 @@ button:active { transform: translateY(0); }
 .key-help.collapsed .key-help-list { display: none; }
 
 @media (max-height: 800px), (max-width: 1100px) {
-  /* 矮屏 / 窄屏：设计稿是 1920×1080，1366×768 放不下右侧两张浮动卡。
-     第一版是直接 display:none，结果 1366 用户在首页看不到排行榜和键位提示，
-     等于功能没了。现在改成"整体再缩一档、贴边站好"：
-     面板本身已按 --s 缩过，这里只压浮动卡的尺寸，避免压到中央面板。 */
+  /* [26] 矮屏 / 窄屏：设计稿是 1920×1080，1366×768 放不下右侧两张浮动卡。 */
   .key-help, .menu-board {
     transform-origin: top right;
     scale: 0.82;
@@ -2457,15 +2289,7 @@ button:active { transform: translateY(0); }
   .key-help, .menu-board { display: none !important; }
 }
 
-/* ==========================================================================
-   首页新样式的响应式收尾
-   ---------------------------------------------------------------------------
-   注意顺序：上面那段 max-width:720px / 520px 写在首页新版式**之前**，
-   它们里面还留着按旧四宫格调过的规则（车体卡 padding 6px、字号 11.5px、
-   520px 以下 flex-direction: column 竖排）。首页重写后这些规则会和
-   「单张车体信息条」打架 —— 实测 1920 下「120 甲 / 15 速 / 全向炮塔」
-   被压成三行竖排。这里统一覆盖回来。
-   ========================================================================== */
+/* [27] 首页新样式的响应式收尾 */
 @media (max-width: 1500px), (max-height: 860px) {
   .menu-title h1 { font-size: calc(40px * var(--s, 1)); }
   .mode-card i { white-space: normal; }
@@ -2512,50 +2336,26 @@ button:active { transform: translateY(0); }
 .chassis-card em { white-space: nowrap; }
 .chassis-card em::before { content: '·'; margin-right: calc(6px * var(--s, 1)); opacity: .55; }
 
-/* 单卡态排版：豹式（粗）+ 基础型（橙）+ 120 甲 · 全向炮塔（浅），一行排开。
-   280px 宽的条里，这四段的自然宽度约 34+46+52+72=204px，留 76px 给间距，不会挤。 */
+/* [28] 单卡态排版：豹式（粗）+ 基础型（橙）+ 120 甲 · 全向炮塔（浅），一行排开。 */
 .chassis-card em { white-space: nowrap; }
 .chassis-card em::before { content: '·'; margin-right: calc(6px * var(--s, 1)); opacity: .55; }
 .chassis-card i { white-space: nowrap; }
 .chassis-card i span { white-space: nowrap; }
 
-/* 榜单行高：设计稿「组合 1~10」实测 T65/97/129/161/193/225/257/289/321/353，
-   行距恒为 32，10 行正好 320px，卡片 385 高留出底部 385-65-320 = 0 的余量。
-   这条规则曾在文件末尾被 `flex: 1 1 0; height: auto` 覆盖过 —— 那版是
-   按"可用高度等分"写的，碰到新的绝对定位布局会让行高塌成 0、文字重叠。
-   现在行长由 .mb-row 自己定死 32，不再需要任何等分规则。 */
+/* [29] 榜单行高：设计稿「组合 1~10」实测 T65/97/129/161/193/225/257/289/321/353… */
 
-/* ==========================================================================
-   面板高度回到设计稿的 520
-   ---------------------------------------------------------------------------
-   设计稿里面板内容总高：标题组 86 + 32（间隔）+ 作战模式标题 30 + 16 + 卡片 88
-   + 32（间隔）+ 输入框 50 + 27（间隔）+ 按钮 50 = 411，上下各留 55 余量 = 521。
-   合并成一款车后多了一条车体信息条（44 高 + 20 间隔），实测撑到 580，
-   上下留白也跟着变多，看着"松"。这里把主标题上下、各块间隔按设计稿比例收紧，
-   让总高回到 520 附近，视觉密度才和原稿一致。
-   ========================================================================== */
+/* [30] 面板高度回到设计稿的 520 */
 .menu-panel { padding: calc(38px * var(--s, 1)) calc(60px * var(--s, 1)); }
 .menu-title { margin-bottom: calc(20px * var(--s, 1)); }
 .mode-block { margin-bottom: calc(20px * var(--s, 1)); }
 .menu-section { margin-bottom: calc(14px * var(--s, 1)); }
-.chassis-block { margin-bottom: calc(16px * var(--s, 1)); }
+
 .callsign { margin-bottom: calc(20px * var(--s, 1)); }
 .tip { margin-top: calc(14px * var(--s, 1)); }
 
-/* ==========================================================================
-   车体选择区已从首页移除（设计稿里没有这一栏）
-   ---------------------------------------------------------------------------
-   Pixso 稿 91 段文字里没有任何"豹式 / 车体 / 基础型"，只有标题、三个模式、
-   呼号、按钮、榜单、键位。坦克现在固定为豹式一款，没有可选项，就不该在首页
-   占一行 —— 去掉之后面板高度正好回到设计稿的 520。
-   HUD.renderChassis() 找不到 #chassis-cards 会直接 return，不会报错。
-   ========================================================================== */
+/* [31] 车体选择区已从首页移除（设计稿里没有这一栏） */
 
-/*
- * 横屏手机（高度 300~390）上，首页原本竖着堆：标题 / 模式 / 呼号 / 开始 / 选项，
- * 总高近 500px —— "开始冲锋"被顶到首屏之外，得先滚动才能开局。
- * 这里改成左右两栏：左边选模式，右边填呼号 + 开战，一屏看全。
- */
+/* [32] 横屏手机（高度 300~390）上，首页原本竖着堆：标题 / 模式 / 呼号 / 开始 / 选项… */
 @media (max-height: 560px) and (min-width: 560px) {
   .menu-panel {
     width: min(94vw, 880px);
@@ -2588,28 +2388,7 @@ button:active { transform: translateY(0); }
   .tip { grid-column: 1 / -1; grid-row: 6; margin: 0; font-size: 10px; }
 }
 
-/* ==========================================================================
-   手机端极简 HUD
-   ---------------------------------------------------------------------------
-   起因是实测截图：844×390 的横屏手机，去掉地址栏后可用高度 300 出头，
-   而顶栏（装甲 + 波次 + 击杀得分）+ 中央大字 + 底部武器条 + 小地图加起来
-   吃掉了上半屏 —— 敌人从上方压过来的时候，正好被这些面板挡个正着。
-
-   继续"整体再缩一档"没用（缩到 8px 也还是挡），所以改成分层：
-
-   · 常显（活着必需）：装甲条、波次微标、换弹 / 热量条、小地图、BOSS 血条
-   · 收起（点右上「战况」展开 5 秒）：击杀得分、地形、挑战词条、
-     强化图标、武器名与类型、联机房间码
-
-   收起用 opacity + transform / max-height，不用 display:none ——
-   后者只能硬闪，前者有 0.26s 过渡，展开时不会"啪"地跳出来。
-   全部规则挂在 body.is-touch 下（HUD.bind 里判定 pointer: coarse 或
-   maxTouchPoints > 0），桌面端一条都不生效，HUD 与 r34 完全一致。
-
-   状态类刻意叫 peek-on 而不是 hud-peek：后者是胶囊按钮自己的类，而胶囊的
-   基础规则里有 display:none —— 状态类要是也叫 hud-peek，#app 一挂上就被
-   那条规则 display:none，整个界面直接消失（踩过一次）。
-   ========================================================================== */
+/* [33] 手机端极简 HUD */
 
 /* ---- 「战况」胶囊：只有触屏 + 战斗中才出现 ---- */
 .hud-peek {
@@ -2655,9 +2434,7 @@ body.is-touch #app.playing .hud-peek { display: flex; }
 
 /* ---- 1. 常显的五样先缩一档 ---- */
 body.is-touch #app.playing .hud-top {
-  /* 顶部贴到 9px，和小地图同一条线：原来为了让开右上角的「战况」胶囊
-     整行下压 39px，波次微标离上边太远，跟左上角的小地图明显不在一条线上。
-     现在只把右列（装甲条 + 击杀得分）往下让 30px，中间那列照旧贴顶。 */
+  /* [34] 现在只把右列（装甲条 + 击杀得分）往下让 30px，中间那列照旧贴顶。 */
   padding: calc(9px + env(safe-area-inset-top)) calc(9px + env(safe-area-inset-right))
            9px calc(9px + env(safe-area-inset-left));
   gap: 10px;
@@ -2765,9 +2542,7 @@ body.is-touch #app.playing:not(.peek-on) #modifier {
   transform: translateY(-160%);
   pointer-events: none;
 }
-/* 折成 0 高：这类是"列表"，滑出去会留在原地占位，折高度更干净。
-   min-height 必须一起归零 —— CSS 里 min-height 的优先级高于 max-height，
-   只写 max-height:0 是折不掉的（.chips 自己有 min-height:26px）。 */
+/* [35] min-height 必须一起归零 —— CSS 里 min-height 的优先级高于 max-height… */
 body.is-touch #app.playing:not(.peek-on) #chips,
 body.is-touch #app.playing:not(.peek-on) .weapon-line {
   max-height: 0;
@@ -2800,17 +2575,7 @@ body.is-touch #app.playing.peek-on #room-chip { opacity: 1; transform: none; }
 /* 触屏设备上手指点按不要出现焦点框，但键盘（外接）仍保留可见焦点 */
 body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
 
-/* ==========================================================================
-   横屏手机的结算面板（r37）
-   ---------------------------------------------------------------------------
-   844×390 实测：单列排下来面板 843px 高，而视口只有 390 —— 「再来一局」
-   落在 y=773，得先拖着整块面板往上滑才够得着，手机上基本等于按不到
-   （主页 / 选卡都在 r34、r35 做过横屏适配，唯独这张漏了）。
-
-   改成左右两栏：左栏标题 / 战果 / 再来一局（永远在首屏），右栏今日排行榜
-   （列表自己滚）与邀请好友。排行榜隐藏时（:has 不支持就走两栏，右侧留白，
-   不影响按钮可用）自动收回单列，避免半张空面板。
-   ========================================================================== */
+/* [36] 横屏手机的结算面板（r37） */
 @media (max-height: 560px) and (min-width: 560px) {
   #gameover .panel {
     width: min(96vw, 780px);
@@ -2882,11 +2647,7 @@ body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
   }
 }
 
-/* ---------- BOSS 血条：竖屏窄屏兜底 ----------
-   竖屏 375 宽时，小地图右边只剩 375 − 9 − 96 − 26 ≈ 244 的可用宽度，
-   再扣掉右边安全区，血条会被挤成一条窄棍，"还剩几成"根本看不出来。
-   这种情况直接挂到小地图正下方，横向铺开。
-   放在文件最末：选择器权重与前文 is-touch 那条相同，靠顺序覆盖。 */
+/* [37] BOSS 血条：竖屏窄屏兜底 */
 @media (orientation: portrait) and (max-width: 560px) {
   .boss-bar,
   body.is-touch #app.playing .boss-bar {
@@ -2897,17 +2658,7 @@ body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
   }
 }
 
-/* ==========================================================================
-   暂停 / 退出（单人局）
-   ---------------------------------------------------------------------------
-   联机不能暂停：世界在服务端跑，你停了队友不停 —— 所以按钮只挂单人局，
-   Game.start() 时显示，进群狼共舞 / 结算 / 退回菜单时收起。
-
-   按钮落点：波次胶囊右侧的空白带上（top 20 / 50% + 47px）。
-   不选右上角是因为那里被装甲条占着（桌面 y 20~91、横屏手机 y 37~62），
-   不选小地图右侧是因为 BOSS 血条就停在那儿；这一带左右都不会被它们压到。
-   实测 844×390 横屏：胶囊 375~453，按钮 461~514，装甲条从 691 起，互不重叠。
-   ========================================================================== */
+/* [38] 暂停 / 退出（单人局） */
 
 .hud-pause {
   position: absolute;
@@ -2938,9 +2689,7 @@ body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
   -webkit-tap-highlight-color: transparent;
   transition: color .16s, border-color .16s, background .16s;
 }
-/* 暂停态：光标必须看得见。#app.playing 是 cursor:none（战斗时隐藏系统光标，
-   改用准心），暂停面板上的按钮要能点，所以 showPause 会摘掉 playing、
-   挂上 paused —— 这条规则是那套组合的兜底，别让后人只加 playing 不加光标。 */
+/* [39] 暂停态：光标必须看得见。 */
 #app.paused { cursor: auto; }
 #app.paused #crosshair { display: none; }
 
@@ -2952,10 +2701,7 @@ body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
   border-right: 2px solid currentColor;
   box-sizing: border-box;
 }
-/* 战斗中才显示（.hidden 的 !important 仍然压得住这条）。
-   这里用 body:has() 而不是 #app.playing 后代选择器：mobilehud 测试会扫
-   「手机端极简 HUD」之后的所有 `#app.playing` 裸规则，要求它们全部挂在
-   body.is-touch 下 —— 暂停是桌面端也要的，不能挂 is-touch，只能换个写法。 */
+/* [40] 战斗中才显示（.hidden 的 !important 仍然压得住这条）。 */
 body:has(#app.playing) .hud-pause { display: inline-flex; }
 .hud-pause:hover {
   color: #f2ca91;

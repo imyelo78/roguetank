@@ -41,6 +41,9 @@ export class NetClient {
     this.seq = 0;
     this.lastSnap = null;
     this.prevSnap = null;
+    // 暂停期间"暂离战场"：连接不断，只是服务端把人从 world 里摘下来了。
+    // 恢复时不需要重新握手，也就不会被当成新玩家清成白板（见 away）。
+    this.isAway = false;
 
     // 快照历史缓冲。插值游标要"从最新帧往回退 2~4 格"，只留两帧根本不够：
     // 退 3 格时游标落在上上段，两帧缓冲只能把它夹在 A.tick 上，alpha 恒 0，
@@ -160,6 +163,7 @@ export class NetClient {
             }
             : null;
           this.state = msg.started ? 'playing' : 'lobby';
+          this.isAway = false;
           this.lastSnap = null;
           this.prevSnap = null;
           this.snaps = [];
@@ -343,6 +347,16 @@ export class NetClient {
     }
   }
 
+  /**
+   * 只发心跳，不发输入。
+   * 暂停期间用：人已经不在战场上，输入没有意义，但连接必须保持活着
+   * —— Nginx 的 proxy_read_timeout 默认 60 秒，静默太久会被中间层掐断。
+   */
+  ping() {
+    if (!this.ws || this.ws.readyState !== 1) return;
+    this._pingIfDue(performance.now());
+  }
+
   /** 选一张卡。服务端会校验"这张卡确实在他的选项里"，本地只做防连点 */
   pick(id) {
     if (!this.ws || this.ws.readyState !== 1) return false;
@@ -357,6 +371,25 @@ export class NetClient {
     if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({ k: C2S.READY }));
   }
 
+  /**
+   * 暂停期间「暂离战场」/ 返回。
+   *
+   * 联机世界的时钟在服务端，本地做不到真暂停 —— 能做的是把自己从战场上
+   * 撤下来：人不在 world.players 里，敌人打不到、也不挡队友的路，
+   * 但连接、席位、房间码和成长全留着。群里只剩自己时服务端会连世界一起冻结。
+   *
+   * 之所以不用"断开重连"：重连走的是 join，服务端会给一个白板新兵
+   * （stats 重置、回出生点），暂停一次等于白打一局。
+   */
+  away(on) {
+    const want = !!on;
+    if (!this.ws || this.ws.readyState !== 1) return false;
+    if (this.isAway === want) return true;
+    this.isAway = want;
+    this.ws.send(JSON.stringify({ k: C2S.AWAY, on: want }));
+    return true;
+  }
+
   close() {
     if (this.ws) {
       try { this.ws.close(); } catch { /* 已关闭 */ }
@@ -368,6 +401,7 @@ export class NetClient {
     this.make = false;
     this.host = null;
     this.players = [];
+    this.isAway = false;
     this.lastSnap = null;
     this.prevSnap = null;
     this.snaps = [];

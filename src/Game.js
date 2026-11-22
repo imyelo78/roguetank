@@ -135,7 +135,8 @@ export class Game {
     document.addEventListener('visibilitychange', () => {
       this.sound.setHidden(document.hidden);
       // 顺手暂停：手机切 App / 桌面切标签页时主循环会被节流，
-      // 不暂停的话回来往往已经躺了。pause() 自带"只有单机战斗中才生效"的守卫。
+      // 不暂停的话回来往往已经躺了。单机是真冻结，组队是"暂离战场"
+      // （服务端把你撤下来，免得挂机被围殴）—— 两种都由 pause() 分派。
       if (document.hidden) this.pause();
     });
 
@@ -398,16 +399,20 @@ export class Game {
         return;
       }
 
-      // 单机：Esc = 暂停 / 继续。
+      // 单机 / 组队：Esc 一律是"暂停 / 继续"，绝不直接退出。
       // 放在打字判断之后、其他按键之前：呼号框里按 Esc 应该只是失焦，
       // 不该顺手把仗停下来。
-      if (e.key === 'Escape' && this.mode === 'solo') {
-        if (this.paused) {
+      //
+      // 组队以前是"Esc = 退出组队"，太危险：手一抖整局进度就没了（还不进榜）。
+      // 现在和单人完全一致 —— 先暂停，退出是暂停面板里的第二个选项。
+      if (e.key === 'Escape' && (this.mode === 'solo' || this.mode === 'coop')) {
+        if (this.paused || this.coop?.paused) {
           this.resume();
           e.preventDefault();
           return;
         }
-        if (this.state === 'playing') {
+        const live = this.mode === 'solo' ? this.state === 'playing' : !!this.coop?.active;
+        if (live) {
           this.pause();
           e.preventDefault();
           return;
@@ -425,13 +430,12 @@ export class Game {
         return;
       }
 
-      // 组队模式：整个世界交给 CoopMode 驱动，这里只留 Esc 收面板
+      // 组队模式：整个世界交给 CoopMode 驱动。
+      //
+      // Esc 已经在上面按"暂停 / 继续"处理过了，这里**不能再留一条**
+      // "Esc 直接退出组队"的路径：世界还在服务端跑，误触一下就丢掉整局
+      // 进度（而且中途退不进排行榜）。退出只能点暂停面板里的按钮。
       if (this.mode === 'coop') {
-        if (e.key === 'Escape') {
-          if (this.hud.lobby && !this.hud.lobby.classList.contains('hidden')) this.hud.closeLobby();
-          else this.leaveCoop();
-          e.preventDefault();
-        }
         return;
       }
 
@@ -751,17 +755,21 @@ export class Game {
   }
 
   /**
-   * 暂停（单人局）。
+   * 暂停（单人局；组队转交给 CoopMode）。
    *
    * 冻结方式是 update() 里直接 return —— 波次计时、敌人、子弹、特效全停，
    * 不是"把速度乘 0"那种半吊子做法（那样计时器还在走，暂停久了会直接跳波）。
    * 画面仍然每帧重画：WebGL 画布默认不保留缓冲，停止渲染会被合成器刷黑。
    *
-   * 联机局没有这个入口：世界由服务端 tick 驱动，本地按 Esc 停不了服务器，
-   * 单方面"暂停"只会让画面定格、人还在挨打。
+   * 联机局停不了服务器，所以那边不是"定格"，而是**把自己撤出战场**
+   * （席位和成长留着，见 CoopMode.pause → Room.setAway）。
    */
   pause() {
-    if (this.mode !== 'solo' || this.state !== 'playing' || this.paused) return;
+    if (this.mode === 'coop') {
+      this.coop?.pause();
+      return;
+    }
+    if (this.state !== 'playing' || this.paused) return;
     this.paused = true;
     this.keys.clear();
     this.firing = false;
@@ -776,6 +784,10 @@ export class Game {
   }
 
   resume() {
+    if (this.mode === 'coop') {
+      this.coop?.resume();
+      return;
+    }
     if (!this.paused) return;
     this.paused = false;
     this.hud.hidePause();
@@ -1221,7 +1233,12 @@ export class Game {
       patrolRoute: this._patrolRouteFor(type, x, z),
     });
     this.enemies.push(enemy);
-    this.effects.explosion(new THREE.Vector3(x, 1, z), 0xff7a3d, 8, 0.7);
+    // 出生特效走轻量档：一波刷 6~8 个敌人时，每个都放一个满尺寸冲击环，
+    // 几个环同时在扩就是屏幕上横着的一圈大光带，既盖视野也看不出"哪只是刚出来的"。
+    // 环缩到 0.32、闪光缩到 0.55，仍然保留"这里冒出来一个"的提示。
+    this.effects.explosion(new THREE.Vector3(x, 1, z), 0xff7a3d, 6, 0.6, {
+      ring: 0.32, flash: 0.55,
+    });
   }
 
   _updateWarnings(dt) {
@@ -2466,6 +2483,9 @@ export class Game {
     this.hud.hideRoomChip?.();
     this.hud.hideBossBar?.();
     this.hud.setModifier(null);
+    // 组队也可能停在暂停面板里（暂离状态直接退出），面板和按钮都要收干净
+    this.hud.hidePause();
+    this.hud.setPausable(false);
     // 回到主菜单：显示开局面板，收起 HUD
     this.hud.overlay?.classList.remove('hidden');
     this.hud.hud?.classList.add('hidden');
@@ -2505,6 +2525,10 @@ export class Game {
       this.state = 'over';
       this.coop.exit();
     }
+    // 暂停 / 暂离期间被打完（世界还在服务端跑，暂离的人不算在场，但 end 照样发过来）：
+    // 必须先把暂停面板收掉，否则它会盖在结算页上面，什么都点不到
+    this.hud.hidePause();
+    this.hud.setPausable(false);
     this.hud.hideBossBar?.();
     this.hud.setModifier(null);
 

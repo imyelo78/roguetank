@@ -467,9 +467,16 @@ export class World {
     return p;
   }
 
-  removePlayer(id) {
+  /**
+   * 把玩家从世界上摘掉。
+   *
+   * @param silent true = 不推 leave 事件。暂离（暂停）走这条：人确实离开了战场，
+   *   但没有离开房间，给队友弹"一名队友离开了"会让人以为他退房了
+   *   （真正的提示由服务端另发一条 away 事件，见 Room.setAway）。
+   */
+  removePlayer(id, silent = false) {
     this.players = this.players.filter((p) => p.id !== id);
-    this._pushEvent({ kind: 'leave', id });
+    if (!silent) this._pushEvent({ kind: 'leave', id });
   }
 
   /**

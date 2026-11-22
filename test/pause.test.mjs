@@ -1,16 +1,15 @@
 /**
- * 暂停 / 退出（单人局）回归测试
+ * 暂停 / 退出回归测试
  *
- * 需求：战斗中能暂停、能直接退回主菜单；单人为主。
+ * 需求：战斗中能暂停、能直接退回主菜单；单人为主，组队（r48 起）走同一套
+ * 「先暂停、后退出」的路径，只是组队的暂停是"暂离战场"（见 coopaway.test.mjs）。
  *
  * 这里锁的是几件一旦被改坏就会"看起来还能跑、其实已经错了"的事：
- *   1. 联机局绝对不能有暂停入口 —— 世界在服务端 tick，本地定格只会
- *      "画面停了、人还在挨打"，比没有按钮更误导
- *   2. 暂停必须是"冻结"，不是"减速"：Game.update 要在最前面 return，
+ *   1. 单机暂停必须是"冻结"，不是"减速"：Game.update 要在最前面 return，
  *      否则波次计时器继续走，暂停十分钟回来直接跳三波
- *   3. 暂停期间不能收战斗输入（WASD / 空格 攒着，恢复那一刻坦克自己动）
- *   4. 退出本局不上传成绩 —— 中途撂下的局不该进排行榜
- *   5. 暂停按钮宽度必须显式收窄：全局 button 是 width:100%，
+ *   2. 暂停期间不能收战斗输入（WASD / 空格 攒着，恢复那一刻坦克自己动）
+ *   3. 退出本局不上传成绩 —— 中途撂下的局不该进排行榜
+ *   4. 暂停按钮宽度必须显式收窄：全局 button 是 width:100%，
  *      不收就会横贯整行（r35 的「战况」胶囊踩过一次，整条顶栏变黑带）
  */
 import { readFileSync } from 'node:fs';
@@ -58,7 +57,7 @@ const methodBody = (src, name) => {
   ok('按钮在 #hud 内、带 no-touch');
 
   assert.ok(html.includes('id="pause"'), '缺少暂停面板 #pause');
-  for (const id of ['pause-resume', 'pause-quit']) {
+  for (const id of ['pause-resume', 'pause-quit', 'pause-kicker', 'pause-title', 'pause-tip']) {
     assert.ok(html.includes(`id="${id}"`), `暂停面板缺少 #${id}`);
   }
   // 面板初始必须藏着，否则一进游戏就盖在脸上
@@ -91,21 +90,24 @@ const methodBody = (src, name) => {
   ok('暂停时 update 直接返回，只重画不动世界');
 
   const pauseBody = methodBody(game, 'pause');
-  assert.match(pauseBody, /this\.mode !== 'solo'/, 'pause 必须挡掉联机局');
-  assert.match(pauseBody, /this\.state !== 'playing'/, 'pause 只该在战斗中生效');
+  // 组队不能再被"挡"在门外（r48）：现在先转交 CoopMode.pause —— 那一套是
+  // "暂离战场"，世界照跑、但你已经不在里面挨打了（见 coopaway.test.mjs）。
+  assert.match(pauseBody, /this\.mode === 'coop'/, 'pause 要先把组队转交出去');
+  assert.match(pauseBody, /this\.coop\?\.pause\(\)/, '组队暂停走 CoopMode.pause');
+  assert.match(pauseBody, /this\.state !== 'playing'/, '单机 pause 只该在战斗中生效');
   assert.match(pauseBody, /this\.keys\.clear\(\)/, '暂停时要清掉按住的键');
   assert.match(pauseBody, /this\.touch\.refresh\(\)/, '暂停时要收起触屏摇杆');
   assert.match(pauseBody, /hud\.showPause\(/, 'pause 要通知 HUD 弹面板');
-  ok('pause 有单机 / 战斗中双重守卫，并清输入、收摇杆');
+  ok('pause 按模式分派，单机有战斗守卫，并清输入、收摇杆');
 }
 
 // ---------------------------------------------------------------- [4] 输入与 Esc
 {
-  assert.match(game, /if \(e\.key === 'Escape' && this\.mode === 'solo'\)/,
-    '缺少单人局 Esc 暂停 / 继续的分支');
+  assert.match(game, /if \(e\.key === 'Escape' && \(this\.mode === 'solo' \|\| this\.mode === 'coop'\)\)/,
+    '缺少「单机 / 组队 Esc 都是暂停」的分支');
   // Esc 分支必须在打字判断之后：呼号框里按 Esc 不该把仗停下来
   const typingAt = game.indexOf('if (isTyping(e) || e.isComposing)');
-  const escAt = game.indexOf("if (e.key === 'Escape' && this.mode === 'solo')");
+  const escAt = game.indexOf("if (e.key === 'Escape' && (this.mode === 'solo' || this.mode === 'coop'))");
   assert.ok(typingAt > 0 && escAt > typingAt, 'Esc 暂停分支要放在打字判断之后');
   assert.match(game, /if \(this\.paused\) return;/, '暂停期间要在按键处理里直接返回');
   assert.match(game, /state === 'playing' && !this\.paused/, '鼠标按下开火要判 paused');
@@ -133,13 +135,17 @@ const methodBody = (src, name) => {
   ok('resume 收起面板并恢复 playing');
 }
 
-// ---------------------------------------------------------------- [6] 联机没有暂停
+// ---------------------------------------------------------------- [6] 组队也是先暂停
 {
-  assert.match(coop, /setPausable\(false\)/, '联机开局必须关掉暂停按钮');
+  // 以前是"Esc 直接退组队"，太危险：世界还在跑，手一抖整局进度就没了（还不进榜）。
+  // 现在和单人一致：Esc 暂停，退出只能点面板里的按钮。
+  assert.ok(!/else this\.leaveCoop\(\)/.test(game),
+    'Game 里不能再留"按 Esc 直接退出组队"的路径');
+  assert.match(coop, /setPausable\(true\)/, '联机开局要给暂停按钮留位置');
   const gate = methodBody(hud, 'setPausable');
   assert.match(gate, /classList\.toggle\('hidden'/, 'setPausable 通过 hidden 类控制显隐');
   assert.match(gate, /hidePause\(\)/, '关掉可暂停时要把已经弹出的面板收起来');
-  ok('联机局没有暂停入口');
+  ok('组队 Esc 不再直接退房，暂停按钮可用');
 }
 
 // ---------------------------------------------------------------- [7] 面板数据
@@ -149,9 +155,14 @@ const methodBody = (src, name) => {
     assert.ok(show.includes(k), `showPause 没有填 ${k}`);
   }
   assert.match(show, /classList\.add\('paused'\)/, '暂停时应挂上 paused 类（光标要可见）');
+  // 组队复用同一块面板，但文案必须换：否则玩家会以为"整局都停了"
+  assert.match(show, /coop = false/, 'showPause 要接受 coop 标记');
+  assert.match(show, /已暂离战场/, '组队暂停的标题要说清楚是暂离，不是整局暂停');
+  assert.match(show, /返回战场/, '组队按钮是"返回战场"，不是"继续战斗"');
+  assert.match(show, /离开房间/, '组队的退出是离开房间');
   const hide = methodBody(hud, 'hidePause');
   assert.match(hide, /classList\.remove\('paused'\)/, 'hidePause 要摘掉 paused');
-  ok('面板展示波次 / 击杀 / 得分 / 存活，并能干净收起');
+  ok('面板展示波次 / 击杀 / 得分 / 存活，单人组队各一套文案');
 }
 
 console.log(`\n暂停 / 退出：${pass} 项通过`);

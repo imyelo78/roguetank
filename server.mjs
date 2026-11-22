@@ -90,7 +90,9 @@ function cacheHeaders(filePath, stat) {
  * 新加目录不会自动暴露。
  */
 const PUBLIC_FILES = new Set([
-  '/index.html', '/styles.css', '/preview.jpg',
+  // index.html 引用的是 styles.min.css（生产压缩版）；styles.css 留着白名单，
+  // 排查样式时把 href 换回来就能直接用，不用再改服务器。
+  '/index.html', '/styles.css', '/styles.min.css', '/preview.jpg',
   '/favicon.ico', '/robots.txt', '/site.webmanifest',
 ]);
 const PUBLIC_DIRS = ['/src/', '/vendor/', '/assets/'];

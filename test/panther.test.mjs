@@ -64,7 +64,7 @@ ok('轻装/重装/猎手三个模型函数已移除，不会有人再画出第�
 
 console.log('\n[5] 豹式模型比敌人低模"更像一辆车"');
 
-// 数一下两个函数体里 add(...) 的调用次数：豹式有侧裙/炮盾/车长塔/机枪/天线/烟幕弹，
+// 数一下两个函数体里 add(...) 的调用次数：豹式有侧裙/炮盾/车长塔/负重轮/炮管/抽气装置，
 // 低模只有车体+炮塔+炮管。零件数明显更少就是"降级"，这里用下界卡住。
 const bodyOf = (fnName, nextMarker) => {
   const i = tank.indexOf(`function ${fnName}(`);
@@ -81,7 +81,10 @@ const nPanther = countAdd(pantherBody);
 const nEnemy = countAdd(enemyBody);
 
 assert.ok(nPanther >= 10, `豹式零件数应 >= 10 个 add()，实际 ${nPanther}`);
-assert.ok(nPanther > nEnemy * 1.5, `豹式(${nPanther}) 应明显多于低模(${nEnemy})，否则说明模型被换掉了`);
+// r53 删掉了烟幕弹发射器和独立的识别灯（灯改由构造函数长在舱盖上），
+// 豹式从 14 个调用点降到 13。用"比例 1.5 倍"卡就会变成 13 > 13.5 的假失败——
+// 这个测试要防的是"整辆车被换成低模"，不是"少了一个小零件"，改成差值更贴合意图。
+assert.ok(nPanther >= nEnemy + 4, `豹式(${nPanther}) 应至少比低模(${nEnemy})多 4 个零件，否则说明模型被换掉了`);
 ok(`豹式 ${nPanther} 个零件 vs 敌人低模 ${nEnemy} 个，确实是精细模型`);
 
 console.log('\n[6] 服务端不能再用四款车白名单');
@@ -97,5 +100,39 @@ console.log('\n[7] 徽章样式要有豹式');
 const css = src('styles.css');
 assert.ok(/\.chd\.c-panther/.test(css), 'styles.css 缺少 .chd.c-panther，徽章会没有底色');
 ok('豹式徽章有配色，不会显示成空块');
+
+console.log('\n[8] r53 造型约定（防回退）');
+
+// 烟幕弹发射器：3 根 CYLZ(0.055, 0.055, 0.24, 6) 的后倾小管
+assert.ok(!/CYLZ\(0\.055/.test(tank), '烟幕弹发射器（CYLZ 0.055 ×3）应已删除');
+ok('炮塔右后侧不再有烟幕弹发射器');
+
+// 炮盾要和炮塔顶盖同色（accent），不是深色
+assert.ok(/BOX\(0\.56, 0\.44, 0\.16\), mats\.accent/.test(tank),
+  '炮盾应为 accent（与 6 号顶盖同色），改回 dark 就不是需求要的观感了');
+ok('炮盾与顶盖同色（accent）');
+
+// 识别灯＝车长塔舱盖：不再有独立的灯杆 + 灯头
+assert.ok(/CYLY\(0\.21, 0\.23, 0\.07, 10\), basicMat\(skin\.lamp\)/.test(tank),
+  '识别灯必须长在车长塔舱盖上（CYLY 0.21/0.23/0.07 + basicMat(skin.lamp)）');
+assert.ok(!/CYLY\(0\.05, 0\.05, 0\.46, 6\)/.test(tank), '独立的灯杆应已删除');
+assert.ok(!/CYLY\(0\.19, 0\.19, 0\.09, 8\)/.test(tank), '独立的灯头圆盘应已删除');
+ok('识别灯并进车长塔舱盖，独立的灯杆/灯头已删');
+
+// 舱盖挂点必须由 builder 交出来：按 detail 猜会把队友（豹式+low）的舱盖埋进塔里
+assert.ok(/parts\.lampSeat/.test(tank), '舱盖挂点要读 builder 返回的 lampSeat');
+assert.equal((tank.match(/lampSeat:/g) || []).length, 2,
+  'buildBalanced 与 buildStandard 都要返回 lampSeat（两套模型的塔高不同）');
+ok('舱盖挂点来自构建函数，不会因细节档位错位');
+
+console.log('\n[9] r54 敌人也不许有斜首上装甲');
+
+// 玩家车 r50 就把那块 0.5 rad 的倾斜板删了，敌人低模却留着一个：
+// 同一场里"我的车是方箱、对面车头顶多一截斜块"。玩家明确要求全部删掉。
+// 判定按"绕 X 转 ~0.5 的 accent 板"找：敌人车体里不该再有任何 rx 非零的板。
+const enemySlope = /add\(group, BOX\([^)]*\), mats\.accent, 0, s\.hy \+ 0\.28, s\.hl \* 0\.32, 0\.5/;
+assert.ok(!enemySlope.test(tank), '敌人低模的斜首上装甲（rx 0.5 的 accent 板）应已删除');
+assert.ok(!/s\.hl \* 0\.32, 0\.5/.test(tank), '敌人车头不应再留任何绕 X 倾斜的首上盖板');
+ok('敌人低模车头没有斜首上装甲，与玩家车一致');
 
 console.log(`\n豹式合并回归测试全部通过（${pass} 项）`);

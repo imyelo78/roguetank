@@ -161,6 +161,9 @@ export class CoopMode {
 
     this.keys = new Set();
     this.firing = false;
+    // 暂停（暂离战场）：本地不再推进预测 / 快照，服务端那边人也已经撤下来了。
+    // 注意这不是 Game.paused —— 那个会让 Game.update 去画单机的 scene。
+    this.paused = false;
     this.mouseNDC = new THREE.Vector2();
     // 触屏摇杆的世界方向向量（由 Game 的 TouchControls 写入）
     this.touchMove = { x: 0, z: 0 };
@@ -213,6 +216,7 @@ export class CoopMode {
   enter(welcome) {
     this.exit();
     this.active = true;
+    this.paused = false;
     this.myId = welcome.you;
     this.net = this.game.net;
     this.code = welcome.code || this.net.room;
@@ -261,6 +265,7 @@ export class CoopMode {
   exit() {
     if (!this.active) return;
     this.active = false;
+    this.paused = false;
     this._unbindInput();
     this.sound.stopMusic(1.2);
     this.touchAimAngle = null;
@@ -420,8 +425,9 @@ export class CoopMode {
     this._ready = true;
     this.game.hud.showRoomChip(this.code, list.length);
     this.game.hud.startPlaying();
-    // 联机不给暂停按钮：世界由服务端 tick 驱动，本地暂停只会"画面定格、人还在挨打"
-    this.game.hud.setPausable(false);
+    // 联机也能暂停：不是"本地定格"（那只会画面停了人还在挨打），
+    // 而是把自己暂时撤出战场，席位与成长都留着（见 pause）。
+    this.game.hud.setPausable(true);
   }
 
   _addMate(p, st) {
@@ -551,9 +557,10 @@ export class CoopMode {
 
     this._onKeyDown = (e) => {
       if (isTyping(e)) return;
+      if (this.paused) return;
       if (this.game.hud.lobby && !this.game.hud.lobby.classList.contains('hidden')) return;
       if (e.code === 'Escape') {
-        // Esc 由 Game 统一处理（关大厅 / 退出组队），这里不重复
+        // Esc 由 Game 统一处理（暂停 / 继续），这里不重复
         return;
       }
       // F3：抖动诊断面板开关（preventDefault 挡掉浏览器默认的"查找"）
@@ -578,6 +585,7 @@ export class CoopMode {
       this.game.hud.moveCrosshair(e.clientX, e.clientY);
     };
     this._onMouseDown = (e) => {
+      if (this.paused) return;
       if (e.button === 0) this.firing = true;
     };
     this._onMouseUp = () => { this.firing = false; };
@@ -607,7 +615,7 @@ export class CoopMode {
    * 倒地 / 阵亡 / 未开局都不接收推杆与扳机，避免"躺着还能开炮"。
    */
   touchTarget() {
-    const canAct = () => !!(this.active && this.me && this.me.alive && !this.me.down);
+    const canAct = () => !!(this.active && !this.paused && this.me && this.me.alive && !this.me.down);
     return {
       enabled: canAct,
       move: (x, z) => { this.touchMove.x = x; this.touchMove.z = z; },
@@ -615,6 +623,63 @@ export class CoopMode {
       aim: (angle) => { this.touchAimAngle = angle; },
       fire: (on) => { this.firing = on && canAct(); },
     };
+  }
+
+  // ---------------- 暂停：暂离战场（r48） ----------------
+
+  /**
+   * 暂停。
+   *
+   * 联机没有"本地定格"这回事：世界的时钟在服务端，你按不按 Esc 它都在跑。
+   * 所以这里的暂停是**把自己暂时撤出战场**（服务端 Room.setAway）：
+   *   - 人不在 world.players 里 → 不吃伤害、不挡队友、也不会被判"倒地等人救"
+   *   - 席位 / 房间码 / 成长数值全留着 → 点「返回战场」还是原来那辆车、那份成长
+   *   - 房间里只剩自己时，服务端连世界一起冻结 → 手感和单人暂停完全一致
+   *
+   * 以前 Esc 是**直接退出组队**，手一抖就丢掉整局进度（退出还不上榜），
+   * 这才是"太危险"的地方。现在 Esc 先暂停，退出是暂停面板里的第二个选项。
+   */
+  pause() {
+    if (!this.active || this.paused || !this.me) return false;
+    // 选卡是同屏强制交互（12 秒后服务端替你选），这时暂停等于白丢一张卡。
+    // 切到后台（document.hidden）时不提示 —— 页面都看不见了，弹字也没意义。
+    if (this.net?.cards) {
+      if (!document.hidden) this.game.hud.showMessage('先选一张强化卡', 1.4);
+      return false;
+    }
+    this.paused = true;
+    this.keys.clear();
+    this.firing = false;
+    // 摇杆可能正被按住：不清掉的话回来那一刻车自己往前冲
+    this.touchMove.x = 0;
+    this.touchMove.z = 0;
+    this._predAcc = 0;
+    this._vel.x = 0;
+    this._vel.z = 0;
+    this.net?.away(true);
+    this.game.hud.showPause({
+      wave: this.wave,
+      kills: this.kills,
+      score: this.score,
+      time: fmtTime(this.runTime),
+      coop: true,
+    });
+    this.game.touch?.refresh();
+    return true;
+  }
+
+  /** 返回战场：服务端把人原样放回原位（位置 / 血量 / 成长都是暂停那一刻的） */
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.game.hud.hidePause();
+    this.net?.away(false);
+    // showPause 摘掉了 playing（要让光标可见），这里补回来
+    this.game.hud.app?.classList.add('playing');
+    this.game.touch?.refresh();
+    this.keys.clear();
+    this.firing = false;
+    this._predAcc = 0;
   }
 
   _readInput() {
@@ -678,6 +743,17 @@ export class CoopMode {
 
   update(dt) {
     if (!this.active) return;
+
+    // 暂停：只把最后一帧重画一遍。
+    // （WebGL 画布默认不保留绘制缓冲，彻底不渲染会被合成器刷成黑屏）
+    // 不发输入帧（人已经不在战场上了），但**心跳必须继续** —— Nginx 的
+    // proxy_read_timeout 默认 60 秒，暂停久了不吭一声，连接会被中间层掐掉。
+    if (this.paused) {
+      this.net?.ping();
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
     const input = this._readInput();
 
     // 发意图给服务端
@@ -762,10 +838,10 @@ export class CoopMode {
 
     // ---- 坦克表现层动画 ----
     //
-    // Tank.update 驱动炮管后座与负重轮，是纯表现（recoilT 递减 + 轮子按里程
-    // 滚动），不碰物理。组队曾经**从不调用它**：onEvents 里 recoil() 设了
-    // recoilT=0.12，但没人递减、没人把值写进炮管位置——炮管纹丝不动，
-    // 只剩震屏。这就是"多人开炮炮塔不动、只有画面抖"的完整成因。
+    // Tank.update 驱动炮管后座，是纯表现（recoilT 递减 + 把值写进炮塔 z），
+    // 不碰物理。组队曾经**从不调用它**：onEvents 里 recoil() 设了 recoilT=0.12，
+    // 但没人递减、没人把值写进炮管位置——炮管纹丝不动，只剩震屏。
+    // 这就是"多人开炮炮塔不动、只有画面抖"的完整成因。
     for (const [, t] of this.tanks) {
       // 组队没有本地 move()，odometer 不会累加；按渲染位置的位移喂给它，
       // 负重轮就能跟着车滚（单机是 move() 里加的，这里用画面位移近似）。
@@ -1701,6 +1777,9 @@ export class CoopMode {
   /** 服务端事件 → 表现（音效、爆炸、飘字） */
   onEvents(list) {
     if (!this.active) return;
+    // 暂停期间不播任何反馈：画面是冻结的，音效和爆炸却照响，
+    // 只会让人以为"暂停没生效"（事件来自还在打的世界，和你的画面无关）
+    if (this.paused) return;
     for (const e of list) {
       switch (e.kind) {
         case 'shot':
@@ -1797,6 +1876,13 @@ export class CoopMode {
         case 'leave':
           if (e.id !== this.myId) this.game.hud.showMessage('一名队友离开了', 2);
           break;
+        // 暂停 / 归队（r48）：和"离开"分开说。暂离的人还在房间里，
+        // 只是撤出了战场 —— 弹"离开了"会让队友以为他退房了。
+        case 'away':
+          if (e.id !== this.myId) {
+            this.game.hud.showMessage(`${e.name || '队友'} ${e.on ? '暂离了战场' : '回到战场'}`, 2);
+          }
+          break;
         case 'crates':
           // 兼容保留：宝箱本体现在随快照同步（见 _applySnapshot），这条
           // 事件已不再由服务端发出；万一旧服务端还在发，也能正确建箱。
@@ -1828,6 +1914,12 @@ export class CoopMode {
 }
 
 // ---------------- 小工具 ----------------
+
+/** 秒 → m:ss。与 Game.js 里的 formatTime 同一套写法（那边是私有函数） */
+function fmtTime(sec) {
+  const s = Math.max(0, Math.floor(sec || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
 
 function isTyping(e) {
   const t = e.target;

@@ -170,9 +170,16 @@ export class HUD {
     this.peekBtn = $('hud-peek');
     this._peekTimer = 0;
 
-    // 暂停：按钮 + 面板。只在单人局出现（联机世界在服务端跑，暂停没有意义）
+    // 暂停：按钮 + 面板。
+    // 单人是真冻结；组队是"暂离战场"（席位与成长留着，见 CoopMode.pause），
+    // 同一块面板，标题/按钮/提示按模式换文案。
     this.pauseBtn = $('hud-pause');
     this.pauseEl = $('pause');
+    this.pauseKicker = $('pause-kicker');
+    this.pauseTitle = $('pause-title');
+    this.pauseResume = $('pause-resume');
+    this.pauseQuit = $('pause-quit');
+    this.pauseTip = $('pause-tip');
     this.pauseWave = $('pause-wave');
     this.pauseKills = $('pause-kills');
     this.pauseScore = $('pause-score');
@@ -221,25 +228,42 @@ export class HUD {
     if (want) this._peekTimer = setTimeout(() => this._setPeek(false), PEEK_MS);
   }
 
-  // ---------------- 暂停（单人局） ----------------
+  // ---------------- 暂停 ----------------
 
   /**
    * 战斗中是否给「暂停」按钮留位置。
-   * 联机局里必须收起来：世界由服务端 tick 驱动，本地"暂停"只会让画面定格、
-   * 人还在挨打，比没有按钮更误导。
+   *
+   * 单机与组队都要：组队的暂停不是"本地定格"（那只会画面停了人还在挨打），
+   * 而是把自己暂时撤出战场（见 CoopMode.pause / Room.setAway）。
    */
   setPausable(on) {
     this.pauseBtn?.classList.toggle('hidden', !on);
     if (!on) this.hidePause();
   }
 
-  /** 弹出暂停面板，顺带把本局数据摆出来（世界已冻结，读到的就是定格那一刻） */
-  showPause({ wave = 1, kills = 0, score = 0, time = '0:00' } = {}) {
+  /**
+   * 弹出暂停面板，顺带把本局数据摆出来。
+   *
+   * @param coop true = 组队（暂离战场）。文案必须说清楚"队友还在打"，
+   *             否则玩家会以为整局都停下来了，点「返回战场」时毫无心理准备。
+   */
+  showPause({ wave = 1, kills = 0, score = 0, time = '0:00', coop = false } = {}) {
     if (!this.pauseEl) return;
     if (this.pauseWave) this.pauseWave.textContent = String(wave);
     if (this.pauseKills) this.pauseKills.textContent = String(kills);
     if (this.pauseScore) this.pauseScore.textContent = String(score);
     if (this.pauseTime) this.pauseTime.textContent = time;
+    if (this.pauseKicker) this.pauseKicker.textContent = coop ? 'STOOD DOWN' : 'PAUSED';
+    if (this.pauseTitle) this.pauseTitle.textContent = coop ? '已暂离战场' : '战斗暂停';
+    if (this.pauseResume) this.pauseResume.textContent = coop ? '返回战场' : '继续战斗';
+    if (this.pauseQuit) this.pauseQuit.textContent = coop ? '离开房间' : '退出到主菜单';
+    if (this.pauseTip) {
+      // 组队文案要短：这句在 380px 的面板里必须一行放得下，
+      // 折成两行会把「返回战场」往上顶，手机小屏更容易误点。
+      this.pauseTip.innerHTML = coop
+        ? '<span class="tip-kb">按 <kbd>Esc</kbd> 返回 · </span>你已暂离，队友还在战斗'
+        : '<span class="tip-kb">按 <kbd>Esc</kbd> 继续 · </span>退出后本局成绩不保留';
+    }
     this.pauseEl.classList.remove('hidden');
     // #app.playing 控制 cursor:none。暂停要能看见光标点按钮，
     // 所以摘掉它；同时 HUD 那套"战斗中"的样式退回去 —— 面板后面是虚化的，

@@ -11,7 +11,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="钢铁突击" />
 <title>钢铁突击 · 3D 坦克肉鸽</title>
-<link rel="stylesheet" href="./styles.css" />
+<!-- 生产用压缩版（npm run css:min 生成）；改样式改 styles.css 后要重跑那个脚本。
+     临时排查样式问题时换回 ./styles.css 即可，两个文件内容等价。 -->
+<link rel="stylesheet" href="./styles.min.css" />
 </head>
 <body>
 <div id="app">
@@ -282,13 +284,15 @@
   </div>
 
   <!-- ================= 暂停 =================
-       战斗中按 Esc 或点右上「暂停」进入。世界完全冻结（Game.update 直接 return），
-       所以这里可以放心展示本局数据；两个出口：继续 / 退出到主菜单。
+       战斗中按 Esc 或点右上「暂停」进入。两个出口：继续 / 退出到主菜单。
+       单人局：世界完全冻结（Game.update 直接 return），放心展示本局数据。
+       组队：服务端停不了，所以是"暂离战场"——把自己撤下来、席位和成长留着，
+       文案由 HUD.showPause({ coop:true }) 换掉（见 src/HUD.js）。
        退出去不结算、不上传成绩——中途撂下的局不该进排行榜。 -->
   <div id="pause" class="overlay hidden">
     <div class="panel pause-panel">
-      <p class="pause-kicker">PAUSED</p>
-      <h2>战斗暂停</h2>
+      <p class="pause-kicker" id="pause-kicker">PAUSED</p>
+      <h2 id="pause-title">战斗暂停</h2>
       <div class="pause-stats">
         <div><span>波次</span><b id="pause-wave">1</b></div>
         <div><span>击杀</span><b id="pause-kills">0</b></div>
@@ -297,7 +301,7 @@
       </div>
       <button id="pause-resume" class="primary">继续战斗</button>
       <button id="pause-quit" class="ghost-btn">退出到主菜单</button>
-      <p class="tip"><span class="tip-kb">按 <kbd>Esc</kbd> 继续 · </span>退出后本局成绩不保留</p>
+      <p class="tip" id="pause-tip"><span class="tip-kb">按 <kbd>Esc</kbd> 继续 · </span>退出后本局成绩不保留</p>
     </div>
   </div>
 

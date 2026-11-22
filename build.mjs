@@ -5,7 +5,8 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(root, 'dist');
 
 // 参与发布的静态资源（preview.jpg / README / server.mjs 不打包）
-const ITEMS = ['index.html', 'styles.css', 'src', 'vendor'];
+// styles.min.css 必须带上：index.html 引用的就是它，漏了线上会白屏（无样式）
+const ITEMS = ['index.html', 'styles.css', 'styles.min.css', 'src', 'vendor'];
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });

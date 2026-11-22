@@ -78,6 +78,12 @@ class Member {
     this.ready = false;
     this.disconnectedAt = 0;
     this.rtt = 0;
+    // ---- 暂离（r48）----
+    // 联机没有"本地暂停"：世界的时钟在服务端，按下 Esc 只能把自己撤出战场。
+    // away=true 表示席位还在、连接还在，但人不在 world.players 里（打不到、也不挡路）。
+    // awaySnap 是撤出那一刻的成长与位置，回来时原样放回。
+    this.away = false;
+    this.awaySnap = null;
   }
 }
 
@@ -96,6 +102,14 @@ export class Room {
     this.createdAt = Date.now();
     this.startedAt = 0;
     this.seq = 0;
+    /**
+     * 局号：每次 world.start() 成功自增。
+     *
+     * 只服务于暂离恢复：暂停期间世界可能被打爆并重开（房间不回解散，见 _oneTick），
+     * 这时回来的人**不该**带着上一局的成长和位置 —— 新一局所有人都是从出生点
+     * 白板打起，只有他一个满级，那是作弊不是"保留进度"。
+     */
+    this.round = 0;
     // 上次发快照的时刻（时间节流用，见 _oneTick）
     this._lastSnapAt = 0;
   }
@@ -149,6 +163,7 @@ export class Room {
     this.autoStartT = 0;
     if (this.world.start()) {
       this.startedAt = Date.now();
+      this.round += 1;              // 新一局：暂离快照从此作废（见 setAway）
       this._startPending = false;
     } else {
       // 世界此刻开不起来（死人还没复活 / 状态没归位）。挂起，由 _oneTick 重试，
@@ -197,6 +212,97 @@ export class Room {
     }
     this._broadcastRoster();
     if (this.members.size === 0) this.destroy();
+  }
+
+  // ---------------- 暂离 / 归队（r48） ----------------
+
+  /**
+   * 暂停期间「临时离开战场」。
+   *
+   * 联机世界的时钟在服务端，本地按 Esc 停不了它 —— 所以"暂停"只能是
+   * **把自己从战场上撤下来**：席位、房间码、成长数值都留着，人不在
+   * world.players 里，敌人打不到、波次也不会因为你挂着不动而卡住，
+   * 队友那边看到的是"暂离"，不是你被打死了。
+   *
+   * 恢复必须原样放回：位置、血量、成长。直接 addPlayer 会建一个白板新兵
+   * （stats 重置 + 回出生点），等于"暂停一次白打一局"。
+   *
+   * @returns {boolean} 状态是否生效（幂等：重复的 away/back 返回 true 不报错）
+   */
+  setAway(id, on) {
+    const m = this.members.get(id);
+    const w = this.world;
+    if (!m || !w) return false;
+    const away = !!on;
+    if (m.away === away) return true;
+
+    if (away) {
+      const p = w.players.find((q) => q.id === id);
+      if (!p) return false;
+      m.awaySnap = {
+        round: this.round,
+        // 深拷一份成长：stats 里的 counts 是对象，恢复时要原样还回去
+        // （选卡的计数错了会让"下一张卡是第几级"整体错位）
+        stats: { ...p.stats, counts: { ...(p.stats?.counts || {}) } },
+        hp: p.hp, maxHp: p.maxHp,
+        x: p.x, z: p.z, yaw: p.yaw, turretYaw: p.turretYaw,
+        aimX: p.aimX, aimZ: p.aimZ,
+        alive: p.alive, down: !!p.down, reviveT: p.reviveT || 0, fireCd: p.fireCd || 0,
+        speedBase: p.speedBase, turnBase: p.turnBase,
+        takenMul: p.takenMul, killHeal: p.killHeal || 0,
+      };
+      m.away = true;
+      // 输入清零：不清的话回来那一刻会带着"暂停时还按着的方向"走一段
+      m.input = { mx: 0, mz: 0, aimX: 0, aimZ: 0, fire: false, seq: m.input.seq };
+      // silent：这不是"退房"，别让队友看到"一名队友离开了"（提示由下面那条 away 事件负责）
+      w.removePlayer(id, true);
+    } else {
+      const snap = m.awaySnap;
+      m.away = false;
+      m.awaySnap = null;
+      const p = w.addPlayer({ id, name: m.name, chassisId: m.chassis });
+      if (p && snap) this._restorePlayer(p, snap);
+    }
+    this._broadcastRoster();
+    // 队友视角的提示：暂离 ≠ 掉线，得说清楚，否则他们会以为人走了
+    this._broadcastEvents([{ kind: 'away', id, name: m.name, on: away }]);
+    return true;
+  }
+
+  /** 把暂离前的成长 / 血量 / 位置放回玩家身上 */
+  _restorePlayer(p, snap) {
+    // 暂停期间换了一局：这一局是从出生点白板开始的，旧成长不能带过来
+    if (snap.round !== this.round) return;
+    if (snap.stats) {
+      p.stats = { ...snap.stats, counts: { ...(snap.stats.counts || {}) } };
+    }
+    p.hp = snap.hp;
+    p.maxHp = snap.maxHp;
+    p.x = snap.x;
+    p.z = snap.z;
+    p.yaw = snap.yaw;
+    p.turretYaw = snap.turretYaw;
+    p.aimX = snap.aimX;
+    p.aimZ = snap.aimZ;
+    p.alive = snap.alive;
+    p.down = snap.down;
+    p.reviveT = snap.reviveT;
+    p.fireCd = snap.fireCd;
+    p.speedBase = snap.speedBase;
+    p.turnBase = snap.turnBase;
+    p.takenMul = snap.takenMul;
+    p.killHeal = snap.killHeal;
+    // 位置是暂停那一刻的原位，正常情况下不会卡在墙里；
+    // 万一期间地图重开过，上面的 round 校验已经把人当新玩家处理了。
+  }
+
+  /** 房间里所有人都按了暂停（或根本没人）→ 没人可推，整局冻结 */
+  _allAway() {
+    if (!this.members.size) return true;
+    for (const m of this.members.values()) {
+      if (!m.away) return false;
+    }
+    return true;
   }
 
   destroy(reason = 'empty') {
@@ -281,6 +387,14 @@ export class Room {
     const w = this.world;
     if (!w) return;
 
+    // 房间里所有人都暂离了：没有任何人能推进世界，整局冻结。
+    //
+    // 这条主要是为"单人房暂停"服务的：一个人打联机房里按了 Esc，如果世界
+    // 照跑，回来时已经被推到第 9 波、自己在出生点躺了半天 —— 那不叫暂停，
+    // 叫惩罚。多人房里只要还有一个人在打，世界就继续（见 setAway），
+    // 暂离的那个人不挨打、也不占位。
+    if (this._allAway()) return;
+
     // ---- 开局调度 ----
     // 两个触发源：3 秒自动倒计时走完，或房主点了「开始战斗」。
     // 两者都只置 _startPending，真正 start() 在这里重试，
@@ -295,6 +409,7 @@ export class Room {
     if (this._startPending && !this.startedAt && w.players.length > 0) {
       if (w.start()) {
         this.startedAt = Date.now();
+        this.round += 1;
         this._startPending = false;
       }
       // 开不起来就下个 tick 再试（世界只会在 'playing' 时拒绝 start）
@@ -535,7 +650,9 @@ export class Room {
       tickRate: TICK_RATE,
       maxPlayers: MAX_PLAYERS,
       started: !!this.startedAt,
-      players: [...this.members.values()].map((m) => ({ id: m.id, name: m.name, chassis: m.chassis })),
+      players: [...this.members.values()].map((m) => ({
+        id: m.id, name: m.name, chassis: m.chassis, away: !!m.away,
+      })),
       host: this.hostId || null,
       world: w.fullState(),
       seed: w.seed,
@@ -553,7 +670,11 @@ export class Room {
   rosterPayload() {
     return {
       k: S2C.ROSTER,
-      players: [...this.members.values()].map((m) => ({ id: m.id, name: m.name, chassis: m.chassis })),
+      // away：这一位正在暂停（人不在战场上，但席位留着）。
+      // 队友那边据此显示"暂离"，免得以为他卡死了 / 掉线了。
+      players: [...this.members.values()].map((m) => ({
+        id: m.id, name: m.name, chassis: m.chassis, away: !!m.away,
+      })),
       started: !!this.startedAt,
       host: this.hostId || null,
       // 自动开局剩余秒数：真实值，不是客户端猜的。
@@ -566,6 +687,13 @@ export class Room {
 
   _broadcastRoster() {
     const msg = JSON.stringify(this.rosterPayload());
+    for (const m of this.members.values()) this._send(m, msg);
+  }
+
+  /** 广播一批一次性事件（与 _oneTick 里那条 EVENT 同形） */
+  _broadcastEvents(list) {
+    if (!list || !list.length) return;
+    const msg = JSON.stringify({ k: S2C.EVENT, e: list });
     for (const m of this.members.values()) this._send(m, msg);
   }
 

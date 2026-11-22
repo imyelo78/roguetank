@@ -63,11 +63,29 @@ export class Effects {
       grow: opts.grow ?? 0,
       shrink: opts.shrink ?? 0,
       fade: opts.fade ?? true,
+      // 透明度衰减曲线：1 = 线性，>1 = 越到后面掉得越快。
+      // 冲击环用它把"扩张到一半就已经看不见"做成默认手感——
+      // 环在变大，面积在涨，线性淡出等于后段依然显眼。
+      fadePow: opts.fadePow ?? 1,
     });
   }
 
-  /** 爆炸：碎片 + 冲击环 */
-  explosion(pos, color = 0xffa040, count = 14, power = 1) {
+  /**
+   * 爆炸：碎片 + 冲击环。
+   *
+   * r49 把冲击环的扩张和淡出都收紧了。原来 `grow: 13 / life: 0.4` 是**指数**
+   * 放大（每帧乘 1+13·dt），0.4 秒后半径约 80 米，而且透明度是线性衰减——
+   * 前 0.15 秒就已经涨到二三十米、仍然有 0.5 以上的不透明度。
+   * 一波刷 8 个敌人时，八个大环同时在扩，屏幕上就是一圈巨大的橙色光墙，
+   * 既盖住战场又不像"打击感"。
+   *
+   * 现在：扩张速率 8、寿命 0.26 秒，最终半径约 5 米（一个爆炸该有的尺寸）；
+   * 透明度按 t^2.4 衰减，一过半就基本看不见了，不会留下"半透明的大圆盘"。
+   *
+   * opts.ring / opts.flash 可以按比例缩小子环与闪光：刷怪特效一波要出好几个，
+   * 用 0.3 的环就不会叠成一片。
+   */
+  explosion(pos, color = 0xffa040, count = 14, power = 1, opts = {}) {
     count = Math.max(4, Math.round(count * this.budget));
     for (let i = 0; i < count; i++) {
       const m = this._acquire('particle');
@@ -91,21 +109,27 @@ export class Effects {
       });
     }
 
-    const ring = this._acquire('ring');
-    ring.material.color.setHex(0xffd9a0);
-    ring.material.opacity = 0.85;
-    ring.rotation.x = -Math.PI / 2;
-    ring.scale.setScalar(1); // 池化复用：清掉上一轮 grow 累积的缩放
-    ring.position.copy(pos).setY(0.12);
-    this._push(ring, { life: 0.4, grow: 13, fade: true });
+    const ringScale = opts.ring ?? 1;
+    if (ringScale > 0) {
+      const ring = this._acquire('ring');
+      ring.material.color.setHex(0xffd9a0);
+      ring.material.opacity = 0.85;
+      ring.rotation.x = -Math.PI / 2;
+      ring.scale.setScalar(ringScale); // 池化复用：清掉上一轮 grow 累积的缩放
+      ring.position.copy(pos).setY(0.12);
+      this._push(ring, { life: 0.30, grow: 8, fade: true, fadePow: 1.8 });
+    }
 
     // 火光
-    const flash = this._acquire('flash');
-    flash.material.color.setHex(0xffcf7a);
-    flash.material.opacity = 0.9;
-    flash.position.copy(pos);
-    flash.scale.setScalar(0.6);
-    this._push(flash, { life: 0.18, grow: 9 });
+    const flashScale = opts.flash ?? 1;
+    if (flashScale > 0) {
+      const flash = this._acquire('flash');
+      flash.material.color.setHex(0xffcf7a);
+      flash.material.opacity = 0.9;
+      flash.position.copy(pos);
+      flash.scale.setScalar(0.6 * flashScale);
+      this._push(flash, { life: 0.15, grow: 5, fade: true, fadePow: 2 });
+    }
   }
 
   /**
@@ -137,6 +161,7 @@ export class Effects {
     this._push(m, {
       life: 0.09,
       grow: 6,
+      fadePow: 2,
       vel: dir.clone().multiplyScalar(6),
     });
   }
@@ -185,7 +210,9 @@ export class Effects {
       if (it.shrink) it.mesh.scale.multiplyScalar(Math.max(0, 1 - it.shrink * dt));
 
       if (it.fade && it.mesh.material) {
-        it.mesh.material.opacity = Math.max(0, t);
+        it.mesh.material.opacity = it.fadePow === 1
+          ? Math.max(0, t)
+          : Math.max(0, Math.pow(t, it.fadePow));
       }
     }
   }
