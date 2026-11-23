@@ -90,17 +90,29 @@ const CLEAR_POINTS = [
  * @param {number} seed 局种子。同一局（房间）里服务端与客户端必须传同一个值，
  *   否则会出现"你看得见墙、服务端没有"的假墙——这正是这个文件开头记的那次事故。
  *   缺省值 0 表示"不扰动"，固定掩体回到历史坐标（老单测、回放、调试用）。
+ * @param {object} [opts] 战区参数（core/zones.js 提供）。不传 = 标准布局，
+ *   行为与改造前完全一致。
+ *   - fixed:     掩体骨架 [x,z,w,h,d,color][]
+ *   - random:    随机建筑数量
+ *   - minGap:    随机建筑与已有掩体的最小间距（米）
+ *   - zoneMix:   战区号。混进种子，让"同一局种子 + 不同战区"也能长出不同图案
  * @returns {{x:number,z:number,w:number,h:number,d:number,color:string}[]}
  */
-export function generateBoxes(seed = 0) {
+export function generateBoxes(seed = 0, opts = {}) {
+  const fixedList = opts.fixed || FIXED;
+  const randomCount = opts.random ?? RANDOM_COUNT;
+  const minGap = opts.minGap ?? 9;
   // 1) 固定骨架：先按种子轻微抖动位置与宽深
   //
   // 抖动用独立的随机源，与下面"随机建筑"的随机数完全隔离：
   // 两者共用一个序列时，改随机建筑的数量会连带改变固定掩体的位置，
   // 以后想调随机建筑密度就得重新验证整张图。
-  const sk = seed >>> 0;
+  //
+  // zoneMix 混进来是为了让"换战区"真的换一张图：只靠 seed 的话，
+  // 第 6 波和第 1 波会拿到同一套扰动，玩家会觉得"根本没换地图"。
+  const sk = (seed ^ Math.imul(opts.zoneMix | 0, 0x9e3779b9)) >>> 0;
   const jit = seeded(sk);
-  const boxes = FIXED.map(([x, z, w, h, d, color]) => {
+  const boxes = fixedList.map(([x, z, w, h, d, color]) => {
     if (!sk) return { x, z, w, h, d, color };
     const dx = (jit() * 2 - 1) * 6;
     const dz = (jit() * 2 - 1) * 6;
@@ -120,7 +132,7 @@ export function generateBoxes(seed = 0) {
   const placed = [];
   let guard = 0;
 
-  while (placed.length < RANDOM_COUNT && guard++ < 2000) {
+  while (placed.length < randomCount && guard++ < 2000) {
     const x = (rnd() * 2 - 1) * (HALF - 12);
     const z = (rnd() * 2 - 1) * (HALF - 12);
 
@@ -129,7 +141,7 @@ export function generateBoxes(seed = 0) {
     // 中央通路留空
     if (Math.hypot(x, z) < 12) continue;
     // 离已摆放的掩体太近就跳过，避免连成一片堵死通路
-    if (boxes.some((b) => Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) / 2 + 9)) continue;
+    if (boxes.some((b) => Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) / 2 + minGap)) continue;
     if (placed.some(([px, pz]) => Math.hypot(x - px, z - pz) < 11)) continue;
 
     // 注意顺序：w → h → d → color 四个随机数，两端必须一致。

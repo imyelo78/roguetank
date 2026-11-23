@@ -166,21 +166,28 @@ export function createLevel(scene, map = null, seed = 0) {
   farGround.position.y = -0.08;
   scene.add(farGround);
 
-  // ---- 外围边界：低矮界桩（0.8m，不遮挡视线；也不进碰撞表，边界由坐标钳制） ----
-  const edgeH = 0.8;
-  const edgeT = 2.2;
-  const edgeLen = HALF * 2 + edgeT * 2;
-  addVisual(scene, 0, -HALF - edgeT / 2, edgeLen, edgeH, edgeT, '#6d7683', matCache);
-  addVisual(scene, 0, HALF + edgeT / 2, edgeLen, edgeH, edgeT, '#6d7683', matCache);
-  addVisual(scene, -HALF - edgeT / 2, 0, edgeT, edgeH, edgeLen, '#6d7683', matCache);
-  addVisual(scene, HALF + edgeT / 2, 0, edgeT, edgeH, edgeLen, '#6d7683', matCache);
-
-  // 边界顶灯带（暗琥珀，远处能看出战场范围，但完全不挡视线）
-  const bevelH = 0.1;
-  addVisual(scene, 0, -HALF - edgeT / 2, edgeLen, bevelH, edgeT * 0.6, '#9a7f42', matCache);
-  addVisual(scene, 0, HALF + edgeT / 2, edgeLen, bevelH, edgeT * 0.6, '#9a7f42', matCache);
-  addVisual(scene, -HALF - edgeT / 2, 0, edgeT * 0.6, bevelH, edgeLen, '#9a7f42', matCache);
-  addVisual(scene, HALF + edgeT / 2, 0, edgeT * 0.6, bevelH, edgeLen, '#9a7f42', matCache);
+  // ---- 外围边界：贴地灯带（不是墙） ----
+  //
+  // 这里原来是一圈 0.8 米高的界桩。它**从来就不进碰撞表**——边界一直由
+  // 坐标钳制（见本文件末尾 blocked() 的 ±HALF 判断、以及 core/world.js 里
+  // 每帧的 clamp），所以有没有那堵墙，车都不可能开出去。
+  //
+  // 去掉的理由：低矮立体墙在等距视角下会跟地形抢视线，而且玩家会本能地
+  // 以为"这墙能挡子弹、能被打掉"——它两样都不是，只是装饰。
+  // 现在改成贴地双线：暗底负责"从远处看出一条清晰的停机线"，
+  // 亮芯负责"边界具体在哪一米"。厚度 0.12/0.2 米，完全不挡视线。
+  const bandW = 2.4;
+  const bandLen = HALF * 2 + bandW * 2;
+  // 南北两条（长边沿 x）
+  for (const z of [-(HALF + bandW / 2), HALF + bandW / 2]) {
+    addVisual(scene, 0, z, bandLen, 0.12, bandW, '#4a4436', matCache);
+    addVisual(scene, 0, z, bandLen, 0.2, 0.5, '#e8c36a', matCache);
+  }
+  // 东西两条（长边沿 z）
+  for (const x of [-(HALF + bandW / 2), HALF + bandW / 2]) {
+    addVisual(scene, x, 0, bandW, 0.12, bandLen, '#4a4436', matCache);
+    addVisual(scene, x, 0, 0.5, 0.2, bandLen, '#e8c36a', matCache);
+  }
 
   // ---- 掩体：数据来自 core/levelgen.js，与服务端碰撞表同源 ----
   //

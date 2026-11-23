@@ -17,7 +17,9 @@
 // 必须升版本：v4 服务端不认识 away，会当成未知消息静默丢掉，玩家按了 Esc
 // 以为暂停了、人却还站在火力网里挨打；反过来新服务端对 v4 页面只是永远
 // 收不到 away，表现为"暂停按钮点了没反应"。
-// r49~r54 只改建模 / 特效 / 样式 / 合批账目，一个字段都没动线格式，版本仍是 5。
+// r49（换战区）、r50~r54（建模 / 特效 / 样式 / 合批账目）到 r55（两条线合并）
+// 一个字段都没动线格式，版本仍是 5。战区是纯函数派生：服务端只发 wave，
+// 客户端用同一个 zoneSeedFor 自己铺图，不需要新的消息类型。
 export const PROTOCOL_VERSION = 5;
 
 /**
@@ -28,7 +30,7 @@ export const PROTOCOL_VERSION = 5;
  * 排查方向直接跑偏。页面会把本地 BUILD 和服务端 /healthz 的 build 对比，
  * 不一致就在左上角红条提示；房间码旁边也会显示当前构建号，截图即可确认版本。
  */
-export const BUILD = 'r54';
+export const BUILD = 'r55';
 export const TICK_RATE = 30;
 /**
  * 快照率。**必须能整除 TICK_RATE**，否则相邻快照的 tick 差会在两个值之间锯齿，

@@ -74,10 +74,28 @@ export function rollCard(stats, counts, cat, rnd) {
   return pool[pool.length - 1];
 }
 
-/** 这一波空投几个：1~2 人 1~2 个，3~4 人 2~3 个 */
-export function crateCount(players, rnd) {
+/**
+ * 这一波空投几个。
+ *
+ * 基线：1~2 人 1~2 个，3~4 人 2~3 个（40% 概率 +1）。
+ * 另加两条与战斗强度挂钩的规则：
+ *   - Boss 波（每 5 波）+1：那一波的同屏压力和时长是普通波的 3~5 倍，
+ *     却和第 1 波给一样的补给，等于最需要补给的时刻最抠
+ *   - 第 20 波起 +1：敌人从三个方向压上来，1 个箱子覆盖不了多方向走位
+ *
+ * 上限 3。再多就不是"补给"而是"捡箱子跑图"了——玩家会为了箱子
+ * 离开掩体，反而被包围。
+ *
+ * @param {number} players 存活/在场人数
+ * @param {() => number} rnd 确定性随机源（两端必须是同一条流）
+ * @param {number} wave 当前波次（从 1 开始）。缺省 0 = 不按波次加成
+ */
+export function crateCount(players, rnd, wave = 0) {
   const base = players >= 3 ? 2 : 1;
-  return base + (rnd() < 0.4 ? 1 : 0);
+  let n = base + (rnd() < 0.4 ? 1 : 0);
+  if (wave > 0 && wave % 5 === 0) n += 1;
+  if (wave >= 20) n += 1;
+  return Math.min(3, n);
 }
 
 /**

@@ -18,8 +18,9 @@ import { Sound } from './sound.js';
 import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
 import { R, Rng, randomSeed } from './rng.js';
 import { crateCount, cratePositions, rollCategory, rollCard, CATEGORIES } from './core/crates.js';
+import { zoneForWave, terrainOptsFor, layoutOptsFor, zoneSeedFor } from './core/zones.js';
 import { BOSS_META, BOSS_SKILLS, bossTypeForWave, pickLateBoss, bossHpFor, ZONE, stepZones,
-  stageBarRatio, rollAwakens, AWAKEN_NUM, awakenNamesOf } from './core/bosskit.js';
+  stageBarRatio, rollAwakens, AWAKEN_NUM, awakenNamesOf, isAnchored } from './core/bosskit.js';
 import { ZoneVisual, BeamVisual } from './zone-visual.js';
 import { makeCrate } from './crate-visual.js';
 import { createNav } from './nav.js';
@@ -30,7 +31,7 @@ import { createQuality, FOG_BASE } from './core/quality.js';
 import { CoopMode } from './coop.js';
 import { NetClient } from './net.js';
 import { angleDiff } from './core/motion.js';
-import { screenToNDC, ndcToScreen } from './core/viewport.js';
+import { screenToNDC } from './core/viewport.js';
 import { buildPatrolRoutes, anchorRoute } from './core/patrol.js';
 
 const TMP = new THREE.Vector3();
@@ -512,7 +513,6 @@ export class Game {
       // 鼠标一动就把瞄准从触屏手里接回来（平板接鼠标 / 触屏本很常见）
       this.touchAimAngle = null;
       screenToNDC(this.canvas, e.clientX, e.clientY, this.mouseNDC);
-      this.hud.moveCrosshair(e.clientX, e.clientY);
     });
 
     window.addEventListener('mousedown', (e) => {
@@ -650,9 +650,11 @@ export class Game {
    * 异或常数与 server/room.js 的做法一致：让"地形图案"和"波次序列"不共用一条流，
    * 否则以后调地形生成算法的步数，整局的出怪顺序会跟着变。
    */
-  _applyTerrain(seed) {
-    const tseed = this.terrainSeedFixed != null ? this.terrainSeedFixed : ((seed ^ 0x7e3a91) >>> 0);
-    const map = buildTerrain(tseed, HALF, { k: presetK(this.terrainPreset) });
+  _applyTerrain(tseed, zone = null) {
+    const t = this.terrainSeedFixed != null ? this.terrainSeedFixed : (tseed >>> 0);
+    // 战区主题（主/次地形占比）叠加在画质预设的强度之上：
+    // k 由玩家选的档位决定，战区只改"哪种地多"，不改"地有多难走"。
+    const map = buildTerrain(t, HALF, { k: presetK(this.terrainPreset), ...terrainOptsFor(zone) });
     this.terrainMap = map;
     this.world.setTerrain(map);
     this.minimap?.setTerrain?.(map);
@@ -668,10 +670,13 @@ export class Game {
    * nav 是启动时按地图烘焙一次的，换图只能重建；一张 200×200 的网格
    * 大概 1~2ms，只在开局跑一次，不进帧循环。
    */
-  _applyLayout(seed) {
+  _applyLayout(seed, zone = null) {
     // `?map=old` 可以钉死上一版的固定布局，方便对比新旧图、复现老录像
     const mid = this.mapSeedFixed != null ? this.mapSeedFixed : seed;
-    this.world.setLayout(generateBoxes(mid));
+    this.world.setLayout(generateBoxes(mid, {
+      ...layoutOptsFor(zone),
+      zoneMix: zone ? zone.id : 0,
+    }));
     this.nav = createNav(this.world);
     // 巡逻路线：种子生成，单机每局不同；同一局内所有驻军共用这几条线。
     // 用独立的 Rng 实例，不消耗 R 的 spawn/combat 流，刷怪序列不受影响。
@@ -685,6 +690,63 @@ export class Game {
     });
     this.minimap?.invalidate?.();
     return mid;
+  }
+
+  /**
+   * 进入战区：换地形 + 换掩体 + 重建导航。每 5 波一次。
+   *
+   * 为什么是 5 波而不是每波：5 波正好是一个 Boss 周期，玩家有时间在新地图上
+   * 建立空间记忆（哪条路能绕后、哪块石头能挡弹），第 5 波再用这套记忆打
+   * 该战区的 Boss。每波都换等于没有地图——玩家只会觉得晕，不会觉得新鲜。
+   *
+   * 顺序不能动：先换地形与碰撞表，再挪玩家。反过来的话，玩家是按旧地图
+   * 找的空地，新墙可能正好压在他身上。
+   */
+  _enterZone(zone) {
+    if (!zone || this.zoneId === zone.id) return false;
+    this.zoneId = zone.id;
+    // 战区混进种子：同一局里 10 个战区的图案互不相同，但"重开同一局"
+    // （同 seed）仍然是同一套——回放与问题复现都还成立。
+    const zseed = zoneSeedFor((this.seed ^ 0x7e3a91) >>> 0, zone.id);
+    this._applyTerrain(zseed, zone);
+    this._applyLayout(zseed, zone);
+
+    // 玩家可能正好站在新墙里。这是换图最经典的事故：
+    // "更新完一进第 6 波，车就卡在墙里动不了"，而且只在换图那一帧出现。
+    const p = this.player.group.position;
+    if (this.world.blocked(p.x, p.z, 1.9)) {
+      const spot = this._findFreeSpot(p.x, p.z, 2.2);
+      // 直接把相机也搬过去：换图这一帧不能让镜头从旧位置滑过来
+      // （相机固定从 +z 方向俯视，与 _updateCamera 的取景一致）
+      p.set(spot.x, 0, spot.z);
+      this.camera.position.set(spot.x, CAM_HEIGHT, spot.z + CAM_BACK);
+    }
+    // 上波没捡的箱子在旧地图上，换图后可能埋进新墙里——清掉。
+    // 不重定位：箱子是"这一波开局空投"的产物，跟着玩家跨战区搬家更奇怪。
+    if (this.crates.length) {
+      this.crates.length = 0;
+      this._clearCrateVisuals();
+    }
+    if (this.wave > 1) this.hud.showMessage(`进入战区 · ${zone.name}`, 2.2);
+    return true;
+  }
+
+  /**
+   * 找离 (x,z) 最近的空地。换图挪人、以及以后可能的重生保护都用它。
+   * 螺旋外扩而不是随机撒点：玩家看到的是"我被挪开了一点点"，不是"我被传送了"。
+   */
+  _findFreeSpot(x, z, r = 2.2) {
+    if (!this.world.blocked(x, z, r)) return { x, z };
+    for (let rad = 2; rad <= 40; rad += 2) {
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const qx = x + Math.cos(a) * rad;
+        const qz = z + Math.sin(a) * rad;
+        if (Math.abs(qx) > HALF - 4 || Math.abs(qz) > HALF - 4) continue;
+        if (!this.world.blocked(qx, qz, r)) return { x: qx, z: qz };
+      }
+    }
+    return { x: PLAYER_START.x, z: PLAYER_START.z };
   }
 
   start(chassisId, opts = {}) {
@@ -701,8 +763,14 @@ export class Game {
     // 普通模式：每局随机（同一天不再固定，玩法本来就允许挑图）
     const seed = opts.seed != null ? opts.seed >>> 0 : randomSeed();
     this._applySeed(seed);
-    this._applyTerrain(seed);
-    this._applyLayout(seed);
+    // 地形种子 = 局种子 ^ 常数：让"地形图案"与"波次随机序列"不共用一条流，
+    // 否则以后调地形生成算法的步数，整局的出怪顺序会跟着变。
+    const tseed = (seed ^ 0x7e3a91) >>> 0;
+    this._applyTerrain(tseed);
+    this._applyLayout(tseed);
+    // 第 1 波就落在训练场（zone 0 = 随机三地形 + 标准布局，
+    // 与上面两步铺出来的图完全一致，所以这里只需要记下战区别再重建一次）
+    this.zoneId = 0;
     this.sound.unlock();
     this.sound.startMusic();
     this.sound.fanfare();
@@ -839,7 +907,6 @@ export class Game {
 
     this.hud.overlay?.classList.remove('hidden');
     this.hud.hud?.classList.add('hidden');
-    this.hud.crosshair?.classList.add('hidden');
     this.hud.gameover?.classList.add('hidden');
     this.hud.reward?.classList.add('hidden');
     this.hud.app?.classList.remove('playing');
@@ -908,6 +975,9 @@ export class Game {
 
   startWave(n) {
     this.wave = n;
+    // 每 5 波换一个战区。必须放在生成敌人之前——新一波的落点判定
+    // 用的是碰撞表，晚一步就会出现"第 6 波的兵生成在第 1 波的墙里"。
+    this._enterZone(zoneForWave(n));
     const bossWave = n % 5 === 0;
     const eliteWave = !bossWave && (n % 5 === 3 || this.mods.eliteEveryWave);
     // 战场扩大到 200×200 后，每波追加少量敌人，避免密度被摊薄。
@@ -1070,7 +1140,7 @@ export class Game {
    */
   _spawnCratesSolo() {
     const p = this.player.group.position;
-    const count = crateCount(1, () => R.spawn());
+    const count = crateCount(1, () => R.spawn(), this.wave);
     const pts = cratePositions({
       half: this.world.half || HALF,
       players: [p],
@@ -1476,16 +1546,16 @@ export class Game {
     // 抬手不清朝向，因为炮塔有转速，回弹手感很别扭。
     if (this.touchAimAngle !== null && this.player?.alive) {
       this._aimFromTouch(TMP);
-      this._applyAim(TMP.x, TMP.z, true);
+      this._applyAim(TMP.x, TMP.z);
       return;
     }
     this.aimRay.setFromCamera(this.mouseNDC, this.camera);
     const hit = this.aimRay.ray.intersectPlane(this.groundPlane, TMP);
     if (!hit) return;
-    this._applyAim(TMP.x, TMP.z, false);
+    this._applyAim(TMP.x, TMP.z);
   }
 
-  _applyAim(x, z, projectCrosshair) {
+  _applyAim(x, z) {
     this.aimPoint.set(x, 0, z);
 
     // 指示环跟随**炮口实际指向**，不是鼠标。
@@ -1515,11 +1585,6 @@ export class Game {
 
     // 触屏模式下准心跟着这个环走，而不是跟着手指 —— 屏幕上手指压住的位置
     // 通常是"目标所在"，准心再画在那里就等于没有。
-    if (projectCrosshair) {
-      const v = TMP3.set(mx, 0.06, mz).project(this.camera);
-      const s = ndcToScreen(this.canvas, v);
-      this.hud.moveCrosshair(s.x, s.y);
-    }
   }
 
   /** 顶部地表指示：0.12 秒刷一次就够，玩家看不出差别，还省 DOM 重排 */
@@ -1650,9 +1715,20 @@ export class Game {
         if (d > 0 && d < minD) {
           dx /= d; dz /= d;
           const push = (minD - d) * (bossInPair ? 0.1 : 0.25);
-          if (!this.world.blocked(b.x + dx * push, b.z + dz * push, 1.4)) {
-            b.x += dx * push;
-            b.z += dz * push;
+          // 硬直中的 Boss 钉在地上（联机侧同一判据在 core/world.js::_separate，
+          // 读的是 bosskit.isAnchored）。原来这对只推后者，Boss 排前面时推不动
+          // 任何东西；钉住之后把推力整个转给对面那一辆。
+          const aPinned = isAnchored(this.enemies[i]);
+          const bPinned = isAnchored(this.enemies[j]);
+          const k = aPinned || bPinned ? push * 2 : push;
+          if (!bPinned && !this.world.blocked(b.x + dx * k, b.z + dz * k, 1.4)) {
+            b.x += dx * k;
+            b.z += dz * k;
+          }
+          if (aPinned !== bPinned && !aPinned
+              && !this.world.blocked(a.x - dx * k, a.z - dz * k, 1.4)) {
+            a.x -= dx * k;
+            a.z -= dz * k;
           }
         }
       }
@@ -2489,7 +2565,6 @@ export class Game {
     // 回到主菜单：显示开局面板，收起 HUD
     this.hud.overlay?.classList.remove('hidden');
     this.hud.hud?.classList.add('hidden');
-    this.hud.crosshair?.classList.add('hidden');
     this.hud.gameover?.classList.add('hidden');
     this.hud.app?.classList.remove('playing');
     this.keys.clear();

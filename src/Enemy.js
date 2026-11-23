@@ -7,6 +7,10 @@ import { createPatrolState, stepPatrol, wakePatrol, sendHunting, PATROL } from '
 // Boss 档案（名称 / kind / 核心色 / 尺寸 / 伤害）与联机共用同一份数据源
 import { BOSS_META, BOSS_SKILLS, ZONE, laserHits, resonancePull, bossStageFor, stageBarRatio,
   awakenMaskOf, AWAKEN_NUM, skillCdMul } from './core/bosskit.js';
+// 补给车的治疗参数（半径 / 百分比 / Boss 是否吃治疗）只在 core/world.js 定义一份，
+// 单机这里读同一张表——以前单机固定 +6、联机 6%/秒，同一台车强度差十倍。
+import { ENEMY_TYPES } from './core/world.js';
+import { HealAura } from './auras.js';
 
 const BAR_W = 2.24;
 const LOS_INTERVAL = 0.2;
@@ -130,18 +134,11 @@ export class Enemy {
     this.baseScale = scale;
     this.camera = camera;
 
-    // 补给车：治疗光环指示圈
+    // 补给车：治疗光环。半径、层级、呼吸节奏全部在 auras.js 里，
+    // 与联机客户端同一份实现——这个圈必须和判定半径严格对应，
+    // 两端各写一份就会出现"站在圈里却不回血"。
     if (support) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(7.6, 8.0, 40),
-        new THREE.MeshBasicMaterial({
-          color: 0x57d877, transparent: true, opacity: 0.4,
-          side: THREE.DoubleSide, depthWrite: false,
-        })
-      );
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.y = 0.07 / scale;
-      this.tank.group.add(ring);
+      this.aura = new HealAura(this.tank.group, scale);
       this.healT = 0;
     }
 
@@ -558,19 +555,31 @@ export class Enemy {
 
   /** 补给车：治疗 8m 内队友，玩家靠近就跑；击杀有额外分 */
   _updateSupport(dt, ctx, dist, dx, dz) {
-    // 治疗光环
+    const H = ENEMY_TYPES.support;
+
+    // 光环呼吸 + 治疗脉冲衰减（all in auras.js）
+    this.aura.update(dt);
+
+    // 治疗光环：按最大血量的百分比结算（参数见 core/world.js 的 ENEMY_TYPES.support）。
+    // 以前这里是固定 +6：对 60 血的枪手是 10%/秒，对 4000 血的精英等于没治。
     this.healT -= dt;
     if (this.healT <= 0) {
       this.healT = 1.2;
       let healed = 0;
       for (const e of ctx.enemies) {
         if (e === this || !e.alive) continue;
-        if (e.position.distanceTo(this.position) < 8 && e.tank.hp < e.tank.maxHp) {
-          e.tank.hp = Math.min(e.tank.maxHp, e.tank.hp + 6);
-          healed++;
-        }
+        if (e.tank.hp >= e.tank.maxHp) continue;
+        if (e.position.distanceTo(this.position) >= H.healAura) continue;
+        // Boss 不吃治疗：Boss 血量是按「目标时长 × DPS」反推的，
+        // 回血会直接把那条曲线毁掉（详见 ENEMY_TYPES.support 的注释）。
+        if (e.isBoss && H.bossHealMul <= 0) continue;
+        e.tank.hp = Math.min(e.tank.maxHp, e.tank.hp + e.tank.maxHp * H.healRate * 1.2);
+        healed++;
       }
-      if (healed > 0) ctx.effects.explosion(this.position.clone().setY(1), 0x57d877, 6, 0.5);
+      if (healed > 0) {
+        this.aura.hit();
+        ctx.effects.explosion(this.position.clone().setY(1), 0x57d877, 6, 0.5);
+      }
     }
 
     // 移动：玩家 15m 内背向逃跑，否则缓慢徘徊

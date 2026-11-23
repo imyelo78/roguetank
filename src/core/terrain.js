@@ -216,9 +216,19 @@ export function buildTerrain(seed = 1, half = 100, opts = {}) {
   // 三种非草地形都保证出现（只是占比不同）：一张图里集不齐五种，
   // 玩家就永远学不会"雪地比沙漠更慢"，这套系统的信息量直接砍半。
   const pool = [T_SAND, T_SNOW, T_SWAMP];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = (rnd() * (i + 1)) | 0;
-    const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+  if (Array.isArray(opts.types) && opts.types.length >= 3) {
+    // 战区主题：主/次/第三地形由 core/zones.js 指定，顺序即优先级。
+    // 这里不再打乱——"熔炉=厚沙"这种设定如果每局随机，战区就不成立了。
+    // 只影响传入 types 的调用方；不传时下面的洗牌逻辑一字未改，
+    // 所以老的随机地图与旧单测结果完全一致。
+    pool[0] = opts.types[0];
+    pool[1] = opts.types[1];
+    pool[2] = opts.types[2];
+  } else {
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = (rnd() * (i + 1)) | 0;
+      const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+    }
   }
   const mainType = pool[0];
   const subType = pool[1];
@@ -251,8 +261,10 @@ export function buildTerrain(seed = 1, half = 100, opts = {}) {
   }
 
   const free = buckets.length;
-  // 主地形 28%~42%：低于 28% 感觉不到，高于 45% 整局都在爬
-  const pMain = 0.28 + rnd() * 0.14;
+  // 主地形 28%~42%：低于 28% 感觉不到，高于 45% 整局都在爬。
+  // mainMul 让战区能把这个区间整体推高（沼泽战区）或压低（硬地战区），
+  // 封顶 0.65：再高就只剩一种地面，"换图"要换的是布局，不是把玩家按在泥里。
+  const pMain = Math.min(0.65, (0.28 + rnd() * 0.14) * (opts.mainMul || 1));
   // 次地形 8%~15%：成片，但明显比主地形小
   const pSub = 0.10 + rnd() * 0.08;
   // 第三地形 9%~14%：碎块点缀，负责"看着乱、走着要绕"。

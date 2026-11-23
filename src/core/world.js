@@ -8,6 +8,7 @@
 // 地图数据与边界常量来自 levelgen（纯数据，不依赖 three）。
 // 客户端建 mesh、这里建碰撞表，都只读这一份，物理上不可能再分叉。
 import { HALF, generateBoxes, resolveMultiSpawns } from './levelgen.js';
+import { ZONES, zoneIndexForWave, terrainOptsFor, layoutOptsFor, zoneSeedFor } from './zones.js';
 // 车体运动学（转向 / 加速 / 撞墙滑行）：与客户端预测共用同一份实现
 import { stepBody, aimTurret, angleDiff } from './motion.js';
 // 圆-矩形碰撞：与客户端 level.js、地图生成共用，避免三处判定各写一套
@@ -20,6 +21,7 @@ import {
   BOSS_META, BOSS_SKILLS, bossTypeForWave, pickLateBoss, bossHpFor, bossHpMul,
   rollAwakens, awakensForWave, skillCdMul, ZONE, stepZones, laserHits,
   resonancePull, bossStageFor, awakenMaskOf, awakenNamesOf, AWAKEN_NUM,
+  isAnchored,
 } from './bosskit.js';
 // 地表类型场：两端同源的速度系数（地形为空时完全退化成 1.0）
 import { buildTerrain, speedAt, presetK } from './terrain.js';
@@ -110,7 +112,16 @@ export const ENEMY_TYPES = {
   elite: { hp: 4, speed: 0.85, radius: 1.65, damage: 8, range: 30, fireCd: [1.5, 2.6], bulletSpeed: 48, score: 40, scale: 1.18 },
   drone: { hp: 0.3, speed: 2.2, radius: 0.9, damage: 7, range: 3.5, selfDestruct: 3.5, score: 14, scale: 0.62 },
   turret: { hp: 2.2, speed: 0, radius: 1.3, damage: 9, range: 46, fireCd: [2.4, 3.2], bulletSpeed: 55, score: 25, scale: 0.95, static: true },
-  support: { hp: 1.4, speed: 0.95, radius: 1.5, damage: 0, range: 0, healAura: 8, score: 30, scale: 1.05 },
+  // 补给车：治疗量必须按**百分比**，不能按固定值。
+  // 原来单机是固定 +6/1.2 秒：对 60 血的枪手是 10%/秒（打不死），
+  // 对 4000 血的精英是 0.15%/秒（等于没有）——同一台车在前后期完全不是一个东西。
+  // bossHealMul = 0：Boss 血量是按「目标时长 × 玩家 DPS」反推的，
+  // 任何回血都会直接破坏那条曲线（6%/秒 的治疗能把 110 秒的 Boss 战变成打不死）。
+  support: {
+    hp: 1.4, speed: 0.95, radius: 1.5, damage: 0, range: 0,
+    healAura: 8, healRate: 0.04, bossHealMul: 0,
+    score: 30, scale: 1.05,
+  },
   shield: { hp: 1.3, speed: 0.9, radius: 1.55, damage: 6, range: 28, fireCd: [2.2, 3.6], bulletSpeed: 44, score: 20, scale: 1.12, frontArmor: 0.45 },
   // Boss 弹速从 46/52 提到 58/62：加了提前量之后，飞行时间仍是命中率的主导项，
   // 34m 外 46 m/s 要飞 0.74 秒，玩家挪 11 米，预判误差被放大到躲不躲都随缘。
@@ -153,7 +164,7 @@ export const PLAYER_WEAPON = {
 };
 
 /** 障碍物：服务端也必须有静态碰撞表，否则敌人会穿墙 */
-export function buildStaticWorld(terrain = null, seed = 0) {
+export function buildStaticWorld(terrain = null, seed = 0, layoutOpts = null) {
   // 地图数据只在 core/levelgen.js 生成一次，客户端建 mesh、这里建碰撞表。
   //
   // 为什么不再手抄一份：线上出过事故——两边各写一套生成循环，客户端为了建
@@ -161,7 +172,7 @@ export function buildStaticWorld(terrain = null, seed = 0) {
   // 错位；固定掩体里还把渲染高度 h 当成深度 d 抄了过来。结果是"客户端有墙、
   // 服务端没有"，玩家一进房就撞假墙，速度每帧乘 0.3 压到 0.8 米/秒，
   // 表现就是油门踩到底车不动，同时服务端位置正常推进又被拽回去。
-  const boxes = generateBoxes(seed).map((b) => [b.x, b.z, b.w, b.d]);
+  const boxes = generateBoxes(seed, layoutOpts || {}).map((b) => [b.x, b.z, b.w, b.d]);
 
   return {
     half: HALF,
@@ -276,6 +287,9 @@ export class World {
     // 建筑布局也由种子决定：同一房间所有人拿到同一张图。
     // 客户端不自己生成一份再对比，而是直接收 fullState().boxes ——
     // 生成算法哪怕只差一个随机数，后果都是"你看得见墙、服务端没有"。
+    // 起始就在第一个战区：构造时铺的图与 _enterZone(0) 的结果一致，
+    // 所以第 1 波不会多重建一次。
+    this.zoneId = 0;
     this.static = buildStaticWorld(this.terrain, this.seed);
 
     // ---- 巡逻路线：种子生成，不通过网络同步 ----
@@ -427,8 +441,9 @@ export class World {
     const c = CHASSIS_TABLE[cid];
     const pid = id || `p${nextId()}`;
     const idx = this.players.length;
-    // 出生点由 levelgen 校验过，保证不与掩体重叠（否则一落地就卡墙）
-    const spawns = spawnsFor(this.seed);
+    // 出生点必须按**当前战区**的布局算：用开局那张图的坐标去套第 30 波的墙，
+    // 中途加入的人一落地就在墙里（而且服务端会认为他合法，客户端却在抖）。
+    const spawns = this._currentSpawns();
     const [sx, sz] = spawns[idx % spawns.length];
 
     const p = createPlayer({
@@ -477,6 +492,22 @@ export class World {
   removePlayer(id, silent = false) {
     this.players = this.players.filter((p) => p.id !== id);
     if (!silent) this._pushEvent({ kind: 'leave', id });
+  }
+
+  /**
+   * 把单位挪到最近的可走点（已经站得下就一动不动）。
+   *
+   * 两处会用到：换战区后清理残留在新墙里的单位；暂离归队时——人可能是
+   * 第 4 波按的暂停，第 6 波才回来，中间地图已经换了（每 5 波换一次），
+   * 原位可能正好被新墙占住，不挪的话一睁眼就卡死在墙里。
+   */
+  nudgeToFree(unit, r = 1.9) {
+    if (!unit) return false;
+    if (!this.static.blocked(unit.x, unit.z, r)) return false;
+    const spot = this._freeSpot(unit.x, unit.z, r);
+    unit.x = spot.x;
+    unit.z = spot.z;
+    return true;
   }
 
   /**
@@ -917,13 +948,16 @@ export class World {
         this._pushEvent({ kind: 'eshot', id: e.id });
       }
 
-      // 补给车治疗周围
+      // 补给车治疗周围：按最大血量的百分比，两端同一份参数
+      // （core/world.js 的 ENEMY_TYPES.support，单机 Enemy.js 也读它）。
       if (e.healAura) {
+        const H = ENEMY_TYPES.support;
         for (const o of this.enemies) {
-          if (o === e || !o.alive) continue;
-          if (Math.hypot(o.x - e.x, o.z - e.z) < e.healAura) {
-            o.hp = Math.min(o.maxHp, o.hp + o.maxHp * 0.06 * dt);
-          }
+          if (o === e || !o.alive || o.hp >= o.maxHp) continue;
+          if (Math.hypot(o.x - e.x, o.z - e.z) >= e.healAura) continue;
+          const mul = o.boss ? H.bossHealMul : 1;
+          if (mul <= 0) continue;
+          o.hp = Math.min(o.maxHp, o.hp + o.maxHp * H.healRate * mul * dt);
         }
       }
     }
@@ -1553,8 +1587,74 @@ export class World {
 
   // ---------------- 波次 ----------------
 
+  /**
+   * 换战区：地形 + 碰撞表 + 巡逻路线一起重建。每 5 波一次。
+   *
+   * 联机和单机走同一个 zoneSeedFor：服务端的房间种子与客户端的
+   * welcome.terrain.seed 换算到同一个基数，所以两边算出来的图逐字节一致。
+   * 客户端不需要收 boxes——generateBoxes 是纯函数，同种子必同结果。
+   */
+  _enterZone(zoneId) {
+    if (this.zoneId === zoneId) return false;
+    this.zoneId = zoneId;
+    const z = ZONES[zoneId] || null;
+    const zseed = zoneSeedFor((this.seed ^ 0x7e3a91) >>> 0, zoneId);
+    this.terrain = buildTerrain(zseed, HALF, {
+      k: presetK(this.terrainPreset), ...terrainOptsFor(z),
+    });
+    this.static = buildStaticWorld(this.terrain, zseed, {
+      ...layoutOptsFor(z), zoneMix: zoneId,
+    });
+
+    // 巡逻路线要避新墙，必须重建。用独立随机流，不消耗 spawn/combat 序列，
+    // 所以"换图"不会改变下一波的出怪顺序。
+    const patrolRng = new Rng((zseed ^ 0x2f7a31c5) >>> 0);
+    this.patrolRoutes = buildPatrolRoutes(() => patrolRng.spawn(), {
+      half: HALF,
+      blocked: (x, z2, r) => this.static.blocked(x, z2, r),
+      avoid: this._currentSpawns().map(([x, z2]) => ({ x, z: z2, r: 26 })),
+      count: 10,
+      minGap: 26,
+    });
+
+    // 留在场上的单位可能站在新墙里。换图发生在开波瞬间（场上应该已经空了），
+    // 但残留的自爆机/召唤物确实见过——把它们推到最近的可走点。
+    for (const e of this.enemies) this.nudgeToFree(e, e.radius);
+    for (const p of this.players) this.nudgeToFree(p);
+    // 旧地图上的箱子不能留：新墙可能把它们埋了
+    this.crates.length = 0;
+    return true;
+  }
+
+  /** 当前战区的多人出生点（已按布局修正过，保证可走） */
+  _currentSpawns() {
+    const z = ZONES[this.zoneId] || null;
+    const zseed = zoneSeedFor((this.seed ^ 0x7e3a91) >>> 0, this.zoneId);
+    return resolveMultiSpawns(generateBoxes(zseed, {
+      ...layoutOptsFor(z), zoneMix: this.zoneId,
+    }));
+  }
+
+  /** 最近的可走点（螺旋外扩），换图挪人用 */
+  _freeSpot(x, z, r) {
+    if (!this.static.blocked(x, z, r)) return { x, z };
+    for (let rad = 2; rad <= 40; rad += 2) {
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const qx = x + Math.cos(a) * rad;
+        const qz = z + Math.sin(a) * rad;
+        if (Math.abs(qx) > HALF - 4 || Math.abs(qz) > HALF - 4) continue;
+        if (!this.static.blocked(qx, qz, r)) return { x: qx, z: qz };
+      }
+    }
+    return { x: 0, z: 26 };
+  }
+
   startWave(n) {
     this.wave = n;
+    // 每 5 波换战区（与单机同一个函数）：必须先换碰撞表再生成敌人，
+    // 否则第 6 波的兵会按第 1 波的墙来选落点，直接卡在墙里。
+    const zoneChanged = this._enterZone(zoneIndexForWave(n));
     const bossWave = n % 5 === 0;
     const eliteWave = !bossWave && n % 5 === 3;
     // 数量曲线（r42）：前 7 波不变；第 8 波起增速从 2.5/波 放缓到 1.4/波。
@@ -1621,7 +1721,17 @@ export class World {
     // 战场宝箱：每波开局空投（r43）。没被捡的箱子留着，跨波有效。
     this._spawnCrates();
 
-    this._pushEvent({ kind: 'wave', wave: n, boss: bossWave, elite: eliteWave });
+    this._pushEvent({
+      kind: 'wave', wave: n, boss: bossWave, elite: eliteWave,
+      // 换战区时把新布局的**权威坐标**一起发下去。客户端不自己生成：
+      // 生成算法虽然两端同源，但"同源"只保证今天一致，发一次版就会有人
+      // 踩到页面缓存没更新的坑（见 fullState 里 boxes 的注释）。
+      // 44 个箱子只在换图的这一波发一次，平时不占带宽。
+      zone: this.zoneId,
+      boxes: zoneChanged
+        ? this.static.boxes.map(([x, z, w, d]) => ({ x, z, w, d }))
+        : null,
+    });
   }
 
   /**
@@ -1630,7 +1740,7 @@ export class World {
    * 所以两个人抢同一个箱子各得其所，也永远不会开出满级的卡。
    */
   _spawnCrates() {
-    const count = crateCount(this.players.length || 1, () => this.rng.spawn());
+    const count = crateCount(this.players.length || 1, () => this.rng.spawn(), this.wave);
     const pts = cratePositions({
       half: HALF,
       players: this.players.filter((p) => p.alive),
@@ -1923,11 +2033,25 @@ export class World {
         const d2 = dx * dx + dz * dz;
         if (d2 > min * min || d2 < 1e-6) continue;
         const d = Math.sqrt(d2);
-        const push = (min - d) * 0.5;
+        // 需要拉开的总距离。默认一人一半（0.5），和改动前完全一致；
+        // 某一边"钉住"（炮台 / 硬直中的 Boss）时，另一边吃全额，
+        // 否则一辆突击兵能把硬直的 Boss 顶着走，输出窗口就没了。
+        const gap = min - d;
+        const aFixed = !!a.static || isAnchored(a);
+        const bFixed = !!b.static || isAnchored(b);
+        if (aFixed && bFixed) continue;
         const ux = dx / d;
         const uz = dz / d;
-        if (!a.static) { a.x -= ux * push; a.z -= uz * push; }
-        if (!b.static) { b.x += ux * push; b.z += uz * push; }
+        if (!aFixed) {
+          const k = gap * (bFixed ? 1 : 0.5);
+          a.x -= ux * k;
+          a.z -= uz * k;
+        }
+        if (!bFixed) {
+          const k = gap * (aFixed ? 1 : 0.5);
+          b.x += ux * k;
+          b.z += uz * k;
+        }
       }
     }
 
@@ -1986,6 +2110,10 @@ export class World {
       // k 也带上：强度档位变了，客户端要立刻按新档位改颜色，不能等下次重连。
       terrain: {
         seed: this.terrain.seed,
+        // 这一局的"地形基数"（局种子 ^ 常数），换战区时要靠它派生新种子。
+        // 不能拿 seed 反推：中途加入的人收到的 seed 是**当前战区**的，
+        // 用它再混一次 zone 会跑到第三个战区去。
+        base: (this.seed ^ 0x7e3a91) >>> 0,
         preset: this.terrainPreset,
         k: this.terrain.k ?? 1,
         tile: this.terrain.tile,

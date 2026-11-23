@@ -26,12 +26,13 @@ import { aimTurret, angleDiff } from './core/motion.js';
 import { createNav } from './nav.js';
 import { NetClient, predict, TICK_RATE } from './net.js';
 import { buildTerrain, TERRAIN } from './core/terrain.js';
+import { ZONES, zoneIndexForWave, terrainOptsFor, zoneSeedFor } from './core/zones.js';
 import { NetDebug } from './debug.js';
 import { assistAim, AIM_RANGE } from './input/touch.js';
 import { FOG_BASE } from './core/quality.js';
-import { ndcToScreen } from './core/viewport.js';
 import { makeCrate } from './crate-visual.js';
 import { ZoneVisual, BeamVisual } from './zone-visual.js';
+import { HealAura } from './auras.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -232,6 +233,10 @@ export class CoopMode {
     this._initScene();
     // 建筑以服务端为准（中途加入也能拿到完整布局，重开一局也是新的）
     this._applyServerLayout(welcome);
+    // 地形基数（局种子 ^ 常数）。换战区时用 zoneSeedFor(base, id) 派生，
+    // 与服务端 World._enterZone 是同一个公式，所以两边算出来的图逐字节一致。
+    this._terrainBase = { ...(welcome.world?.terrain || {}) };
+    this._zoneId = zoneIndexForWave(welcome.world?.wave || 1);
     // 敌人寻路网格按新地图重烘一次（进房只做一次，不进帧循环）
     this.game.nav = createNav(this.world);
     this._buildMyTank(welcome);
@@ -273,7 +278,7 @@ export class CoopMode {
     this.game.touch?.setTarget(this.game.soloTouchTarget());
 
     for (const t of this.tanks.values()) t.dispose(this.scene);
-    for (const t of this.enemies.values()) t.dispose(this.scene);
+    for (const t of this.enemies.values()) { t.aura?.dispose(); t.dispose(this.scene); }
     for (const b of this.bullets.values()) b.destroy();
     this.tanks.clear();
     this.enemies.clear();
@@ -509,6 +514,10 @@ export class CoopMode {
     // 一旦被 Tank 的反馈逻辑改到就会让所有敌人一起变色。
     t.bar.traverse((o) => { o.userData.noFlash = true; });
 
+    // 补给车的光环：与单机同一个实现（auras.js）。半径直接来自
+    // ENEMY_TYPES.support.healAura，和判定完全一致——圈还在，人就一定在范围内。
+    if (type === 'support') t.aura = new HealAura(t.group, scale);
+
     this.enemies.set(id, t);
     return t;
   }
@@ -582,7 +591,6 @@ export class CoopMode {
       const r = el.getBoundingClientRect();
       this.mouseNDC.x = ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1;
       this.mouseNDC.y = -((e.clientY - r.top) / Math.max(1, r.height)) * 2 + 1;
-      this.game.hud.moveCrosshair(e.clientX, e.clientY);
     };
     this._onMouseDown = (e) => {
       if (this.paused) return;
@@ -754,6 +762,8 @@ export class CoopMode {
       return;
     }
 
+    // 补给车光环的呼吸（纯视觉，不读快照，断线时也保持可见）
+    for (const t of this.enemies.values()) t.aura?.update(dt);
     const input = this._readInput();
 
     // 发意图给服务端
@@ -1131,6 +1141,20 @@ export class CoopMode {
         beams.push({ x: e.x, z: e.z, yaw: e.turretYaw + Math.PI, len });
       }
 
+      // 补给车：附近有残血友军时整片亮一点，相当于"正在治疗"的持续指示。
+      // 服务端不发治疗事件，本地按快照推一次就够——哪怕判定晚一帧，
+      // 玩家依然能看到"这台车在奶人"，而不是看着血条莫名其妙往回涨。
+      if (t.aura) {
+        let healing = false;
+        for (const o of s.enemies) {
+          if (o === e || (o.hp ?? 100) >= 99) continue;
+          if (Math.hypot(o.x - e.x, o.z - e.z) >= ENEMY_TYPES.support.healAura) continue;
+          healing = true;
+          break;
+        }
+        if (healing) t.aura.hit(0.3);
+      }
+
       // 血条：协议里 e.hp 是 0~100 的百分比（encodeSnapshot 已归一化）。
       // 12/13 版完全没消费这个字段，所以联机敌人的血条既没创建也不掉血。
       if (t.bar && t.bar.visible) {
@@ -1142,6 +1166,7 @@ export class CoopMode {
     }
     for (const [id, t] of this.enemies) {
       if (!alive.has(id)) {
+        t.aura?.dispose();
         t.dispose(this.scene);
         this.enemies.delete(id);
       }
@@ -1651,6 +1676,30 @@ export class CoopMode {
     this.game.minimap?.invalidate?.();
   }
 
+  /**
+   * 换战区：重建地表 + 掩体 + 导航。每 5 波一次，由服务端的 wave 事件驱动。
+   *
+   * 服务端已经把新布局的坐标发下来了（boxes），这里**不自己生成布局**，
+   * 只重建地表（seed 是纯函数，两端必然一致）与派生物（小地图、导航网格）。
+   */
+  _enterZone(zoneId, boxes) {
+    this._zoneId = zoneId;
+    const z = ZONES[zoneId] || null;
+    const base = this._terrainBase || {};
+    const bseed = (base.base ?? base.seed ?? 0) >>> 0;
+    const zseed = zoneSeedFor(bseed, zoneId);
+
+    const map = buildTerrain(zseed, HALF, {
+      k: Number(base.k ?? 1), ...terrainOptsFor(z),
+    });
+    this.world.setTerrain(map);
+    this.game.minimap?.setTerrain?.(map);
+    if (Array.isArray(boxes) && boxes.length) this._applyServerLayout({ world: { boxes } });
+    this.game.nav = createNav(this.world);
+
+    if (z) this.game.hud.showMessage(`进入战区 · ${z.name}`, 2.2);
+  }
+
   _updateCamera(dt) {
     const cam = this.camera;
     // 先撤掉上一帧的震屏偏移。震屏是**纯视觉附加量**，如果直接加进
@@ -1727,14 +1776,6 @@ export class CoopMode {
       }
     }
     this._aimMarker.position.set(mx, 0.06, mz);
-
-    // 触屏：准心跟到环上。食指压住的位置通常就是目标，准心画在那里等于没有。
-    if (this.touchAimAngle !== null && this.camera) {
-      const v = this._aimProj || (this._aimProj = new THREE.Vector3());
-      v.set(mx, 0.06, mz).project(this.camera);
-      const s = ndcToScreen(this.renderer.domElement, v);
-      this.game.hud.moveCrosshair(s.x, s.y);
-    }
   }
 
   /** BOSS 血条：服务端只给 hp 比例，名字按类型码认 */
@@ -1830,6 +1871,10 @@ export class CoopMode {
           else this.game.hud.showMessage('队友已被救起', 1.4);
           break;
         case 'wave':
+          // 换战区：服务端把新布局的权威坐标一起发下来。
+          // 这一步不能省——服务端的碰撞表已经换成新图了，客户端还留着旧墙，
+          // 就是"你看得见墙、服务端没有"（历史上最贵的一次事故）。
+          if (e.zone != null && e.zone !== this._zoneId) this._enterZone(e.zone, e.boxes);
           this.game.hud.showMessage(e.boss ? `第 ${e.wave} 波 · BOSS 来袭` : `第 ${e.wave} 波 来袭`, 1.8);
           // 配乐跟着波次加压（单机同款曲线，见 Game.startWave）
           this.sound.setMusicIntensity(e.boss ? 0.95 : Math.min(0.72, 0.42 + (e.wave || 1) * 0.03));

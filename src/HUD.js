@@ -54,7 +54,6 @@ const esc = (str) => String(str == null ? '' : str)
 export class HUD {
   constructor() {
     this.app = $('app');
-    this.crosshair = $('crosshair');
     this.hud = $('hud');
     this.vignette = $('vignette');
 
@@ -856,7 +855,6 @@ export class HUD {
     this.gameover.classList.add('hidden');
     this.hidePause();
     this.hud.classList.remove('hidden');
-    this.crosshair.classList.remove('hidden');
     this.app.classList.add('playing');
     // 每一波开始都回到「极简」，不要把上一波展开的战况带进来
     this._setPeek(false);
@@ -1015,7 +1013,6 @@ export class HUD {
 
     this.gameover.classList.remove('hidden');
     this.hud.classList.add('hidden');
-    this.crosshair.classList.add('hidden');
     this.app.classList.remove('playing');
     this._setPeek(false);
     // 阵亡后暂停按钮与暂停面板都不该还挂着
@@ -1179,11 +1176,6 @@ export class HUD {
     this.msg.textContent = text;
     this.msg.classList.add('show');
     this.msgTimer = seconds;
-  }
-
-  moveCrosshair(x, y) {
-    this.crosshair.style.left = `${x}px`;
-    this.crosshair.style.top = `${y}px`;
   }
 
   update(dt) {

@@ -215,28 +215,6 @@ html, body {
   transition: opacity .05s ease;
 }
 
-/* ---------- 准星 ---------- */
-#crosshair {
-  position: fixed;
-  width: 26px;
-  height: 26px;
-  margin: -13px 0 0 -13px;
-  pointer-events: none;
-  z-index: 20;
-  border: 1px solid rgba(255, 166, 61, .38);
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 166, 61, .95) 0 2px, transparent 2.6px);
-}
-#crosshair::before,
-#crosshair::after {
-  content: "";
-  position: absolute;
-  background: var(--amber);
-  box-shadow: 0 0 8px rgba(255, 166, 61, .9);
-}
-#crosshair::before { left: 50%; top: -4px; width: 2px; height: calc(100% + 8px); margin-left: -1px; opacity: .55; }
-#crosshair::after { top: 50%; left: -4px; height: 2px; width: calc(100% + 8px); margin-top: -1px; opacity: .55; }
-
 /* ---------- HUD ---------- */
 /* HUD 也要跟着 dvh：它比 canvas 高的话，右下角的小地图会被推到地址栏后面 */
 /* --map-gap 提到 #hud 上：小地图和 Boss 血条都要用它做左边距，
@@ -2691,7 +2669,6 @@ body.is-touch .hud-peek:focus:not(:focus-visible) { outline: none; }
 }
 /* [39] 暂停态：光标必须看得见。 */
 #app.paused { cursor: auto; }
-#app.paused #crosshair { display: none; }
 
 /* 两条竖杠画的暂停符：用 emoji ⏸ 在不同系统上字形差异太大 */
 .hud-pause-icon {

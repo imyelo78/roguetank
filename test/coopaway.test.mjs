@@ -18,6 +18,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Room } from '../server/room.js';
 import { C2S, PROTOCOL_VERSION } from '../src/core/protocol.js';
+import { World } from '../src/core/world.js';
+import { HALF } from '../src/core/levelgen.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const read = (p) => readFileSync(path.join(root, p), 'utf8');
@@ -183,6 +185,42 @@ function dirtyThePlayer(room, id) {
   assert.match(coop, /onEvents\(list\) \{\s*if \(!this\.active\) return;[\s\S]{0,200}if \(this\.paused\) return;/,
     '暂停期间要丢掉战斗事件反馈');
   ok('暂停期间键盘 / 鼠标 / 摇杆 / 事件反馈全部静默');
+}
+
+// ------------------------------------------------------------ [9] 暂停期间换战区
+//
+// 两条开发线合并后才出现的组合：每 5 波换一张图（r49 战区）＋ 暂离（r48）。
+// 第 4 波暂停、第 6 波回来，人还是原来那个坐标，但那张图上那里已经是墙。
+// 不兜的话，"返回战场"＝一睁眼卡死在墙里。
+{
+  const { room } = makeRoom();
+  const r = room.join(onlineSocket(), { name: '甲', chassis: 'panther' });
+  room.world.start();
+
+  // 用同种子的探针世界算出"第 1 战区里一处被墙占住的点"，不动真实房间
+  const probe = new World({ code: 'AWAY', seed: room.world.seed });
+  probe._enterZone(1);
+  let hut = null;
+  for (let x = -HALF + 6; x < HALF - 6 && !hut; x += 3) {
+    for (let z = -HALF + 6; z < HALF - 6; z += 3) {
+      if (probe.static.blocked(x, z, 1.9)) { hut = { x, z }; break; }
+    }
+  }
+  assert.ok(hut, '第 1 战区应该有墙');
+
+  const p = room.world.players.find((q) => q.id === r.id);
+  p.x = hut.x; p.z = hut.z;
+  room.setAway(r.id, true);
+  assert.equal(room.members.get(r.id).awaySnap.zoneId, 0, '快照要记住暂停时的战区');
+
+  room.world._enterZone(1);            // 暂停期间换了一张图
+  room.setAway(r.id, false);
+
+  const back = room.world.players.find((q) => q.id === r.id);
+  assert.ok(back, '归队要回到场上');
+  assert.equal(room.world.static.blocked(back.x, back.z, 1.9), false,
+    '换过战区之后，不能把人放回新墙里');
+  ok('暂停期间换了战区：归队自动挪到最近的可走点');
 }
 
 console.log(`\n组队暂离（暂停）测试全部通过（${pass} 项）`);

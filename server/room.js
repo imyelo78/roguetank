@@ -250,6 +250,9 @@ export class Room {
         alive: p.alive, down: !!p.down, reviveT: p.reviveT || 0, fireCd: p.fireCd || 0,
         speedBase: p.speedBase, turnBase: p.turnBase,
         takenMul: p.takenMul, killHeal: p.killHeal || 0,
+        // 记下当时的战区：暂停期间可能刚好换图（每 5 波一次），
+        // 归队时才知道要不要检查"原位还站得下吗"。
+        zoneId: w.zoneId,
       };
       m.away = true;
       // 输入清零：不清的话回来那一刻会带着"暂停时还按着的方向"走一段
@@ -292,8 +295,12 @@ export class Room {
     p.turnBase = snap.turnBase;
     p.takenMul = snap.takenMul;
     p.killHeal = snap.killHeal;
-    // 位置是暂停那一刻的原位，正常情况下不会卡在墙里；
-    // 万一期间地图重开过，上面的 round 校验已经把人当新玩家处理了。
+    // 位置是暂停那一刻的原位。换了一局的情况上面已经 return（新局从出生点开始）。
+    // 但同一局里**换过战区**（每 5 波换一张图）时，原位可能被新墙占住 ——
+    // 第 4 波暂停、第 6 波回来正好撞上。只有战区变了才检查，没变就一个字节都不动。
+    if (snap.zoneId !== undefined && snap.zoneId !== this.world?.zoneId) {
+      this.world?.nudgeToFree?.(p);
+    }
   }
 
   /** 房间里所有人都按了暂停（或根本没人）→ 没人可推，整局冻结 */
