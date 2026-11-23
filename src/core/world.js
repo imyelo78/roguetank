@@ -110,7 +110,16 @@ export const ENEMY_TYPES = {
   elite: { hp: 4, speed: 0.85, radius: 1.65, damage: 8, range: 30, fireCd: [1.5, 2.6], bulletSpeed: 48, score: 40, scale: 1.18 },
   drone: { hp: 0.3, speed: 2.2, radius: 0.9, damage: 7, range: 3.5, selfDestruct: 3.5, score: 14, scale: 0.62 },
   turret: { hp: 2.2, speed: 0, radius: 1.3, damage: 9, range: 46, fireCd: [2.4, 3.2], bulletSpeed: 55, score: 25, scale: 0.95, static: true },
-  support: { hp: 1.4, speed: 0.95, radius: 1.5, damage: 0, range: 0, healAura: 8, score: 30, scale: 1.05 },
+  // 补给车：治疗量必须按**百分比**，不能按固定值。
+  // 原来单机是固定 +6/1.2 秒：对 60 血的枪手是 10%/秒（打不死），
+  // 对 4000 血的精英是 0.15%/秒（等于没有）——同一台车在前后期完全不是一个东西。
+  // bossHealMul = 0：Boss 血量是按「目标时长 × 玩家 DPS」反推的，
+  // 任何回血都会直接破坏那条曲线（6%/秒 的治疗能把 110 秒的 Boss 战变成打不死）。
+  support: {
+    hp: 1.4, speed: 0.95, radius: 1.5, damage: 0, range: 0,
+    healAura: 8, healRate: 0.04, bossHealMul: 0,
+    score: 30, scale: 1.05,
+  },
   shield: { hp: 1.3, speed: 0.9, radius: 1.55, damage: 6, range: 28, fireCd: [2.2, 3.6], bulletSpeed: 44, score: 20, scale: 1.12, frontArmor: 0.45 },
   // Boss 弹速从 46/52 提到 58/62：加了提前量之后，飞行时间仍是命中率的主导项，
   // 34m 外 46 m/s 要飞 0.74 秒，玩家挪 11 米，预判误差被放大到躲不躲都随缘。
@@ -910,13 +919,16 @@ export class World {
         this._pushEvent({ kind: 'eshot', id: e.id });
       }
 
-      // 补给车治疗周围
+      // 补给车治疗周围：按最大血量的百分比，两端同一份参数
+      // （core/world.js 的 ENEMY_TYPES.support，单机 Enemy.js 也读它）。
       if (e.healAura) {
+        const H = ENEMY_TYPES.support;
         for (const o of this.enemies) {
-          if (o === e || !o.alive) continue;
-          if (Math.hypot(o.x - e.x, o.z - e.z) < e.healAura) {
-            o.hp = Math.min(o.maxHp, o.hp + o.maxHp * 0.06 * dt);
-          }
+          if (o === e || !o.alive || o.hp >= o.maxHp) continue;
+          if (Math.hypot(o.x - e.x, o.z - e.z) >= e.healAura) continue;
+          const mul = o.boss ? H.bossHealMul : 1;
+          if (mul <= 0) continue;
+          o.hp = Math.min(o.maxHp, o.hp + o.maxHp * H.healRate * mul * dt);
         }
       }
     }
@@ -1623,7 +1635,7 @@ export class World {
    * 所以两个人抢同一个箱子各得其所，也永远不会开出满级的卡。
    */
   _spawnCrates() {
-    const count = crateCount(this.players.length || 1, () => this.rng.spawn());
+    const count = crateCount(this.players.length || 1, () => this.rng.spawn(), this.wave);
     const pts = cratePositions({
       half: HALF,
       players: this.players.filter((p) => p.alive),

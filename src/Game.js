@@ -30,7 +30,7 @@ import { createQuality, FOG_BASE } from './core/quality.js';
 import { CoopMode } from './coop.js';
 import { NetClient } from './net.js';
 import { angleDiff } from './core/motion.js';
-import { screenToNDC, ndcToScreen } from './core/viewport.js';
+import { screenToNDC } from './core/viewport.js';
 import { buildPatrolRoutes, anchorRoute } from './core/patrol.js';
 
 const TMP = new THREE.Vector3();
@@ -508,7 +508,6 @@ export class Game {
       // 鼠标一动就把瞄准从触屏手里接回来（平板接鼠标 / 触屏本很常见）
       this.touchAimAngle = null;
       screenToNDC(this.canvas, e.clientX, e.clientY, this.mouseNDC);
-      this.hud.moveCrosshair(e.clientX, e.clientY);
     });
 
     window.addEventListener('mousedown', (e) => {
@@ -827,7 +826,6 @@ export class Game {
 
     this.hud.overlay?.classList.remove('hidden');
     this.hud.hud?.classList.add('hidden');
-    this.hud.crosshair?.classList.add('hidden');
     this.hud.gameover?.classList.add('hidden');
     this.hud.reward?.classList.add('hidden');
     this.hud.app?.classList.remove('playing');
@@ -1058,7 +1056,7 @@ export class Game {
    */
   _spawnCratesSolo() {
     const p = this.player.group.position;
-    const count = crateCount(1, () => R.spawn());
+    const count = crateCount(1, () => R.spawn(), this.wave);
     const pts = cratePositions({
       half: this.world.half || HALF,
       players: [p],
@@ -1459,16 +1457,16 @@ export class Game {
     // 抬手不清朝向，因为炮塔有转速，回弹手感很别扭。
     if (this.touchAimAngle !== null && this.player?.alive) {
       this._aimFromTouch(TMP);
-      this._applyAim(TMP.x, TMP.z, true);
+      this._applyAim(TMP.x, TMP.z);
       return;
     }
     this.aimRay.setFromCamera(this.mouseNDC, this.camera);
     const hit = this.aimRay.ray.intersectPlane(this.groundPlane, TMP);
     if (!hit) return;
-    this._applyAim(TMP.x, TMP.z, false);
+    this._applyAim(TMP.x, TMP.z);
   }
 
-  _applyAim(x, z, projectCrosshair) {
+  _applyAim(x, z) {
     this.aimPoint.set(x, 0, z);
 
     // 指示环跟随**炮口实际指向**，不是鼠标。
@@ -1498,11 +1496,6 @@ export class Game {
 
     // 触屏模式下准心跟着这个环走，而不是跟着手指 —— 屏幕上手指压住的位置
     // 通常是"目标所在"，准心再画在那里就等于没有。
-    if (projectCrosshair) {
-      const v = TMP3.set(mx, 0.06, mz).project(this.camera);
-      const s = ndcToScreen(this.canvas, v);
-      this.hud.moveCrosshair(s.x, s.y);
-    }
   }
 
   /** 顶部地表指示：0.12 秒刷一次就够，玩家看不出差别，还省 DOM 重排 */
@@ -2469,7 +2462,6 @@ export class Game {
     // 回到主菜单：显示开局面板，收起 HUD
     this.hud.overlay?.classList.remove('hidden');
     this.hud.hud?.classList.add('hidden');
-    this.hud.crosshair?.classList.add('hidden');
     this.hud.gameover?.classList.add('hidden');
     this.hud.app?.classList.remove('playing');
     this.keys.clear();

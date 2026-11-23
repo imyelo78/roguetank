@@ -29,9 +29,9 @@ import { buildTerrain, TERRAIN } from './core/terrain.js';
 import { NetDebug } from './debug.js';
 import { assistAim, AIM_RANGE } from './input/touch.js';
 import { FOG_BASE } from './core/quality.js';
-import { ndcToScreen } from './core/viewport.js';
 import { makeCrate } from './crate-visual.js';
 import { ZoneVisual, BeamVisual } from './zone-visual.js';
+import { HealAura } from './auras.js';
 
 /** 服务端的模拟步长。预测必须按这个节奏走，不能按渲染帧（见 update） */
 const TICK_DT = 1 / TICK_RATE;
@@ -268,7 +268,7 @@ export class CoopMode {
     this.game.touch?.setTarget(this.game.soloTouchTarget());
 
     for (const t of this.tanks.values()) t.dispose(this.scene);
-    for (const t of this.enemies.values()) t.dispose(this.scene);
+    for (const t of this.enemies.values()) { t.aura?.dispose(); t.dispose(this.scene); }
     for (const b of this.bullets.values()) b.destroy();
     this.tanks.clear();
     this.enemies.clear();
@@ -503,6 +503,10 @@ export class CoopMode {
     // 一旦被 Tank 的反馈逻辑改到就会让所有敌人一起变色。
     t.bar.traverse((o) => { o.userData.noFlash = true; });
 
+    // 补给车的光环：与单机同一个实现（auras.js）。半径直接来自
+    // ENEMY_TYPES.support.healAura，和判定完全一致——圈还在，人就一定在范围内。
+    if (type === 'support') t.aura = new HealAura(t.group, scale);
+
     this.enemies.set(id, t);
     return t;
   }
@@ -575,7 +579,6 @@ export class CoopMode {
       const r = el.getBoundingClientRect();
       this.mouseNDC.x = ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1;
       this.mouseNDC.y = -((e.clientY - r.top) / Math.max(1, r.height)) * 2 + 1;
-      this.game.hud.moveCrosshair(e.clientX, e.clientY);
     };
     this._onMouseDown = (e) => {
       if (e.button === 0) this.firing = true;
@@ -678,6 +681,9 @@ export class CoopMode {
 
   update(dt) {
     if (!this.active) return;
+
+    // 补给车光环的呼吸（纯视觉，不读快照，断线时也保持可见）
+    for (const t of this.enemies.values()) t.aura?.update(dt);
     const input = this._readInput();
 
     // 发意图给服务端
@@ -1055,6 +1061,20 @@ export class CoopMode {
         beams.push({ x: e.x, z: e.z, yaw: e.turretYaw + Math.PI, len });
       }
 
+      // 补给车：附近有残血友军时整片亮一点，相当于"正在治疗"的持续指示。
+      // 服务端不发治疗事件，本地按快照推一次就够——哪怕判定晚一帧，
+      // 玩家依然能看到"这台车在奶人"，而不是看着血条莫名其妙往回涨。
+      if (t.aura) {
+        let healing = false;
+        for (const o of s.enemies) {
+          if (o === e || (o.hp ?? 100) >= 99) continue;
+          if (Math.hypot(o.x - e.x, o.z - e.z) >= ENEMY_TYPES.support.healAura) continue;
+          healing = true;
+          break;
+        }
+        if (healing) t.aura.hit(0.3);
+      }
+
       // 血条：协议里 e.hp 是 0~100 的百分比（encodeSnapshot 已归一化）。
       // 12/13 版完全没消费这个字段，所以联机敌人的血条既没创建也不掉血。
       if (t.bar && t.bar.visible) {
@@ -1066,6 +1086,7 @@ export class CoopMode {
     }
     for (const [id, t] of this.enemies) {
       if (!alive.has(id)) {
+        t.aura?.dispose();
         t.dispose(this.scene);
         this.enemies.delete(id);
       }
@@ -1651,14 +1672,6 @@ export class CoopMode {
       }
     }
     this._aimMarker.position.set(mx, 0.06, mz);
-
-    // 触屏：准心跟到环上。食指压住的位置通常就是目标，准心画在那里等于没有。
-    if (this.touchAimAngle !== null && this.camera) {
-      const v = this._aimProj || (this._aimProj = new THREE.Vector3());
-      v.set(mx, 0.06, mz).project(this.camera);
-      const s = ndcToScreen(this.renderer.domElement, v);
-      this.game.hud.moveCrosshair(s.x, s.y);
-    }
   }
 
   /** BOSS 血条：服务端只给 hp 比例，名字按类型码认 */
