@@ -26,6 +26,7 @@ import { aimTurret, angleDiff } from './core/motion.js';
 import { createNav } from './nav.js';
 import { NetClient, predict, TICK_RATE } from './net.js';
 import { buildTerrain, TERRAIN } from './core/terrain.js';
+import { ZONES, zoneIndexForWave, terrainOptsFor, zoneSeedFor } from './core/zones.js';
 import { NetDebug } from './debug.js';
 import { assistAim, AIM_RANGE } from './input/touch.js';
 import { FOG_BASE } from './core/quality.js';
@@ -228,6 +229,10 @@ export class CoopMode {
     this._initScene();
     // 建筑以服务端为准（中途加入也能拿到完整布局，重开一局也是新的）
     this._applyServerLayout(welcome);
+    // 地形基数（局种子 ^ 常数）。换战区时用 zoneSeedFor(base, id) 派生，
+    // 与服务端 World._enterZone 是同一个公式，所以两边算出来的图逐字节一致。
+    this._terrainBase = { ...(welcome.world?.terrain || {}) };
+    this._zoneId = zoneIndexForWave(welcome.world?.wave || 1);
     // 敌人寻路网格按新地图重烘一次（进房只做一次，不进帧循环）
     this.game.nav = createNav(this.world);
     this._buildMyTank(welcome);
@@ -1596,6 +1601,30 @@ export class CoopMode {
     this.game.minimap?.invalidate?.();
   }
 
+  /**
+   * 换战区：重建地表 + 掩体 + 导航。每 5 波一次，由服务端的 wave 事件驱动。
+   *
+   * 服务端已经把新布局的坐标发下来了（boxes），这里**不自己生成布局**，
+   * 只重建地表（seed 是纯函数，两端必然一致）与派生物（小地图、导航网格）。
+   */
+  _enterZone(zoneId, boxes) {
+    this._zoneId = zoneId;
+    const z = ZONES[zoneId] || null;
+    const base = this._terrainBase || {};
+    const bseed = (base.base ?? base.seed ?? 0) >>> 0;
+    const zseed = zoneSeedFor(bseed, zoneId);
+
+    const map = buildTerrain(zseed, HALF, {
+      k: Number(base.k ?? 1), ...terrainOptsFor(z),
+    });
+    this.world.setTerrain(map);
+    this.game.minimap?.setTerrain?.(map);
+    if (Array.isArray(boxes) && boxes.length) this._applyServerLayout({ world: { boxes } });
+    this.game.nav = createNav(this.world);
+
+    if (z) this.game.hud.showMessage(`进入战区 · ${z.name}`, 2.2);
+  }
+
   _updateCamera(dt) {
     const cam = this.camera;
     // 先撤掉上一帧的震屏偏移。震屏是**纯视觉附加量**，如果直接加进
@@ -1764,6 +1793,10 @@ export class CoopMode {
           else this.game.hud.showMessage('队友已被救起', 1.4);
           break;
         case 'wave':
+          // 换战区：服务端把新布局的权威坐标一起发下来。
+          // 这一步不能省——服务端的碰撞表已经换成新图了，客户端还留着旧墙，
+          // 就是"你看得见墙、服务端没有"（历史上最贵的一次事故）。
+          if (e.zone != null && e.zone !== this._zoneId) this._enterZone(e.zone, e.boxes);
           this.game.hud.showMessage(e.boss ? `第 ${e.wave} 波 · BOSS 来袭` : `第 ${e.wave} 波 来袭`, 1.8);
           // 配乐跟着波次加压（单机同款曲线，见 Game.startWave）
           this.sound.setMusicIntensity(e.boss ? 0.95 : Math.min(0.72, 0.42 + (e.wave || 1) * 0.03));
