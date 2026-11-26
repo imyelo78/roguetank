@@ -52,7 +52,8 @@ for (const [type, m] of Object.entries(BOSS_META)) {
 const tmpGoal = new THREE.Vector3();
 
 export class Enemy {
-  constructor(scene, { x, z, hp = 60, speed = 9, camera, type = 'gunner', damage, patrolRoute = null, awaken = null }) {
+  constructor(scene, { x, z, hp = 60, speed = 9, camera, type = 'gunner', damage, patrolRoute = null, awaken = null,
+    rotY = null, dormant = false }) {
     const charger = type === 'charger';
     const elite = type === 'elite';
     const bossInfo = BOSS_INFO[type];
@@ -87,7 +88,9 @@ export class Enemy {
       speed: speed * speedMul,
       x,
       z,
-      rotY: R.combat() * Math.PI * 2,
+      // 战役布阵要"车头朝历史方向"；无尽模式仍然每辆随机朝向，
+      // 否则一开局所有敌人炮口都朝同一个方向，看起来像摆拍。
+      rotY: rotY != null ? rotY : R.combat() * Math.PI * 2,
     });
     this.tank.group.scale.setScalar(scale);
     this.tank.radius = boss ? bossInfo.radius
@@ -187,6 +190,9 @@ export class Enemy {
     }
 
     this.state = 'patrol';
+    // 未察觉（战役开局）：车组在车外开会 / 在舱口观察，不会主动开火。
+    // 无尽模式和联机永远不传这个参数，行为与之前完全一致。
+    this.dormant = !!dormant;
     this.target = null;
     // 巡逻/驻军状态。没有路线就是猎杀队，沿用原来的追击 AI。
     // offset 用固定随机流，保证单机每局路线一致（方便复现问题）。
@@ -195,7 +201,7 @@ export class Enemy {
     this.tank.onDamaged = () => this._onDamaged();
     this._ctx = null;
     this.fireCd = 1.2 + R.combat() * 1.6;
-    this.spawnShield = 0.9;   // 出场保护，避免刚出生就被秒
+    this.spawnShield = dormant ? 0 : 0.9;   // 战役里的车是"一直在那儿"，不是刚刷出来的
     this.stuckT = 0;          // 卡住计时
     this.avoidT = 0;          // 脱困方向剩余时间
     this.avoidDir = new THREE.Vector3(0, 0, 1);
@@ -338,7 +344,29 @@ export class Enemy {
   }
 
   /** 被玩家命中：自己和 26 米内的同伴从巡逻转入追击 */
+  /**
+   * 惊醒（战役专用）。
+   *
+   * @param {number} delay 惊醒后多久才能开火（秒）。
+   *
+   * 为什么要给延迟：真实里第一炮响过之后，英军有几十秒完全没组织起还击
+   * ——车组在车外、电台里全是互相询问。如果惊醒即开火，玩家打第二辆时
+   * 就已经有十几门炮指着自己，"单车突入"的窗口直接消失。
+   * 延迟只推 fireCd（开火判定看它），不影响移动与转向：
+   * 车会开始动、炮塔开始转，但第一发要等。
+   */
+  wake(delay = 0) {
+    if (!this.dormant) return false;
+    this.dormant = false;
+    if (delay > 0) this.fireCd = Math.max(this.fireCd, delay);
+    if (this.patrol) wakePatrol(this.patrol);
+    return true;
+  }
+
   _onDamaged() {
+    // 挨打了当然会醒。这里的延迟比"听见炮声"短：自己车上炸了一下，
+    // 车组反应明显快于"隔壁田里有人开炮"。
+    if (this.dormant) this.wake(0.8);
     if (!this.patrol) return;
     wakePatrol(this.patrol);
     const ctx = this._ctx;
@@ -359,6 +387,16 @@ export class Enemy {
     this.flankT -= dt;
     if (this.spawnShield > 0) this.spawnShield -= dt;
     if (this.avoidT > 0) this.avoidT -= dt;
+
+    // ---- 未察觉：停着，但仍然是"活的" ----
+    //
+    // 战役开局英军正在路边等步兵，第一炮之前不会有人朝你冲过来。
+    // 这里只更新车体怠速与血条朝向，视线、瞄准、开火一律不跑——
+    // 否则玩家还没下土路，十八辆车就已经转头锁定了，"遭遇战"就不成立了。
+    if (this.dormant) {
+      this._updateBar();
+      return;
+    }
 
     const world = ctx.world;
     const p = tank.group.position;

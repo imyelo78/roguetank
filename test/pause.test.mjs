@@ -125,7 +125,7 @@ const methodBody = (src, name) => {
   assert.match(quit, /_clearField\(\)/, '退出时要清场，否则菜单背景停着上一局的战场');
   assert.match(quit, /hud\.overlay\?\.classList\.remove\('hidden'\)/, '退出后要显示开局面板');
   assert.match(quit, /sound\.stopMusic/, '退出时要停配乐');
-  assert.match(quit, /this\.mode !== 'solo'/, '组队退出要走 leaveCoop，不能在这里重写');
+  assert.match(quit, /mode === 'coop'/, '组队退出要走 leaveCoop，不能在这里重写（战役不是联机，不能用 !== solo 判断，会误送进 leaveCoop）');
   ok('quitToMenu：回菜单、清场、停音乐、不上榜');
 
   // HUD 侧：继续要把 #app.playing 补回来（showPause 摘掉了它）

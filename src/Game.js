@@ -19,6 +19,11 @@ import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
 import { R, Rng, randomSeed } from './rng.js';
 import { crateCount, cratePositions, rollCategory, rollCard, CATEGORIES } from './core/crates.js';
 import { zoneForWave, terrainOptsFor, layoutOptsFor, zoneSeedFor } from './core/zones.js';
+// 经典战役：波卡基村。地形（公路折线）、掩体、英军布阵全部由这一份数据决定，
+// Game 只负责"把它铺出来"。不要在 Game 里再抄一遍坐标——那是三条线分叉的老路。
+import { BATTLE, PLAYER_START as BATTLE_START, ROADS as BATTLE_ROADS,
+  buildVillersBoxes, UNITS as BATTLE_UNITS, OBJECTIVE as BATTLE_OBJECTIVE,
+  TOWN_CENTER } from './core/villers.js';
 import { BOSS_META, BOSS_SKILLS, bossTypeForWave, pickLateBoss, bossHpFor, ZONE, stepZones,
   stageBarRatio, rollAwakens, AWAKEN_NUM, awakenNamesOf, isAnchored } from './core/bosskit.js';
 import { ZoneVisual, BeamVisual } from './zone-visual.js';
@@ -120,7 +125,12 @@ export class Game {
     // ---- 组队联机 ----
     this.net = new NetClient();
     this.coop = null;          // 进房后实例化为 CoopMode
-    this.mode = 'solo';        // solo | coop
+    this.mode = 'solo';        // solo | coop | campaign
+    // 经典战役的运行时状态（null = 当前不是战役局）。见 startCampaign。
+    this.campaign = null;
+    this._campaignDone = false;
+    // 出生点覆盖：只有战役局用。无尽/联机不设，保持原行为。
+    this._spawnOverride = null;
     this._booted = false;
 
     this.hud = new HUD();
@@ -349,6 +359,11 @@ export class Game {
     }
     const c = CHASSIS[normalizeChassisId(this.chassisId)];
     const ct = CHASSIS_TABLE[normalizeChassisId(this.chassisId)];
+    // 战役局从 213 树林出发；其余模式仍是 PLAYER_START。
+    const sp = this._spawnOverride || PLAYER_START;
+    const yaw = this._spawnOverride && this._spawnOverride.yaw != null
+      ? this._spawnOverride.yaw
+      : Math.PI;
     this.player = new Tank(this.scene, {
       team: 'player',
       chassis: this.chassisId,
@@ -361,11 +376,11 @@ export class Game {
       // 炮塔：与联机端读同一张表，均衡/重装全向瞬间，轻装/猎手全向 170°/s
       turretRate: ct.turretRate,
       turretLimit: ct.turretLimit,
-      x: PLAYER_START.x,
-      z: PLAYER_START.z,
-      rotY: Math.PI,
+      x: sp.x,
+      z: sp.z,
+      rotY: yaw,
     });
-    this.player.setAim(Math.PI);
+    this.player.setAim(yaw);
     this.player.group.position.y = 0;
   }
 
@@ -531,12 +546,19 @@ export class Game {
 
     this.hud.bind({
       onStart: (id, opts) => {
+        // 战役走自己的开局：同一份 HUD 的"开始"按钮，按菜单里选中的模式分流。
+        // 不能先设 mode='solo' 再判断——startCampaign 内部会设 'campaign'，
+        // 这里设早了会被 restart/quit 的判断读到。
+        if (opts && opts.campaign) {
+          this.startCampaign(id, opts || {});
+          return;
+        }
         this.mode = 'solo';
         this.start(id, opts || {});
       },
       onCoop: (id, opts) => this.openCoop({ name: opts?.name, chassis: id }),
       onRestart: () => {
-        this.mode = 'solo';
+        if (this.mode !== 'campaign') this.mode = 'solo';
         this.restart();
       },
       onPick: (id) => this._pickCard(id),
@@ -817,7 +839,116 @@ export class Game {
     this.startWave(1);
   }
 
+  /**
+   * 进入经典战役（目前只有一张：波卡基村）。
+   *
+   * 与 start() 的差别只有三件事：**地图固定、敌人布好、没有波次**。
+   * 输入 / 相机 / 子弹 / 特效 / 受伤 / 暂停 / 结算全部复用同一套循环——
+   * 另写一套的下场是"战役里补给车不回血、准星又回来了"这种补丁永远对不齐。
+   *
+   * 地图与布阵的唯一来源是 core/villers.js。这里只负责把它铺出来。
+   */
+  startCampaign(chassisId, opts = {}) {
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur?.();
+    }
+    this.paused = false;
+    this.keys.clear();
+    this.firing = false;
+    this.chassisId = normalizeChassisId(chassisId);
+    if (opts.name) this.callsign = opts.name;
+    this.mode = 'campaign';
+
+    this._applySeed(BATTLE.seed);
+    this._clearField();
+    this._resetRun();
+    this._campaignDone = false;
+
+    // ---- 虎式 ----
+    // 不新开一个车体：那会让选车界面多出一辆"只能在战役里用"的车，
+    // 也会让联机的 chassis 表跟着长一条。这里只把豹式的底子按虎式的性格改：
+    // 更耐打、更慢、单发更重。倍率的由来写在 core/villers.js 顶部。
+    this.stats.maxHp = Math.round(this.stats.maxHp * 3.4);
+    this.stats.speed *= 0.72;
+    this.stats.damageMul *= 1.7;
+    this.stats.damageTakenMul *= 0.55;
+
+    // ---- 地表：全草地 + 显式公路 ----
+    // k 固定 1：公路 1.12 / 草地 1.00 是这一关唯一的地形信息。
+    // 让画质档位把它关掉（k=0）等于公路白铺——玩家会看到路、但开上去不提速。
+    const map = buildTerrain(BATTLE.seed, HALF, {
+      plain: true, roads: BATTLE_ROADS, k: 1,
+    });
+    this.terrainMap = map;
+    this.world.setTerrain(map);
+    this.minimap?.setTerrain?.(map);
+
+    // ---- 掩体：树篱 + 农舍，坐标固定，不参与随机扰动 ----
+    this.world.setLayout(buildVillersBoxes());
+    this.nav = createNav(this.world);
+    this.patrolRoutes = [];
+    // 战役不参与战区轮换。给一个不存在的 id，避免任何残留路径把它当第 0 战区重建。
+    this.zoneId = -1;
+
+    // ---- 玩家：213 北侧树林边缘 ----
+    this._spawnOverride = BATTLE_START;
+    this._resetPlayer();
+    this._spawnOverride = null;
+    this.playerVel.x = 0;
+    this.playerVel.z = 0;
+    this._lastPlayerX = null;
+    this._lastPlayerZ = null;
+    this.camera.position.set(BATTLE_START.x, CAM_HEIGHT, BATTLE_START.z + CAM_BACK);
+    this.camLook.set(BATTLE_START.x, 1, BATTLE_START.z - 12);
+    this.aimPoint.set(BATTLE_START.x, 0, BATTLE_START.z - 24);
+
+    // ---- 英军布阵 ----
+    // 全部 dormant：车组在车外等步兵，第一炮之前没人朝你冲过来。
+    // 速度给 7：巡洋坦克比虎式快，但这一关它们大部分时间在原地。
+    for (const u of BATTLE_UNITS) {
+      this._spawnEnemyAt(u.hp, u.type === 'turret' ? 0 : 7, u.x, u.z, u.type, null, {
+        rotY: u.yaw, dormant: true, quiet: true,
+      });
+    }
+
+    this.campaign = {
+      time: 0,
+      inTown: false,
+      /** 已经喊过的提示，避免同一句每帧弹 */
+      said: {},
+      /** 首位击毁的时刻（做结算用） */
+      firstKillAt: 0,
+    };
+
+    // 战役不发空投：宝箱是"波次之间补给"的机制，历史关卡里没有这个东西。
+    if (this.crates.length) {
+      this.crates.length = 0;
+      this._clearCrateVisuals();
+    }
+
+    this.sound.unlock();
+    this.sound.startMusic();
+    this.sound.fanfare();
+    this.hud.setModifier(null);
+    this.hud.setHealth(this.player.hp, this.player.maxHp);
+    this.hud.showCampaign(BATTLE, BATTLE_OBJECTIVE);
+    this.hud.startPlaying();
+    this.hud.setPausable(true);
+    this.state = 'playing';
+    this.touchAimAngle = null;
+    this.touch.refresh();
+    this.aimMarker.visible = true;
+    this.camera.lookAt(this.camLook);
+    this.hud.showMessage(`${BATTLE.name} · ${BATTLE.subtitle}`, 3.2);
+  }
+
   restart() {
+    // 战役重开必须回同一张图：这里走 startCampaign 而不是 start，
+    // 否则"再来一局"会把玩家扔进一张随机图，前 3 分钟的仗白打。
+    if (this.mode === 'campaign') {
+      this.startCampaign(this.chassisId, { name: this.callsign });
+      return;
+    }
     // 重开换一张图，保持新鲜感
     this.start(this.chassisId, { name: this.callsign });
   }
@@ -873,15 +1004,22 @@ export class Game {
    */
   quitToMenu() {
     // 组队有自己的一套（要断线、给服务端清理席位），不要在这里重复实现
-    if (this.mode !== 'solo') {
+    // 只有联机才需要走"断线 + 交还席位"那套。战役不是联机，
+    // 用 !== 'solo' 判断会把它误送进 leaveCoop，退出按钮直接失灵。
+    if (this.mode === 'coop') {
       this.leaveCoop();
       return;
     }
+    this.mode = 'solo';
+    this.campaign = null;
+    this._campaignDone = false;
+    this._spawnOverride = null;
     this.paused = false;
     this.state = 'menu';
     this.keys.clear();
     this.firing = false;
     this.hud.hidePause();
+    this.hud.hideCampaign();
     this.hud.setPausable(false);
     this.touch.refresh();
     this.sound.stopMusic(0.5);
@@ -1296,13 +1434,22 @@ export class Game {
     )];
   }
 
-  _spawnEnemyAt(hp, speed, x, z, type, awaken = null) {
+  /**
+   * @param {object|null} [opts] 战役布阵用
+   *   rotY    固定车头朝向（不传 = 随机）
+   *   dormant 未察觉（战役开局）
+   *   quiet   不放出生冲击环（布阵不是"刷怪"，18 个环同时炸开很蠢）
+   */
+  _spawnEnemyAt(hp, speed, x, z, type, awaken = null, opts = null) {
     const enemy = new Enemy(this.scene, {
       x, z, hp, speed, type, awaken,
       camera: this.camera,
       patrolRoute: this._patrolRouteFor(type, x, z),
+      rotY: opts && opts.rotY != null ? opts.rotY : null,
+      dormant: !!(opts && opts.dormant),
     });
     this.enemies.push(enemy);
+    if (opts && opts.quiet) return;
     // 出生特效走轻量档：一波刷 6~8 个敌人时，每个都放一个满尺寸冲击环，
     // 几个环同时在扩就是屏幕上横着的一圈大光带，既盖视野也看不出"哪只是刚出来的"。
     // 环缩到 0.32、闪光缩到 0.55，仍然保留"这里冒出来一个"的提示。
@@ -1662,6 +1809,8 @@ export class Game {
       // 屏幕上炮管指着前面、炮弹却横着飞出去。
       const fy = player.turretYaw;
       this._firePlayer(new THREE.Vector3(Math.sin(fy), 0, Math.cos(fy)), w);
+      // 第一炮响过，整条公路都醒了（战役专用；无尽/联机没有 dormant 的单位）
+      if (this.mode === 'campaign') this._wakeCampaign();
 
       if (w.heat) {
         this.heat += w.heat.perShot;
@@ -2084,6 +2233,106 @@ export class Game {
     this.hud.renderChips(list);
   }
 
+  // ================= 经典战役 =================
+
+  /**
+   * 战役主循环：计时、目标提示、胜负。
+   *
+   * 不做的事情：不刷怪、不选卡、不算波次、不发空投。
+   * 敌人全部由 startCampaign 一次性布好，死了就是死了。
+   */
+  _updateCampaign(dt) {
+    const c = this.campaign;
+    if (!c || this._campaignDone) return;
+
+    c.time += dt;
+
+    const p = this.player.group.position;
+    const distTown = Math.hypot(p.x - TOWN_CENTER.x, p.z - TOWN_CENTER.z);
+    const inTown = distTown < TOWN_CENTER.r;
+
+    // 抵达镇中心：只提示一次。这是历史上的"最后一步"，也是胜利的两个条件之一。
+    if (inTown && !c.inTown) {
+      c.inTown = true;
+      this.hud.showMessage('已进入镇中心 · 6 磅炮阵地就在广场', 2.6);
+    }
+
+    // 玩家靠近到 55 m 内、且有视线时，车组自己也会发现你（不必等你开炮）。
+    // 这是"遭遇战"该有的样子：你能摸到队尾，但不可能从十八辆车中间开过去。
+    for (const e of this.enemies) {
+      if (!e.dormant || !e.alive) continue;
+      const d = Math.hypot(e.position.x - p.x, e.position.z - p.z);
+      if (d < 55) e.wake(1.4 + Math.random() * 1.6);
+    }
+
+    // 目标进度：击毁数 + 是否进镇。KILLS 只是"车辆数"，炮台也算在内，
+    // 因为一门 6 磅炮对玩家的威胁不比一辆克伦威尔小。
+    this.hud.setCampaignProgress({
+      kills: this.kills,
+      need: BATTLE_OBJECTIVE.kills,
+      left: Math.max(0, BATTLE_OBJECTIVE.timeLimit - c.time),
+      inTown,
+    });
+
+    // 击毁数够了还没进镇：提示一次，别让玩家在镇外干等
+    if (this.kills >= BATTLE_OBJECTIVE.kills && !c.inTown && !c.said.goTown) {
+      c.said.goTown = true;
+      this.hud.showMessage('战果已达成 · 开进镇中心结束战斗', 2.4);
+    }
+
+    if (this.kills >= BATTLE_OBJECTIVE.kills && inTown) {
+      this._finishCampaign(true);
+      return;
+    }
+    if (c.time >= BATTLE_OBJECTIVE.timeLimit) {
+      this._finishCampaign(false, 'timeout');
+    }
+  }
+
+  /**
+   * @param {boolean} win
+   * @param {'dead'|'timeout'|''} [reason] 失败原因。阵亡与超时的文案必须不同，
+   *   否则玩家车被打爆了却看到"时间耗尽"，会以为是计时器 bug。
+   */
+  _finishCampaign(win, reason = '') {
+    if (this._campaignDone) return;
+    this._campaignDone = true;
+    this.campaign.win = win;
+    this.campaign.reason = reason;
+    this.state = 'over';
+    this.overTimer = 5;
+    this.firing = false;
+    this.keys.clear();
+    this.sound.stopMusic(0.8);
+    this.hud.showCampaignResult({
+      win,
+      reason,
+      kills: this.kills,
+      need: BATTLE_OBJECTIVE.kills,
+      time: this.campaign.time,
+    });
+    this.hud.showMessage(win ? '战果达成 · 纵队被击溃'
+      : reason === 'dead' ? '车组覆灭' : '时间耗尽 · 英军已重整', 3.2);
+  }
+
+  /**
+   * 玩家开炮 → 惊醒附近的英军。
+   *
+   * 距离给 120 m：这一关整条公路都在 120 m 内，等于"第一炮之后全场都知道"。
+   * 但每辆车的开火延迟按距离给（远的更晚），于是玩家会看到
+   * "近处的车先转炮塔、远处的车还在原地"——这就是遭遇战第一分钟的实感。
+   */
+  _wakeCampaign() {
+    if (!this.campaign) return;
+    const p = this.player.group.position;
+    for (const e of this.enemies) {
+      if (!e.dormant || !e.alive) continue;
+      const d = Math.hypot(e.position.x - p.x, e.position.z - p.z);
+      if (d > 120) continue;
+      e.wake(1.6 + d / 40 + Math.random() * 1.2);
+    }
+  }
+
   _updateWaves(dt) {
     this.waveTime += dt;
 
@@ -2318,7 +2567,10 @@ export class Game {
       this._updateZones(dt);
       this._updateCratesSolo(dt);
       // 玩家可能在同一帧被击毁，避免“死亡后清波”覆盖结算状态
-      if (this.state === 'playing') this._updateWaves(dt);
+      if (this.state === 'playing') {
+        if (this.mode === 'campaign') this._updateCampaign(dt);
+        else this._updateWaves(dt);
+      }
       if (this.state === 'playing') this._syncBossBar();
     } else if (this.state === 'cleared') {
       this._updateBullets(dt);
@@ -2331,18 +2583,26 @@ export class Game {
       if (this.overTimer > 0) {
         this.overTimer -= dt;
         if (this.overTimer <= 0) {
-          const { best, isNew } = this._gameOverTime();
-          this.hud.setBest(best);
-          const base = {
-            wave: this.wave,
-            kills: this.kills,
-            score: this.score,
-            time: formatTime(this.runTime),
-            best,
-            isNew,
-          };
-          // 每日挑战与训练模式都上传（各自独立榜单），训练模式分数不可比但可围观
-          this._submitRun(base, 'solo', 1);
+          if (this.mode === 'campaign') {
+            // 战役阵亡：走自己的结算面板（不写榜、不显示"最佳"）。
+            // 用 overTimer 延迟这 1.5 秒是为了让爆炸与镜头抖动先放完，
+            // 否则面板会在火光里直接盖上来。
+            if (!this._campaignDone) this._finishCampaign(false, 'dead');
+          } else {
+            const { best, isNew } = this._gameOverTime();
+            this.hud.setBest(best);
+            const base = {
+              wave: this.wave,
+              kills: this.kills,
+              score: this.score,
+              time: formatTime(this.runTime),
+              best,
+              isNew,
+            };
+            // 每日挑战与训练模式都上传（各自独立榜单），训练模式分数不可比但可围观。
+            // 战役不上榜：它是固定图固定布阵，成绩和"活到第几波"没有可比性。
+            this._submitRun(base, 'solo', 1);
+          }
         }
       }
     }

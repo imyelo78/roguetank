@@ -47,10 +47,27 @@
       <!-- 左上角空出来给小地图（.minimap-wrap 绝对定位在左上）。
            血量搬到右上，与击杀/得分同列：右列 = 装甲条 + 数字，垂直排。 -->
       <div class="hud-center">
-        <div class="wave-chip">
+        <div class="wave-chip" id="wave-chip">
           <span class="wave-label">WAVE</span>
           <b id="wave">1</b>
           <i class="enemy-left">剩余 <em id="left">0</em></i>
+        </div>
+        <!--
+          经典战役条：和无尽模式的波次胶囊同一位置、同一视觉重量。
+          内容换成"关卡 / 目标进度 / 倒计时"——战役没有波次，
+          硬把 wave 数字留在那儿只会让人以为还有第 7 波。
+        -->
+        <div id="campaign-bar" class="campaign-bar hidden">
+          <div class="cmp-head">
+            <b id="cmp-name">维莱博卡日</b>
+            <span id="cmp-date">1944-06-13 · 0900</span>
+          </div>
+          <div class="cmp-row">
+            <span class="cmp-kills">击毁 <b id="cmp-kills">0</b><i>/<em id="cmp-need">14</em></i></span>
+            <span id="cmp-town" class="cmp-town">待进镇</span>
+            <span id="cmp-clock" class="cmp-clock">15:00</span>
+          </div>
+          <div class="cmp-track"><i id="cmp-fill"></i></div>
         </div>
         <div id="terrain-chip" class="terrain-chip hidden">
           <i id="terrain-dot" class="terrain-dot"></i>
@@ -138,9 +155,9 @@
             <b>群狼共舞</b>
             <i>4人团队协作关卡</i>
           </button>
-          <button class="mode-card off" data-mode="campaign" disabled>
+          <button class="mode-card" data-mode="campaign">
             <b>经典战役</b>
-            <i>复刻开发中</i>
+            <i>复刻真实战例</i>
           </button>
         </div>
       </div>
@@ -334,6 +351,27 @@
       <button id="again-btn">再来一局</button>
       <p id="go-note" class="go-note hidden"></p>
       <p class="tip">最佳 <b id="best-line">—</b></p>
+    </div>
+  </div>
+
+  <!-- ================= 战役结算 =================
+       单独一块，不复用 #gameover：那块面板的四个标签是"抵达波次 / 击杀 / 得分 / 存活"，
+       战役没有波次和得分，硬改文案会污染下一局无尽模式的结算（DOM 是同一份）。 -->
+  <div id="campaign-end" class="overlay hidden">
+    <div class="panel">
+      <h2 id="cmp-end-title" class="fail">车组覆灭</h2>
+      <p id="cmp-end-sub" class="cmp-end-sub">1944-06-13 · 维莱博卡日</p>
+
+      <div class="stats-grid">
+        <div><span>击毁</span><b id="cmp-end-kills">0</b></div>
+        <div><span>目标</span><b id="cmp-end-need">14</b></div>
+        <div><span>用时</span><b id="cmp-end-time">0:00</b></div>
+        <div><span>评价</span><b id="cmp-end-rank">—</b></div>
+      </div>
+
+      <p id="cmp-end-note" class="go-note"></p>
+      <button id="cmp-end-again">再打一次</button>
+      <button id="cmp-end-menu" class="ghost-btn">返回主菜单</button>
     </div>
   </div>
 </div>

@@ -402,6 +402,89 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- 经典战役条 ---------- */
+/* 和无尽模式的波次胶囊占同一个位置：切模式时眼睛不需要重新找信息。 */
+.campaign-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 198px;
+  padding: 8px 14px 9px;
+  border-radius: 10px;
+  background: rgba(12, 18, 23, .78);
+  border: 1px solid rgba(255, 166, 61, .26);
+  backdrop-filter: blur(6px);
+}
+.cmp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cmp-head b {
+  font-size: 13px;
+  letter-spacing: .08em;
+  color: #fff;
+}
+.cmp-head span {
+  font-size: 9px;
+  letter-spacing: .06em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cmp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: #9fb2c2;
+}
+.cmp-kills b {
+  font-size: 15px;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+.cmp-kills i { font-style: normal; color: #6f8291; }
+.cmp-kills em { font-style: normal; color: #9fb2c2; }
+.cmp-town {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .06);
+  font-size: 9px;
+  letter-spacing: .06em;
+}
+.cmp-town.on {
+  background: rgba(155, 211, 90, .16);
+  color: #c3e08f;
+}
+.cmp-clock {
+  font-variant-numeric: tabular-nums;
+  color: #c9d6e2;
+}
+.cmp-clock.warn { color: #ff8a6a; }
+.cmp-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .09);
+  overflow: hidden;
+}
+.cmp-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #ffa63d, #ffd08a);
+  transition: width .25s ease-out;
+}
+.cmp-end-sub {
+  margin: -4px 0 16px;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: .1em;
+  color: var(--muted);
+}
+.panel h2.win { color: #ffd08a; }
+
 /* ---------- Boss 血条 ---------- */
 /* [4] 挪到左上角、挂在小地图右边。 */
 .boss-bar {

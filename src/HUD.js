@@ -158,10 +158,35 @@ export class HUD {
     this.selectedChassis = 'panther';
     this.renderChassis();
 
-    // 作战模式：solo / coop / campaign（campaign 还没实装，卡片是 disabled）
+    // 作战模式：solo / coop / campaign
     this.mode = 'solo';
     this.modeEl = $('mode-cards');
     this.startBtn = $('start-btn');
+
+    // 经典战役：顶部目标条 + 独立结算面板。
+    // 结算不复用 #gameover —— 那块面板的标签是"抵达波次 / 得分"，
+    // 改文案会留在 DOM 里，下一局无尽结算就会显示错。
+    this.waveChip = $('wave-chip');
+    this.campaignBar = $('campaign-bar');
+    this.cmpName = $('cmp-name');
+    this.cmpDate = $('cmp-date');
+    this.cmpKills = $('cmp-kills');
+    this.cmpNeed = $('cmp-need');
+    this.cmpTown = $('cmp-town');
+    this.cmpClock = $('cmp-clock');
+    this.cmpFill = $('cmp-fill');
+    this.campaignEnd = $('campaign-end');
+    this.cmpEndTitle = $('cmp-end-title');
+    this.cmpEndSub = $('cmp-end-sub');
+    this.cmpEndKills = $('cmp-end-kills');
+    this.cmpEndNeed = $('cmp-end-need');
+    this.cmpEndTime = $('cmp-end-time');
+    this.cmpEndRank = $('cmp-end-rank');
+    this.cmpEndNote = $('cmp-end-note');
+    // 脏检查缓存：这三个值每帧都会被 setCampaignProgress 写一次
+    this._cmpKills = -1;
+    this._cmpTown = null;
+    this._cmpSec = -1;
 
     // 右下角操作说明
     this.keyHelp = $('key-help');
@@ -336,7 +361,9 @@ export class HUD {
    * 让三个卡片都是"选项"、按钮是"确认"，语义一致，也只有一条出错路径。
    */
   selectMode(mode) {
-    if (mode !== 'solo' && mode !== 'coop') return;
+    // 守卫跟着模式表走：加新模式时这里是最容易漏的一处（campaign 就漏过——
+    // 点了卡片没反应，玩家以为按钮坏了）
+    if (mode !== 'solo' && mode !== 'coop' && mode !== 'campaign') return;
     this.mode = mode;
     for (const el of this.modeEl.children) {
       el.classList.toggle('sel', el.dataset.mode === mode);
@@ -345,7 +372,9 @@ export class HUD {
     // 组队是"创建房间"、单人也是立刻开打，都是当前选择的主行动，
     // 视觉上不该有主次之分（以前分成两个按钮时才需要）。
     if (this.startBtn) {
-      this.startBtn.textContent = mode === 'coop' ? '组建队伍' : '单人出击';
+      this.startBtn.textContent = mode === 'coop' ? '组建队伍'
+        : mode === 'campaign' ? '进入战役'
+        : '单人出击';
     }
   }
 
@@ -696,7 +725,22 @@ export class HUD {
       autoFullscreenOnTouch();
       if (this.mode === 'coop') { enterCoop(); return; }
       const name = ensureName();
-      if (name) onStart(this.selectedChassis, { name });
+      // campaign 一起交出去：Game 那边按这个标记走 startCampaign。
+      // 不能只靠 Game 自己读 this.mode —— HUD 的模式选择是界面状态，
+      // 两者对齐的唯一点就在这里。
+      if (name) onStart(this.selectedChassis, { name, campaign: this.mode === 'campaign' });
+    });
+
+    // ---- 战役结算 ----
+    // "再打一次"必须回到同一张图（Game.restart 里按 mode 分流），
+    // 所以这里只关面板、调同一个 onRestart，不要另开一个开局路径。
+    $('cmp-end-again')?.addEventListener('click', () => {
+      this.campaignEnd?.classList.add('hidden');
+      onRestart?.();
+    });
+    $('cmp-end-menu')?.addEventListener('click', () => {
+      this.campaignEnd?.classList.add('hidden');
+      onQuit?.();
     });
 
     // ---- 触屏选项（辅助瞄准）----
@@ -1127,6 +1171,85 @@ export class HUD {
   }
 
   /** 顶部显示本局挑战词条 */
+  // ---------------- 经典战役 ----------------
+
+  /** 进入战役：把波次胶囊换成本关的目标条 */
+  showCampaign(battle, objective) {
+    this.waveChip?.classList.add('hidden');
+    this.campaignBar?.classList.remove('hidden');
+    this.campaignEnd?.classList.add('hidden');
+    if (battle) {
+      this.cmpName.textContent = battle.name;
+      this.cmpDate.textContent = battle.subtitle;
+    }
+    const need = (objective && objective.kills) || 14;
+    this.cmpNeed.textContent = String(need);
+    // 换关时必须把脏检查缓存清掉，否则"击毁 0"不会写进去（0 === 上一关的 0）
+    this._cmpKills = -1;
+    this._cmpTown = null;
+    this._cmpSec = -1;
+    this.setCampaignProgress({ kills: 0, need, left: (objective && objective.timeLimit) || 0, inTown: false });
+  }
+
+  /** 每帧调用。全部字段做脏检查：目标条和波次胶囊一样是"常显但极少变"的信息 */
+  setCampaignProgress({ kills, need, left, inTown }) {
+    if (!this.campaignBar || this.campaignBar.classList.contains('hidden')) return;
+    if (kills !== this._cmpKills) {
+      this._cmpKills = kills;
+      this.cmpKills.textContent = String(kills);
+      const pct = Math.max(0, Math.min(1, kills / Math.max(1, need)));
+      this.cmpFill.style.width = `${(pct * 100).toFixed(1)}%`;
+    }
+    if (inTown !== this._cmpTown) {
+      this._cmpTown = inTown;
+      this.cmpTown.textContent = inTown ? '已抵镇中心' : '待进镇';
+      this.cmpTown.classList.toggle('on', !!inTown);
+    }
+    const sec = Math.max(0, Math.ceil(left));
+    if (sec !== this._cmpSec) {
+      this._cmpSec = sec;
+      this.cmpClock.textContent = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+      this.cmpClock.classList.toggle('warn', sec <= 120);
+    }
+  }
+
+  hideCampaign() {
+    this.campaignBar?.classList.add('hidden');
+    this.waveChip?.classList.remove('hidden');
+    this.campaignEnd?.classList.add('hidden');
+  }
+
+  /**
+   * 战役结算。
+   *
+   * 评价按击毁数给：14 是"达成"，15~16 是优异，17+ 是"把 18 个目标全清了"。
+   * 不用分数——这一关没有波次和词条，分数只会变成一个没有参照的数字。
+   */
+  showCampaignResult({ win, reason, kills, need, time }) {
+    if (!this.campaignEnd) return;
+    this.campaignEnd.classList.remove('hidden');
+    this.hud?.classList.add('hidden');
+    this.app?.classList.remove('playing');
+    this._setPeek(false);
+    this.setPausable(false);
+
+    this.cmpEndTitle.textContent = win ? '战果达成' : '车组覆灭';
+    this.cmpEndTitle.className = win ? 'win' : 'fail';
+    this.cmpEndKills.textContent = String(kills);
+    this.cmpEndNeed.textContent = String(need);
+    const sec = Math.max(0, Math.round(time));
+    this.cmpEndTime.textContent = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+    this.cmpEndRank.textContent = !win ? '未达成'
+      : kills >= 17 ? '全歼'
+      : kills >= 15 ? '优异'
+      : '达成';
+    this.cmpEndNote.textContent = win
+      ? '1944-06-13 上午，魏特曼车组单车突入，二十分钟内击毁英军 A 中队先头纵队。镇子最终没有被德军夺回——战术上的完胜，战役上什么也没改变。'
+      : reason === 'dead'
+        ? '车组失去战斗力。历史上魏特曼在镇中心被反坦克炮击伤后弃车撤退——虎式没了，人也退出了这场战斗。'
+        : '时间耗尽。这场突袭的历史窗口只有二十几分钟，之后英军重新组织了防线，单车突入的机会再也没有出现。';
+  }
+
   setModifier(mod) {
     if (!this.modifierEl) return;
     if (mod && mod.id) {

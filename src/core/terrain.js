@@ -175,6 +175,43 @@ function carveRoad(cells, n, rnd, vertical) {
   }
 }
 
+/** 点到线段的距离（米）。战役图的公路是折线，不能只按"横平竖直"刷 */
+function distToSeg(px, pz, ax, az, bx, bz) {
+  const vx = bx - ax;
+  const vz = bz - az;
+  const wx = px - ax;
+  const wz = pz - az;
+  const len2 = vx * vx + vz * vz;
+  const t = len2 > 1e-9 ? Math.max(0, Math.min(1, (wx * vx + wz * vz) / len2)) : 0;
+  return Math.hypot(wx - vx * t, wz - vz * t);
+}
+
+/**
+ * 按折线刷公路（战役图专用）。
+ *
+ * 与 carveRoad 的区别：carveRoad 是"随机游走的一条直线"，用于无尽模式的每局换图；
+ * 这里刷的是**设计好的坐标**——N175 在哪儿、土路从哪儿分岔，是这一关的历史信息，
+ * 不能随机。宽度按米给（真实路面 6~12 m），不按格数，否则换 tile 就会变样。
+ */
+function carvePath(cells, n, x0, tile, pts, width) {
+  if (!Array.isArray(pts) || pts.length < 2) return;
+  const hw = Math.max(1, (width || 8) / 2);
+  for (let iz = 0; iz < n; iz++) {
+    const cz = x0 + (iz + 0.5) * tile;
+    for (let ix = 0; ix < n; ix++) {
+      const cx = x0 + (ix + 0.5) * tile;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        if (distToSeg(cx, cz, a[0], a[1], b[0], b[1]) <= hw) {
+          cells[iz * n + ix] = T_ROAD;
+          break;
+        }
+      }
+    }
+  }
+}
+
 /**
  * 生成一张地表类型场。
  *
@@ -196,16 +233,26 @@ export function buildTerrain(seed = 1, half = 100, opts = {}) {
   const cells = new Uint8Array(n * n); // 默认全 0 = 草地
   const rnd = mulberry32((seed >>> 0) || 0x9e3779b9);
 
-  // ---- 1. 公路：一纵一横打底，25% 的图多出一条 ----
+  // ---- 1. 公路 ----
   //
-  // 为什么不是"1~2 纵 + 1~2 横"：两条 2 格宽的路各 27 格，四条就吃掉
-  // 近 28% 的地面，公路变成主导地形，玩家全程在柏油上飞，
-  // 这个特性就白做了。三条封顶（约 21%）还能接受，四条不要。
-  const extra = rnd() < 0.25 ? 1 : 0;
-  const verts = 1 + (extra && rnd() < 0.5 ? 1 : 0);
-  const horzs = 1 + (extra && verts === 1 ? 1 : 0);
-  for (let i = 0; i < verts; i++) carveRoad(cells, n, rnd, true);
-  for (let i = 0; i < horzs; i++) carveRoad(cells, n, rnd, false);
+  // 两种来源，互斥：
+  //   opts.roads（战役）：折线由关卡数据给定，位置就是历史位置，不随机
+  //   否则（无尽）：一纵一横打底，25% 的图多出一条
+  //
+  // 为什么战役不能沿用随机公路：波卡基村的整场仗都押在"N175 从哪儿过、
+  // 213 的土路在哪儿分岔"上。公路随机漂一格，队尾就停在田里了。
+  if (Array.isArray(opts.roads) && opts.roads.length) {
+    for (const r of opts.roads) carvePath(cells, n, x0, tile, r.pts, r.width);
+  } else {
+    // 为什么不是"1~2 纵 + 1~2 横"：两条 2 格宽的路各 27 格，四条就吃掉
+    // 近 28% 的地面，公路变成主导地形，玩家全程在柏油上飞，
+    // 这个特性就白做了。三条封顶（约 21%）还能接受，四条不要。
+    const extra = rnd() < 0.25 ? 1 : 0;
+    const verts = 1 + (extra && rnd() < 0.5 ? 1 : 0);
+    const horzs = 1 + (extra && verts === 1 ? 1 : 0);
+    for (let i = 0; i < verts; i++) carveRoad(cells, n, rnd, true);
+    for (let i = 0; i < horzs; i++) carveRoad(cells, n, rnd, false);
+  }
 
   // ---- 2. 主地形 / 次地形：两套独立噪声各自取分位 ----
   //
@@ -264,12 +311,17 @@ export function buildTerrain(seed = 1, half = 100, opts = {}) {
   // 主地形 28%~42%：低于 28% 感觉不到，高于 45% 整局都在爬。
   // mainMul 让战区能把这个区间整体推高（沼泽战区）或压低（硬地战区），
   // 封顶 0.65：再高就只剩一种地面，"换图"要换的是布局，不是把玩家按在泥里。
-  const pMain = Math.min(0.65, (0.28 + rnd() * 0.14) * (opts.mainMul || 1));
+  //
+  // opts.plain：战役图的专用开关——全图草地 + 显式公路，不涂沙漠/雪地/沼泽。
+  // 诺曼底 6 月是树篱田野，不是三种地貌拼盘；而且战役图的每一块地面
+  // 都要对应真实地块，"这里随机出现一片雪地"会直接毁掉它。
+  // 三个占比归零 = paint 什么都不涂，且不消耗随机数，别的图完全不受影响。
+  const pMain = opts.plain ? 0 : Math.min(0.65, (0.28 + rnd() * 0.14) * (opts.mainMul || 1));
   // 次地形 8%~15%：成片，但明显比主地形小
-  const pSub = 0.10 + rnd() * 0.08;
+  const pSub = opts.plain ? 0 : 0.10 + rnd() * 0.08;
   // 第三地形 9%~14%：碎块点缀，负责"看着乱、走着要绕"。
   // 给得比目标值高，是因为后面的平滑会啃掉一部分小块（实测平均掉两成）。
-  const pThird = 0.09 + rnd() * 0.05;
+  const pThird = opts.plain ? 0 : 0.09 + rnd() * 0.05;
 
   // 按占比从大到小依次涂。每涂一层都跳过已被占用的格子，
   // 所以实际占比只会略小于目标值，不会叠在一起变成一片。
