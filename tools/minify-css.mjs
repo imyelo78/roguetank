@@ -5,15 +5,21 @@
 // 为了一个 CSS 压入 csso/esbuild 不划算。而"去掉空白"这种朴素做法会把
 // calc(50% + 47px) 压成 calc(50%+47px) —— 运算符两侧空格是语法要求，
 // 整条声明会直接失效。所以这里先把字符串和函数调用摘出来保护，压完再放回。
+//
+// 产物头部带源文件指纹：index.html 引用的是 styles.min.css，styles.css 改完
+// 忘了重跑本脚本的话，线上样式静默回退到旧包（r56 就犯过一次）。test/home.test.mjs
+// 会校验这个指纹，对不上直接报"min.css 过期"，不再靠人眼发现。
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SRC = process.argv[2] || path.join(root, 'styles.css');
 const DST = process.argv[3] || path.join(root, 'styles.min.css');
 
-let css = fs.readFileSync(SRC, 'utf8');
+const srcRaw = fs.readFileSync(SRC, 'utf8');
+let css = srcRaw;
 
 // 1) 去注释（先识别字符串，避免误删 content 里的 /*）
 {
@@ -70,8 +76,9 @@ for (let guard = 0; guard < 40; guard++) {
   if (css === before) break;
 }
 
-fs.writeFileSync(DST, css);
+fs.writeFileSync(DST,
+  `/* generated from ${path.basename(SRC)} (sha256 ${createHash('sha256').update(srcRaw).digest('hex').slice(0, 16)}) — 手改无效，改样式后重跑 npm run css:min */\n${css}`);
 
-const src = Buffer.byteLength(fs.readFileSync(SRC));
+const src = Buffer.byteLength(srcRaw);
 const dst = Buffer.byteLength(css);
 console.log(`${path.basename(SRC)}  ${src}B → ${path.basename(DST)}  ${dst}B  (-${((1 - dst / src) * 100).toFixed(1)}%)`);

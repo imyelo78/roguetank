@@ -18,6 +18,7 @@
  */
 import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -27,6 +28,20 @@ const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 
 let pass = 0;
 const ok = (msg) => { pass++; console.log(`  ✓ ${msg}`); };
+
+// index.html 引用的是 styles.min.css（生产压缩版），styles.css 只是源文件。
+// 改了源忘了重跑 npm run css:min 的话，线上样式静默回退——r56 就犯过一次，
+// 战役样式在服务器上根本不存在。压缩工具在产物头写源文件指纹，这里校验它。
+{
+  const min = fs.readFileSync(path.join(root, 'styles.min.css'), 'utf8');
+  const m = /\/\* generated from styles\.css \(sha256 ([0-9a-f]{16})\)/.exec(min);
+  assert.ok(m, 'styles.min.css 缺来源指纹（重跑 npm run css:min 生成）');
+  const want = createHash('sha256').update(css).digest('hex').slice(0, 16);
+  assert.equal(m[1], want,
+    'styles.min.css 是旧包：styles.css 改了但没重跑 npm run css:min');
+  assert.ok(html.includes('styles.min.css'), 'index.html 应引用压缩版样式');
+  ok('styles.min.css 与 styles.css 指纹一致（没有过期产物）');
+}
 
 // ---------------------------------------------------------------- [1] 设计稿数值
 {
