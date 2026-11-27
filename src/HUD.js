@@ -163,6 +163,16 @@ export class HUD {
     this.modeEl = $('mode-cards');
     this.startBtn = $('start-btn');
 
+    // 战役难度：新手 / 普通 / 冷血 / 魏神。选择存 localStorage（跟呼号同款
+    // 约定），默认"普通"——难度是玩家对史的自信，不是给新手埋的坑。
+    this.campaignDiffEl = $('campaign-diff');
+    this.diffChips = Array.from(document.querySelectorAll('.cd-chip[data-diff]'));
+    this.campaignDiff = localStorage.getItem('campaignDiff') || 'normal';
+    if (!this.diffChips.some((c) => c.dataset.diff === this.campaignDiff)) {
+      this.campaignDiff = 'normal';
+    }
+    this._syncDiffChips();
+
     // 经典战役：顶部目标条 + 独立结算面板。
     // 结算不复用 #gameover —— 那块面板的标签是"抵达波次 / 得分"，
     // 改文案会留在 DOM 里，下一局无尽结算就会显示错。
@@ -375,6 +385,16 @@ export class HUD {
       this.startBtn.textContent = mode === 'coop' ? '组建队伍'
         : mode === 'campaign' ? '进入战役'
         : '单人出击';
+    }
+    // 难度选择行只在战役模式下出现：无尽/联机没有难度档，
+    // 常驻一行灰按钮只会让人以为是坏掉的控件。
+    this.campaignDiffEl?.classList.toggle('hidden', mode !== 'campaign');
+  }
+
+  /** 难度芯片的选中态同步（构造与点击后共用） */
+  _syncDiffChips() {
+    for (const c of this.diffChips) {
+      c.classList.toggle('sel', c.dataset.diff === this.campaignDiff);
     }
   }
 
@@ -718,6 +738,16 @@ export class HUD {
       });
     });
 
+    // 难度芯片：点选即存档。不给确认弹窗——难度随时可以换着打，
+    // 加确认只会挡住"想试试魏神"的冲动。
+    for (const chip of this.diffChips) {
+      chip.addEventListener('click', () => {
+        this.campaignDiff = chip.dataset.diff;
+        localStorage.setItem('campaignDiff', this.campaignDiff);
+        this._syncDiffChips();
+      });
+    }
+
     this.startBtn?.addEventListener('click', () => {
       // 手机浏览器：地址栏常占 50~100px，而横屏俯视战场正缺这块空间。
       // 必须在 click 的同步栈里请求全屏 —— 中间只要 await 过别的，
@@ -728,7 +758,11 @@ export class HUD {
       // campaign 一起交出去：Game 那边按这个标记走 startCampaign。
       // 不能只靠 Game 自己读 this.mode —— HUD 的模式选择是界面状态，
       // 两者对齐的唯一点就在这里。
-      if (name) onStart(this.selectedChassis, { name, campaign: this.mode === 'campaign' });
+      if (name) onStart(this.selectedChassis, {
+        name,
+        campaign: this.mode === 'campaign',
+        difficulty: this.campaignDiff,
+      });
     });
 
     // ---- 战役结算 ----
@@ -1174,13 +1208,15 @@ export class HUD {
   // ---------------- 经典战役 ----------------
 
   /** 进入战役：把波次胶囊换成本关的目标条 */
-  showCampaign(battle, objective) {
+  showCampaign(battle, objective, diff) {
     this.waveChip?.classList.add('hidden');
     this.campaignBar?.classList.remove('hidden');
     this.campaignEnd?.classList.add('hidden');
     if (battle) {
       this.cmpName.textContent = battle.name;
-      this.cmpDate.textContent = battle.subtitle;
+      this.cmpDate.textContent = diff
+        ? `${battle.subtitle} · ${diff.name}`
+        : battle.subtitle;
     }
     const need = (objective && objective.kills) || 14;
     this.cmpNeed.textContent = String(need);
@@ -1188,11 +1224,11 @@ export class HUD {
     this._cmpKills = -1;
     this._cmpTown = null;
     this._cmpSec = -1;
-    this.setCampaignProgress({ kills: 0, need, left: (objective && objective.timeLimit) || 0, inTown: false });
+    this.setCampaignProgress({ kills: 0, need, left: (objective && objective.timeLimit) || 0, extractOpen: false });
   }
 
   /** 每帧调用。全部字段做脏检查：目标条和波次胶囊一样是"常显但极少变"的信息 */
-  setCampaignProgress({ kills, need, left, inTown }) {
+  setCampaignProgress({ kills, need, left, extractOpen }) {
     if (!this.campaignBar || this.campaignBar.classList.contains('hidden')) return;
     if (kills !== this._cmpKills) {
       this._cmpKills = kills;
@@ -1200,10 +1236,10 @@ export class HUD {
       const pct = Math.max(0, Math.min(1, kills / Math.max(1, need)));
       this.cmpFill.style.width = `${(pct * 100).toFixed(1)}%`;
     }
-    if (inTown !== this._cmpTown) {
-      this._cmpTown = inTown;
-      this.cmpTown.textContent = inTown ? '已抵镇中心' : '待进镇';
-      this.cmpTown.classList.toggle('on', !!inTown);
+    if (extractOpen !== this._cmpTown) {
+      this._cmpTown = extractOpen;
+      this.cmpTown.textContent = extractOpen ? '向东突围' : '战果未达标';
+      this.cmpTown.classList.toggle('on', !!extractOpen);
     }
     const sec = Math.max(0, Math.ceil(left));
     if (sec !== this._cmpSec) {
@@ -1222,10 +1258,10 @@ export class HUD {
   /**
    * 战役结算。
    *
-   * 评价按击毁数给：14 是"达成"，15~16 是优异，17+ 是"把 18 个目标全清了"。
-   * 不用分数——这一关没有波次和词条，分数只会变成一个没有参照的数字。
+   * 评价按击毁数给：need 是"达成"，再往上是优异 / 全歼。不用分数——
+   * 这一关没有波次和词条，分数只会变成一个没有参照的数字。
    */
-  showCampaignResult({ win, reason, kills, need, time }) {
+  showCampaignResult({ win, reason, kills, need, time, diff }) {
     if (!this.campaignEnd) return;
     this.campaignEnd.classList.remove('hidden');
     this.hud?.classList.add('hidden');
@@ -1233,21 +1269,21 @@ export class HUD {
     this._setPeek(false);
     this.setPausable(false);
 
-    this.cmpEndTitle.textContent = win ? '战果达成' : '车组覆灭';
+    this.cmpEndTitle.textContent = win ? '全身而退' : reason === 'dead' ? '车组覆灭' : '时间耗尽';
     this.cmpEndTitle.className = win ? 'win' : 'fail';
     this.cmpEndKills.textContent = String(kills);
     this.cmpEndNeed.textContent = String(need);
     const sec = Math.max(0, Math.round(time));
     this.cmpEndTime.textContent = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
     this.cmpEndRank.textContent = !win ? '未达成'
-      : kills >= 17 ? '全歼'
-      : kills >= 15 ? '优异'
+      : kills >= need + 10 ? '全歼'
+      : kills >= need + 3 ? '优异'
       : '达成';
     this.cmpEndNote.textContent = win
-      ? '1944-06-13 上午，魏特曼车组单车突入，二十分钟内击毁英军 A 中队先头纵队。镇子最终没有被德军夺回——战术上的完胜，战役上什么也没改变。'
+      ? `${diff ? diff.name + '难度 · ' : ''}击毁 ${kills} 辆后从卡昂古道归队。历史上魏特曼的虎式在镇中心被 6 磅炮击伤、弃车徒步北逃——你把车开回来了。镇子当天仍没被德军夺回：战术完胜，战役上什么也没改变。`
       : reason === 'dead'
-        ? '车组失去战斗力。历史上魏特曼在镇中心被反坦克炮击伤后弃车撤退——虎式没了，人也退出了这场战斗。'
-        : '时间耗尽。这场突袭的历史窗口只有二十几分钟，之后英军重新组织了防线，单车突入的机会再也没有出现。';
+        ? `${diff ? diff.name + '难度 · ' : ''}车组失去战斗力。历史上魏特曼在镇中心被反坦克炮击伤后弃车撤退——虎式没了，人也退出了这场战斗。`
+        : `${diff ? diff.name + '难度 · ' : ''}时间耗尽。这场突袭的历史窗口只有二十几分钟，之后英军重新组织了防线，单车突入的机会再也没有出现。`;
   }
 
   setModifier(mod) {

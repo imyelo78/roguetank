@@ -53,7 +53,7 @@ const tmpGoal = new THREE.Vector3();
 
 export class Enemy {
   constructor(scene, { x, z, hp = 60, speed = 9, camera, type = 'gunner', damage, patrolRoute = null, awaken = null,
-    rotY = null, dormant = false }) {
+    rotY = null, dormant = false, hold = false }) {
     const charger = type === 'charger';
     const elite = type === 'elite';
     const bossInfo = BOSS_INFO[type];
@@ -193,6 +193,10 @@ export class Enemy {
     // 未察觉（战役开局）：车组在车外开会 / 在舱口观察，不会主动开火。
     // 无尽模式和联机永远不传这个参数，行为与之前完全一致。
     this.dormant = !!dormant;
+    // 驻军（战役纵队）：醒了也不许挪车。波卡基村的英军是停驻纵队、步兵
+    // 已下车——醒来只转炮塔还击，不会冲锋围猎。这是"遭遇战"与"围殴"
+    // 的分界线，战役模式全员传 hold=true，其余模式不受影响。
+    this.hold = !!hold;
     this.target = null;
     // 巡逻/驻军状态。没有路线就是猎杀队，沿用原来的追击 AI。
     // offset 用固定随机流，保证单机每局路线一致（方便复现问题）。
@@ -416,6 +420,32 @@ export class Enemy {
     }
     if (this.los) this.noLosT = 0;
     else this.noLosT += dt;
+
+    // ---- 驻军（战役纵队）：车钉在原地，只转炮塔还击 ----
+    //
+    // 波卡基村的核心就是这条：英军停在公路上等步兵，被打醒了也只是
+    // 转炮塔开炮——没有一辆车会冲上来。要是开了追击 AI，这一关就从
+    // "沿公路逐个点名"变成"被十四辆车围殴"，遭遇战直接不成立。
+    // 开火距离 60 m（地图 1:10 压缩后的"公路直射距离"），瞄准误差与
+    // 普通攻击态同口径。fireCd 的间隔比追击 AI 略长：停驻车组从发现
+    // 到开炮要经车长口令，不是战斗警备状态。
+    if (this.hold) {
+      const aimYaw = Math.atan2(dx, dz);
+      const aimErr = tank.aimTowards(aimYaw, dt, 3.2);
+      if (this.los && dist < 60 && this.fireCd <= 0
+          && this.spawnShield <= 0 && aimErr < 0.15) {
+        this.fireCd = this.isElite
+          ? 1.6 + R.combat() * 0.7
+          : 2.3 + R.combat() * 1.2;
+        const dir = new THREE.Vector3(dx, 0, dz).normalize();
+        dir.x += (R.combat() - 0.5) * 0.11;
+        dir.z += (R.combat() - 0.5) * 0.11;
+        dir.normalize();
+        ctx.fire(tank, dir, this.damage, 'enemy');
+      }
+      this._updateBar();
+      return;
+    }
 
     // ---- Boss：独立行为，不参与普通状态机 ----
     if (this.isBoss) {

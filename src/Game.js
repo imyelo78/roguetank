@@ -23,7 +23,7 @@ import { zoneForWave, terrainOptsFor, layoutOptsFor, zoneSeedFor } from './core/
 // Game 只负责"把它铺出来"。不要在 Game 里再抄一遍坐标——那是三条线分叉的老路。
 import { BATTLE, PLAYER_START as BATTLE_START, ROADS as BATTLE_ROADS,
   buildVillersBoxes, UNITS as BATTLE_UNITS, OBJECTIVE as BATTLE_OBJECTIVE,
-  TOWN_CENTER } from './core/villers.js';
+  TOWN_CENTER, EXTRACTION, difficultyById } from './core/villers.js';
 import { BOSS_META, BOSS_SKILLS, bossTypeForWave, pickLateBoss, bossHpFor, ZONE, stepZones,
   stageBarRatio, rollAwakens, AWAKEN_NUM, awakenNamesOf, isAnchored } from './core/bosskit.js';
 import { ZoneVisual, BeamVisual } from './zone-visual.js';
@@ -129,6 +129,8 @@ export class Game {
     // 经典战役的运行时状态（null = 当前不是战役局）。见 startCampaign。
     this.campaign = null;
     this._campaignDone = false;
+    // 敌方炮弹速度倍率（战役难度轴之一，fire() 里乘）。非战役局恒为 1。
+    this.enemyShellMul = 1;
     // 出生点覆盖：只有战役局用。无尽/联机不设，保持原行为。
     this._spawnOverride = null;
     this._booted = false;
@@ -903,22 +905,54 @@ export class Game {
     this.aimPoint.set(BATTLE_START.x, 0, BATTLE_START.z - 24);
 
     // ---- 英军布阵 ----
-    // 全部 dormant：车组在车外等步兵，第一炮之前没人朝你冲过来。
-    // 速度给 7：巡洋坦克比虎式快，但这一关它们大部分时间在原地。
+    // 全部 dormant + hold：停驻纵队（步兵下车等归队），第一炮之前没人
+    // 朝你开火，醒来也只是转炮塔还击、不挪车。难度只放大血量与弹速，
+    // 行为四档完全一致（DIFFICULTIES 的注释里写死了这条规矩）。
+    const diff = difficultyById(opts.difficulty);
     for (const u of BATTLE_UNITS) {
-      this._spawnEnemyAt(u.hp, u.type === 'turret' ? 0 : 7, u.x, u.z, u.type, null, {
-        rotY: u.yaw, dormant: true, quiet: true,
+      const hp = Math.max(20, Math.round(u.hp * diff.hpMul));
+      this._spawnEnemyAt(hp, u.type === 'turret' ? 0 : 7, u.x, u.z, u.type, null, {
+        rotY: u.yaw, dormant: true, hold: true, quiet: true,
       });
     }
 
     this.campaign = {
       time: 0,
+      /** 当前难度档（difficultyById 的返回值，含 hpMul/shellSpeed） */
+      diff,
+      /** 战果达标后撤离点开启 */
+      extractOpen: false,
       inTown: false,
       /** 已经喊过的提示，避免同一句每帧弹 */
       said: {},
-      /** 首位击毁的时刻（做结算用） */
-      firstKillAt: 0,
     };
+    // 敌方炮弹速度倍率：fire() 里对 enemy 弹统一乘。无尽/联机恒为 1。
+    this.enemyShellMul = diff.shellSpeed;
+
+    // ---- 撤离点标记 ----
+    // 达标前灰绿、几乎看不见；达标后转琥珀并脉冲。r 与 EXTRACTION.r
+    // 用同一份，判定圈和视觉圈永远一致。
+    this._extractMarker?.remove?.();
+    const mRing = new THREE.Mesh(
+      new THREE.RingGeometry(EXTRACTION.r * 0.82, EXTRACTION.r * 0.96, 48),
+      new THREE.MeshBasicMaterial({
+        color: 0x4a6a55, transparent: true, opacity: 0.35, depthWrite: false,
+      }),
+    );
+    mRing.rotation.x = -Math.PI / 2;
+    mRing.position.set(EXTRACTION.x, 0.22, EXTRACTION.z);
+    const mDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(EXTRACTION.r * 0.5, 32),
+      new THREE.MeshBasicMaterial({
+        color: 0x4a6a55, transparent: true, opacity: 0.08, depthWrite: false,
+      }),
+    );
+    mDisc.rotation.x = -Math.PI / 2;
+    mDisc.position.set(EXTRACTION.x, 0.2, EXTRACTION.z);
+    this._extractMarker = new THREE.Group();
+    this._extractMarker.add(mRing, mDisc);
+    this._extractMarker.userData = { ring: mRing, disc: mDisc, t: 0 };
+    this.scene.add(this._extractMarker);
 
     // 战役不发空投：宝箱是"波次之间补给"的机制，历史关卡里没有这个东西。
     if (this.crates.length) {
@@ -931,7 +965,7 @@ export class Game {
     this.sound.fanfare();
     this.hud.setModifier(null);
     this.hud.setHealth(this.player.hp, this.player.maxHp);
-    this.hud.showCampaign(BATTLE, BATTLE_OBJECTIVE);
+    this.hud.showCampaign(BATTLE, BATTLE_OBJECTIVE, diff);
     this.hud.startPlaying();
     this.hud.setPausable(true);
     this.state = 'playing';
@@ -945,8 +979,11 @@ export class Game {
   restart() {
     // 战役重开必须回同一张图：这里走 startCampaign 而不是 start，
     // 否则"再来一局"会把玩家扔进一张随机图，前 3 分钟的仗白打。
+    // 难度沿用本局的档：玩家重打是为了过这一档，不是回普通。
     if (this.mode === 'campaign') {
-      this.startCampaign(this.chassisId, { name: this.callsign });
+      this.startCampaign(this.chassisId, {
+        name: this.callsign, difficulty: this.campaign?.diff?.id,
+      });
       return;
     }
     // 重开换一张图，保持新鲜感
@@ -1014,6 +1051,11 @@ export class Game {
     this.campaign = null;
     this._campaignDone = false;
     this._spawnOverride = null;
+    this.enemyShellMul = 1;
+    // 撤离点标记是战役局挂进 scene 的，退出必须摘掉，
+    // 否则菜单背景的林子里永远亮着一圈琥珀色
+    this._extractMarker?.remove?.();
+    this._extractMarker = null;
     this.paused = false;
     this.state = 'menu';
     this.keys.clear();
@@ -1447,6 +1489,7 @@ export class Game {
       patrolRoute: this._patrolRouteFor(type, x, z),
       rotY: opts && opts.rotY != null ? opts.rotY : null,
       dormant: !!(opts && opts.dormant),
+      hold: !!(opts && opts.hold),
     });
     this.enemies.push(enemy);
     if (opts && opts.quiet) return;
@@ -1644,12 +1687,19 @@ export class Game {
       aim = TMP3.set(vx, -Math.max(FLAT_SLOPE, need), vz).normalize();
     }
 
+    // 战役难度轴：敌方炮弹速度按难度档整体乘（默认 1，无尽/联机不受影响）。
+    // 玩家的弹不吃这个倍率——难度加在敌人身上，不是削玩家。
+    let bulletSpeed = opts.speed ?? (team === 'player' ? 68 : 50);
+    if (team === 'enemy' && this.enemyShellMul && this.enemyShellMul !== 1) {
+      bulletSpeed = Math.round(bulletSpeed * this.enemyShellMul);
+    }
+
     this.bullets.push(new Bullet(this.scene, {
       pos,
       dir: aim,
       team,
       damage,
-      speed: opts.speed ?? (team === 'player' ? 68 : 50),
+      speed: bulletSpeed,
       life: 3,
       pierce: opts.pierce ?? 0,
       explosive: opts.explosive ?? 0,
@@ -2251,37 +2301,58 @@ export class Game {
     const distTown = Math.hypot(p.x - TOWN_CENTER.x, p.z - TOWN_CENTER.z);
     const inTown = distTown < TOWN_CENTER.r;
 
-    // 抵达镇中心：只提示一次。这是历史上的"最后一步"，也是胜利的两个条件之一。
+    // 抵达圣女贞德广场：只提示一次。史实上魏特曼就是在这里被 6 磅炮
+    // 打断履带的——往里走是额外的战果与额外的风险，不是通关条件。
     if (inTown && !c.inTown) {
       c.inTown = true;
       this.hud.showMessage('已进入镇中心 · 6 磅炮阵地就在广场', 2.6);
     }
 
-    // 玩家靠近到 55 m 内、且有视线时，车组自己也会发现你（不必等你开炮）。
-    // 这是"遭遇战"该有的样子：你能摸到队尾，但不可能从十八辆车中间开过去。
+    // 玩家靠近到 55 m 内、且树篱没挡住视线时，车组自己会发现你。
+    // 视线判定必须做：玩家出发的卡昂古道林带离队头只有 40 m，
+    // 没有视线判定的话开局 3 秒纵队就醒了，"从林带里悄悄摸出来"
+    // 的遭遇战节奏直接不存在。
     for (const e of this.enemies) {
       if (!e.dormant || !e.alive) continue;
       const d = Math.hypot(e.position.x - p.x, e.position.z - p.z);
-      if (d < 55) e.wake(1.4 + Math.random() * 1.6);
+      if (d >= 55) continue;
+      const seen = this.nav
+        ? this.nav.hasLineOfSight(e.position.x, e.position.z, p.x, p.z)
+        : !this.world.segmentBlocked(e.position.x, e.position.z, p.x, p.z, 0.5);
+      if (seen) e.wake(1.4 + Math.random() * 1.6);
     }
 
-    // 目标进度：击毁数 + 是否进镇。KILLS 只是"车辆数"，炮台也算在内，
+    // ---- 撤离点：达标前灰着，达标后转琥珀并脉冲 ----
+    if (this.kills >= BATTLE_OBJECTIVE.kills && !c.extractOpen) {
+      c.extractOpen = true;
+      this.hud.showMessage('战果达标 · 撤离点已开启，向东突围', 3.0);
+    }
+    if (this._extractMarker) {
+      const m = this._extractMarker.userData;
+      m.t += dt;
+      if (c.extractOpen) {
+        const pulse = 0.55 + 0.3 * Math.sin(m.t * 3.2);
+        m.ring.material.color.setHex(0xffa63d);
+        m.ring.material.opacity = pulse;
+        m.disc.material.color.setHex(0xffa63d);
+        m.disc.material.opacity = 0.1 + 0.08 * Math.sin(m.t * 3.2);
+      }
+    }
+
+    // 目标进度：击毁数 + 撤离状态。KILLS 只是"车辆数"，炮台也算在内，
     // 因为一门 6 磅炮对玩家的威胁不比一辆克伦威尔小。
     this.hud.setCampaignProgress({
       kills: this.kills,
       need: BATTLE_OBJECTIVE.kills,
       left: Math.max(0, BATTLE_OBJECTIVE.timeLimit - c.time),
-      inTown,
+      extractOpen: c.extractOpen,
     });
 
-    // 击毁数够了还没进镇：提示一次，别让玩家在镇外干等
-    if (this.kills >= BATTLE_OBJECTIVE.kills && !c.inTown && !c.said.goTown) {
-      c.said.goTown = true;
-      this.hud.showMessage('战果已达成 · 开进镇中心结束战斗', 2.4);
-    }
-
-    if (this.kills >= BATTLE_OBJECTIVE.kills && inTown) {
-      this._finishCampaign(true);
+    // 胜利 = 全身而退：战果达标后开进撤离圈。不是"打到多少杀就赢"——
+    // 这关的最后一公里（顶着醒过来的纵队撤回东头）才是真正的考验。
+    if (c.extractOpen
+        && Math.hypot(p.x - EXTRACTION.x, p.z - EXTRACTION.z) < EXTRACTION.r) {
+      this._finishCampaign(true, 'extract');
       return;
     }
     if (c.time >= BATTLE_OBJECTIVE.timeLimit) {
@@ -2291,8 +2362,9 @@ export class Game {
 
   /**
    * @param {boolean} win
-   * @param {'dead'|'timeout'|''} [reason] 失败原因。阵亡与超时的文案必须不同，
-   *   否则玩家车被打爆了却看到"时间耗尽"，会以为是计时器 bug。
+   * @param {'extract'|'dead'|'timeout'|''} [reason] 胜利/失败原因。
+   *   阵亡与超时的文案必须不同，否则玩家车被打爆了却看到"时间耗尽"，
+   *   会以为是计时器 bug。
    */
   _finishCampaign(win, reason = '') {
     if (this._campaignDone) return;
@@ -2303,6 +2375,8 @@ export class Game {
     this.overTimer = 5;
     this.firing = false;
     this.keys.clear();
+    // 撤离点标记定格在结算瞬间的样子，随 quitToMenu 一起清
+    this._extractPulse = false;
     this.sound.stopMusic(0.8);
     this.hud.showCampaignResult({
       win,
@@ -2310,8 +2384,9 @@ export class Game {
       kills: this.kills,
       need: BATTLE_OBJECTIVE.kills,
       time: this.campaign.time,
+      diff: this.campaign.diff,
     });
-    this.hud.showMessage(win ? '战果达成 · 纵队被击溃'
+    this.hud.showMessage(reason === 'extract' ? '全身而退 · 车组归队'
       : reason === 'dead' ? '车组覆灭' : '时间耗尽 · 英军已重整', 3.2);
   }
 

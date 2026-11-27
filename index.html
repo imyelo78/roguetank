@@ -63,8 +63,8 @@
             <span id="cmp-date">1944-06-13 · 0900</span>
           </div>
           <div class="cmp-row">
-            <span class="cmp-kills">击毁 <b id="cmp-kills">0</b><i>/<em id="cmp-need">14</em></i></span>
-            <span id="cmp-town" class="cmp-town">待进镇</span>
+            <span class="cmp-kills">击毁 <b id="cmp-kills">0</b><i>/<em id="cmp-need">22</em></i></span>
+            <span id="cmp-town" class="cmp-town">战果未达标</span>
             <span id="cmp-clock" class="cmp-clock">15:00</span>
           </div>
           <div class="cmp-track"><i id="cmp-fill"></i></div>
@@ -159,6 +159,17 @@
             <b>经典战役</b>
             <i>复刻真实战例</i>
           </button>
+        </div>
+        <!-- 战役难度：只在选中「经典战役」时出现（HUD.selectMode 控制显隐）。
+             四档只放大英军血量与炮弹速度（见 core/villers.js 的 DIFFICULTIES）。 -->
+        <div id="campaign-diff" class="campaign-diff hidden">
+          <span class="cd-label">难度</span>
+          <div class="cd-chips">
+            <button class="cd-chip" data-diff="novice">新手</button>
+            <button class="cd-chip sel" data-diff="normal">普通</button>
+            <button class="cd-chip" data-diff="ruthless">冷血</button>
+            <button class="cd-chip" data-diff="wittmann">魏神</button>
+          </div>
         </div>
       </div>
 
