@@ -35,7 +35,8 @@ const onRequestPost = ({ env, request }) => {
 
 import { pruneInvalidScores } from '../server/score-cleanup.js';
 import {
-  ALL_KEY, DAYS_KEY, DAY_PREFIX, todayKey, getJSON, putJSON, liveEntries, isValidEntry,
+  ALL_KEY, DAYS_KEY, DAY_PREFIX, SOLO_TOP_KEY, SOLO_DAY_PREFIX,
+  todayKey, getJSON, putJSON, liveEntries, isValidEntry,
 } from '../functions/api/_lib/leaderboard.js';
 
 const { mergeEntry } = __test;
@@ -103,12 +104,18 @@ await test('提交：1 分正常上榜（门槛不能抬高）', async () => {
 
 await test('读取：存储里已有的 0 分不显示（老数据兜底）', async () => {
   const e = env();
-  // 模拟"升级前就已经写进去"的脏数据：绕过 handlePost 直接写存储
-  await putJSON(e.DAILY_SCORES, ALL_KEY, [
+  // 模拟"升级前就已经写进去"的脏数据：绕过 handlePost 直接写存储。
+  // r59 起新成绩写 solo: 键，读也读 solo: 键——脏数据兜底要拦在现行键上；
+  // 旧 all:top 是只读存档，读取处同样过滤（liveEntries）。
+  await putJSON(e.DAILY_SCORES, SOLO_TOP_KEY, [
     { name: 'gunner', score: 0, wave: 1, kills: 0, t: 1, pid: 'p0' },
     { name: '真玩家', score: 500, wave: 5, kills: 30, t: 2, pid: 'p1' },
   ]);
-  await putJSON(e.DAILY_SCORES, `${DAY_PREFIX}${todayKey()}`, [
+  await putJSON(e.DAILY_SCORES, `${SOLO_DAY_PREFIX}${todayKey()}`, [
+    { name: 'gunner', score: 0, wave: 1, kills: 0, t: 1, pid: 'p0' },
+    { name: '真玩家', score: 500, wave: 5, kills: 30, t: 2, pid: 'p1' },
+  ]);
+  await putJSON(e.DAILY_SCORES, ALL_KEY, [
     { name: 'gunner', score: 0, wave: 1, kills: 0, t: 1, pid: 'p0' },
     { name: '真玩家', score: 500, wave: 5, kills: 30, t: 2, pid: 'p1' },
   ]);
@@ -121,8 +128,9 @@ await test('读取：存储里已有的 0 分不显示（老数据兜底）', as
   assert.equal(day.list.length, 1, `今日榜应只剩 1 条，实际 ${day.list.length}`);
 
   const stats = await (await onRequestGet({ env: e, request: get('view=stats') })).json();
-  assert.equal(stats.all.count, 1, 'stats 的条数也要按过滤后算');
-  assert.equal(stats.day.count, 1);
+  // r59 起 stats 按 mode 分组：solo/coop/campaign + legacy
+  assert.equal(stats.solo.all, 1, 'stats 的条数也要按过滤后算');
+  assert.equal(stats.solo.day, 1);
 });
 
 await test('清洗：历史 0 分被真正从存储里删掉', async () => {

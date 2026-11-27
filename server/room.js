@@ -88,10 +88,15 @@ class Member {
 }
 
 export class Room {
-  constructor({ code, onEmpty }) {
+  constructor({ code, onEmpty, onRunOver }) {
     this.code = code || makeRoomCode();
     this.members = new Map();
     this.autoStartT = 0;
+    // 结算上报钩子（server.mjs 注入）：一局打完（w.state === 'over'）时调用，
+    // 把服务端算好的每人成绩写进组队榜。数值来自服务端世界统计，客户端伪造不了。
+    this.onRunOver = onRunOver || null;
+    // 本局是否已上报。over → 有人在线重开是新的一局，开局时复位（见 requestStart/autoStart）。
+    this._reported = false;
     // 倒计时归零 ≠ 一定开得起来：世界可能还在 lobby 之外的中间态，
     // 或者玩家刚好全灭。以前到点只调一次 start()，失败就永久卡在"进不了战场也开不了炮"。
     // 现在记住"该开局了"，每个 tick 重试直到成功。
@@ -165,6 +170,7 @@ export class Room {
       this.startedAt = Date.now();
       this.round += 1;              // 新一局：暂离快照从此作废（见 setAway）
       this._startPending = false;
+      this._reported = false;       // 新一局的成绩重新上报
     } else {
       // 世界此刻开不起来（死人还没复活 / 状态没归位）。挂起，由 _oneTick 重试，
       // 不能让房主点一下"开始战斗"就石沉大海。
@@ -418,6 +424,7 @@ export class Room {
         this.startedAt = Date.now();
         this.round += 1;
         this._startPending = false;
+        this._reported = false;     // 新一局的成绩重新上报
       }
       // 开不起来就下个 tick 再试（世界只会在 'playing' 时拒绝 start）
     }
@@ -446,6 +453,20 @@ export class Room {
     this._maybeSnapshotAt(tickTime);
 
     if (w.state === 'over') {
+      // ---- 结算上报（本局一次） ----
+      // 无论房间接下来重开还是解散，这一局都结束了：把服务端算好的成绩
+      // 写进组队榜。放在 anyOnline 分支之前——以前 results 只在全员掉线的
+      // 解散分支才算，导致"打完继续开下一局"的常规流程永远不会上报。
+      // 数值全部来自服务端世界统计，客户端碰不到，天然防伪。
+      if (!this._reported && this.onRunOver && w.players.length > 0) {
+        this._reported = true;
+        const results = w.players
+          .map((p) => ({ name: p.name, kills: p.stats.kills, score: p.stats.score, wave: w.wave }))
+          .sort((a, b) => b.score - a.score);
+        const meta = { players: w.players.length, timeMs: this.startedAt ? Date.now() - this.startedAt : 0 };
+        try { this.onRunOver(results, meta); } catch (e) { console.error('[room] run-over report failed', e); }
+      }
+
       // 世界判"全员阵亡"就 over 了。但联机房间**不能**因此解散：
       // 房主挂机等人时被敌人打死是常态（实测：建房后静置 60~77 秒正好被围死），
       // 一 over 就停循环 + 8 秒后销毁，房间码失效——朋友进来报"房间不存在"，
@@ -719,8 +740,9 @@ const clampDir = (v) => {
 
 /** 房间表：一个进程内的所有房间 */
 export class RoomRegistry {
-  constructor() {
+  constructor({ onRunOver } = {}) {
     this.rooms = new Map();
+    this._onRunOver = onRunOver || null;
   }
 
   /** code 传了就用自定义码（调用方已查重），否则随机生成 */
@@ -731,6 +753,7 @@ export class RoomRegistry {
 
     const room = new Room({
       code: finalCode,
+      onRunOver: this._onRunOver,
       onEmpty: (r) => {
         this.rooms.delete(r.code);
         console.log(`[room] ${r.code} 结束（${this.rooms.size} 个房间在跑）`);

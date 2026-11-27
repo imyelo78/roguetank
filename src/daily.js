@@ -1,21 +1,38 @@
 // 榜单与身份
 //
-// 只有一条榜：所有战斗（单人或 2~4 人合作）都计入。两个视图：
-//   今日  / 总榜
+// r59 起三条榜分立（与服务端 functions/api/_lib/leaderboard.js 同一套规则）：
+//   solo     单人无尽榜（今日 + 历史）
+//   coop     组队榜（今日 + 历史）。2 人和 4 人同榜混排不加权，players 只做标注。
+//            服务端房间结算时自动上报（数值来自服务端，客户端伪造不了），
+//            客户端**不**提交 coop——这里保留本地兜底只为显示。
+//   campaign 战役荣誉榜（不按天）：通关 > 难度 > 击毁 > 用时。固定图人人同局，
+//            比的是"打得又狠又快"。
 //
-// 三条原则：
+// 三条原则不变：
 //   1. 本地永远先写（断网、服务端异常也不丢战绩），远端失败进补传队列。
 //   2. 去重身份优先用 pid（改名后仍是同一个人），与服务端保持一致。
 //   3. 榜单条目带人数与车体，读者自己判断可比性。
 
-const LB_KEY = 'tank3d.lb.v4';
+const LB_KEY = 'tank3d.lb.v4';          // 单人榜（沿用旧键，老用户本地数据无缝续用）
 const LB_KEY_V3 = 'tank3d.lb.v3';
 const LB_KEY_V2 = 'tank3d.daily.lb.v2';
+const MODES_KEY = 'tank3d.lb.modes.v1'; // coop + campaign 的本地榜（v1 新开）
 const NAME_KEY = 'tank3d.name.v1';
 const PID_KEY = 'tank3d.pid.v1';
 const PENDING_KEY = 'tank3d.pending.v1'; // 上传失败的成绩，下次启动补传
+const LAST_MODE_KEY = 'tank3d.lastmode.v1'; // 上次玩的模式：榜单卡默认停在它
 
 const EMPTY = () => ({ days: {}, all: [] });
+
+export const LB_MODES = ['solo', 'coop', 'campaign'];
+
+/** 战役难度（与 src/core/villers.js 的 DIFFICULTIES 一致） */
+export const CAMPAIGN_DIFFS = [
+  { id: 'novice', name: '新手' },
+  { id: 'normal', name: '普通' },
+  { id: 'ruthless', name: '冷血' },
+  { id: 'wittmann', name: '魏神' },
+];
 
 /**
  * 当日日期键 YYYY-MM-DD，固定用 UTC+8，
@@ -46,6 +63,19 @@ export function saveCallsign(name) {
   try { localStorage.setItem(NAME_KEY, name.trim().slice(0, 12)); } catch { /* 忽略 */ }
 }
 
+/** 上次玩的模式（榜单卡默认显示它），非法值回 solo */
+export function loadLastMode() {
+  try {
+    const m = localStorage.getItem(LAST_MODE_KEY);
+    return LB_MODES.includes(m) ? m : 'solo';
+  } catch { return 'solo'; }
+}
+
+export function saveLastMode(mode) {
+  if (!LB_MODES.includes(mode)) return;
+  try { localStorage.setItem(LAST_MODE_KEY, mode); } catch { /* 忽略 */ }
+}
+
 /** 本机唯一 ID：用于服务端去重，保证不同玩家即使同名也不会互相覆盖成绩 */
 export function getPid() {
   try {
@@ -68,6 +98,9 @@ export function getPid() {
  * 后端不拦则旧客户端仍然能塞进来。
  */
 const hasScore = (e) => !!e && Number(e.score) > 0;
+
+/** 战役成绩是否算数：通关必留；没通关至少击毁一辆（与服务端同规则） */
+const hasCampaignResult = (e) => !!e && !!e.name && (e.win || Number(e.kills) > 0);
 
 function normalize(v) {
   const out = EMPTY();
@@ -114,8 +147,34 @@ function writeLocal(data) {
   try { localStorage.setItem(LB_KEY, JSON.stringify(data)); } catch { /* 忽略 */ }
 }
 
+// ---- coop / campaign 的本地榜（新键） ----
+
+function readModes() {
+  try {
+    const v = JSON.parse(localStorage.getItem(MODES_KEY));
+    return {
+      coop: normalize(v?.coop),
+      campaign: Array.isArray(v?.campaign) ? v.campaign.filter(hasCampaignResult) : [],
+    };
+  } catch { return { coop: EMPTY(), campaign: [] }; }
+}
+
+function writeModes(data) {
+  try { localStorage.setItem(MODES_KEY, JSON.stringify(data)); } catch { /* 忽略 */ }
+}
+
 const sortDesc = (a, b) => (b.score || 0) - (a.score || 0)
   || (b.wave || 0) - (a.wave || 0)
+  || (a.t || 0) - (b.t || 0);
+
+// 战役排序/合并：与 functions/api/_lib/leaderboard.js 的 campaignSort/mergeCampaignEntry
+// 保持同一规则（那边是权威实现）。不在客户端直接 import 它——浏览器要按路径拉那个
+// 文件，部署形态（Pages Function）不保证它可静态访问，这里复制一份并注明来源。
+const campaignRank = (d) => Math.max(0, CAMPAIGN_DIFFS.findIndex((x) => x.id === d));
+const campaignSort = (a, b) => (b.win || 0) - (a.win || 0)
+  || campaignRank(b.difficulty) - campaignRank(a.difficulty)
+  || (b.kills || 0) - (a.kills || 0)
+  || ((a.win ? 1 : -1) * (a.timeMs || 0) - (b.win ? 1 : -1) * (b.timeMs || 0))
   || (a.t || 0) - (b.t || 0);
 
 /** 去重身份：与服务端一致，优先 pid */
@@ -134,6 +193,17 @@ export function mergeEntry(list, entry) {
   const rest = list.filter((e) => identOf(e) !== key);
   rest.push(entry);
   rest.sort(sortDesc);
+  return rest.slice(0, TOP_N);
+}
+
+/** 战役榜合并：同身份保留"排得最前"的那条 */
+export function mergeCampaignEntry(list, entry) {
+  const key = identOf(entry);
+  const prev = list.find((e) => identOf(e) === key);
+  if (prev && campaignSort(prev, entry) <= 0) return list;
+  const rest = list.filter((e) => identOf(e) !== key);
+  rest.push(entry);
+  rest.sort(campaignSort);
   return rest.slice(0, TOP_N);
 }
 
@@ -167,11 +237,39 @@ const makeEntry = (run) => {
   return e;
 };
 
+/** 战役本地条目：字段与服务端 normalizeCampaignEntry 对齐 */
+const makeCampaignEntry = (run) => {
+  const e = {
+    name: run.name,
+    difficulty: run.difficulty,
+    win: run.win ? 1 : 0,
+    kills: run.kills,
+    timeMs: run.timeMs || 0,
+    t: Date.now(),
+  };
+  if (run.pid) { e.pid = run.pid; e.id = `${run.name}#${run.pid}`; }
+  return e;
+};
+
 function localSubmit(run) {
-  const data = readLocal();
   const entry = makeEntry(run);
   const date = run.date || todayKey();
+  const mode = run.mode === 'coop' ? 'coop' : 'solo';
 
+  if (mode === 'coop') {
+    const data = readModes();
+    const local = data.coop;
+    local.days[date] = mergeEntry(local.days[date] || [], entry);
+    local.all = mergeEntry(local.all, entry);
+    const keys = Object.keys(local.days).sort().reverse().slice(0, 120);
+    const trimmed = {};
+    for (const k of keys) trimmed[k] = local.days[k];
+    local.days = trimmed;
+    writeModes({ ...data, coop: local });
+    return local;
+  }
+
+  const data = readLocal();
   data.days[date] = mergeEntry(data.days[date] || [], entry);
   data.all = mergeEntry(data.all, entry);
 
@@ -183,6 +281,13 @@ function localSubmit(run) {
 
   writeLocal(data);
   return data;
+}
+
+function localCampaignSubmit(run) {
+  const data = readModes();
+  data.campaign = mergeCampaignEntry(data.campaign, makeCampaignEntry(run));
+  writeModes(data);
+  return data.campaign;
 }
 
 const localDays = (data) => Object.keys(data.days || {}).sort().reverse();
@@ -202,7 +307,7 @@ function writePending(list) {
 
 function pushPending(item) {
   const list = readPending().filter((x) => !(x.date === item.date && x.name === item.name
-    && x.score === item.score && x.wave === item.wave));
+    && x.score === item.score && x.wave === item.wave && x.mode === item.mode));
   list.push(item);
   writePending(list);
 }
@@ -216,7 +321,7 @@ export async function flushPending() {
   for (const item of list) {
     // 队列里可能躺着老版本存下的 0 分成绩：服务端会拒（no-score），
     // 留在队列里会每次启动都重试一遍，永远清不掉。直接丢弃。
-    if (!hasScore(item)) continue;
+    if (item.mode === 'campaign' ? !hasCampaignResult(item) : !hasScore(item)) continue;
     const r = await postScore(item);
     if (r.ok) ok += 1;
     else left.push(item);
@@ -244,15 +349,22 @@ async function postScore(payload) {
 
 /**
  * 提交成绩。本地先写，再尝试远端；失败进补传队列。
- * @param {{date?, name, wave, kills, score, timeMs?, chassis?, weapon?, mods?, players?}} run
+ * @param {{mode?, date?, name, wave, kills, score, timeMs?, chassis?, weapon?, mods?, players?}} run
+ *   mode='campaign' 时走战役榜：需要 {difficulty, win, kills, timeMs}，不需要 score/wave。
  */
 export async function submitScore(run) {
-  // 0 分：不写本地、不上传、不进补传队列。
+  const isCampaign = run.mode === 'campaign';
+
+  // 战役：没通关又一辆没毁的局不存在（服务端同规则 no-kills），不发请求
+  if (isCampaign && !hasCampaignResult(run)) {
+    return { list: readModes().campaign, remote: null, reason: 'no-kills' };
+  }
+  // 单人/组队：0 分不写本地、不上传、不进补传队列。
   // `remote: null` 让结算页显示"0 分不计入榜单"，而不是"云端同步失败"。
-  if (!hasScore(run)) {
-    const local = readLocal();
+  if (!isCampaign && !hasScore(run)) {
+    const local = run.mode === 'coop' ? readModes().coop : readLocal();
     return {
-      list: local.days[todayKey()] || [],
+      list: local.days?.[todayKey()] || [],
       all: local.all,
       days: localDays(local),
       remote: null,
@@ -261,31 +373,54 @@ export async function submitScore(run) {
   }
 
   const pid = getPid();
-  const payload = {
-    date: run.date || todayKey(),
-    name: run.name,
-    wave: run.wave,
-    kills: run.kills,
-    score: run.score,
-    players: Math.max(1, Math.min(4, run.players || 1)),
-    timeMs: run.timeMs || 0,
-    chassis: run.chassis || '',
-    weapon: run.weapon || '',
-    mods: Array.isArray(run.mods) ? run.mods : [],
-    pid,
-  };
+  let payload;
+  let localList;
+  let localAll;
 
-  const local = localSubmit(payload);
-  const localList = local.days[payload.date] || [];
+  if (isCampaign) {
+    payload = {
+      mode: 'campaign',
+      name: run.name,
+      difficulty: run.difficulty,
+      win: run.win ? 1 : 0,
+      kills: run.kills,
+      timeMs: run.timeMs || 0,
+      pid,
+    };
+    localList = localCampaignSubmit(run);
+    localAll = localList;
+  } else {
+    payload = {
+      mode: run.mode === 'coop' ? 'coop' : 'solo',
+      date: run.date || todayKey(),
+      name: run.name,
+      wave: run.wave,
+      kills: run.kills,
+      score: run.score,
+      players: Math.max(1, Math.min(4, run.players || 1)),
+      timeMs: run.timeMs || 0,
+      chassis: run.chassis || '',
+      weapon: run.weapon || '',
+      mods: Array.isArray(run.mods) ? run.mods : [],
+      pid,
+    };
+    const local = localSubmit(payload);
+    localList = local.days?.[payload.date] || [];
+    localAll = local.all;
+  }
 
   const res = await postScore(payload);
   if (res.ok) {
     const d = res.data;
+    if (isCampaign) {
+      // 远端可能只含云端的成绩，与本机记录合并，确保自己的这局一定在榜上
+      return { list: mergeCampaignEntry(d.list || [], localList), remote: true };
+    }
     return {
       // 远端可能只含云端的成绩，与本机记录合并，确保自己的这局一定在榜上
       list: mergeLists(d.list || [], localList),
-      all: mergeLists(d.all || [], local.all),
-      days: mergeDays(d.days || [], localDays(local)),
+      all: mergeLists(d.all || [], localAll),
+      days: mergeDays(d.days || [], localDays(readLocal())),
       remote: true,
     };
   }
@@ -293,8 +428,8 @@ export async function submitScore(run) {
   pushPending({ ...payload, t: Date.now() });
   return {
     list: localList,
-    all: local.all,
-    days: localDays(local),
+    all: localAll,
+    days: isCampaign ? [] : localDays(payload.mode === 'coop' ? readModes().coop : readLocal()),
     remote: false,
     reason: res.reason,
   };
@@ -308,12 +443,17 @@ export function mergeDays(a = [], b = []) {
     .slice(0, 120);
 }
 
-/** 拉取今日榜（远端 + 本地合并） */
-export async function fetchDay(date = todayKey()) {
-  const local = readLocal();
-  const localList = local.days[date] || [];
+/**
+ * 拉取今日榜（远端 + 本地合并）
+ * @param {string} [date]
+ * @param {'solo'|'coop'} [mode]
+ */
+export async function fetchDay(date = todayKey(), mode = 'solo') {
+  const m = mode === 'coop' ? 'coop' : 'solo';
+  const local = m === 'coop' ? readModes().coop : readLocal();
+  const localList = local.days?.[date] || [];
   try {
-    const r = await fetch(`/api/scores?date=${encodeURIComponent(date)}`);
+    const r = await fetch(`/api/scores?date=${encodeURIComponent(date)}&mode=${m}`);
     if (r.ok) {
       const data = await r.json();
       if (data.ok && Array.isArray(data.list)) {
@@ -324,11 +464,15 @@ export async function fetchDay(date = todayKey()) {
   return { list: localList, remote: false };
 }
 
-/** 拉取总榜（远端 + 本地合并） */
-export async function fetchAll() {
-  const local = readLocal();
+/**
+ * 拉取总榜（远端 + 本地合并）
+ * @param {'solo'|'coop'} [mode]
+ */
+export async function fetchAll(mode = 'solo') {
+  const m = mode === 'coop' ? 'coop' : 'solo';
+  const local = m === 'coop' ? readModes().coop : readLocal();
   try {
-    const r = await fetch('/api/scores?view=all');
+    const r = await fetch(`/api/scores?view=all&mode=${m}`);
     if (r.ok) {
       const data = await r.json();
       if (data.ok) {
@@ -337,6 +481,43 @@ export async function fetchAll() {
     }
   } catch { /* 回退 */ }
   return { all: local.all, remote: false };
+}
+
+/**
+ * 拉取战役荣誉榜（不按天）
+ * @param {string} [difficulty] 传了只返回该难度的排名
+ */
+export async function fetchCampaign(difficulty = '') {
+  const local = readModes().campaign;
+  const localList = difficulty ? local.filter((e) => e.difficulty === difficulty) : local;
+  try {
+    const q = difficulty ? `&difficulty=${encodeURIComponent(difficulty)}` : '';
+    const r = await fetch(`/api/scores?mode=campaign&view=all${q}`);
+    if (r.ok) {
+      const data = await r.json();
+      if (data.ok && Array.isArray(data.list)) {
+        const out = difficulty ? [...data.list] : mergeCampaignEntry(data.list, local);
+        return { list: out, remote: true };
+      }
+    }
+  } catch { /* 回退 */ }
+  return { list: localList, remote: false };
+}
+
+/**
+ * 拉取旧总榜存档（r59 前的唯一榜，只读保留）
+ * @param {'day'|'all'} [view]
+ */
+export async function fetchLegacy(view = 'all') {
+  try {
+    const q = view === 'all' ? 'view=all' : `view=day&date=${encodeURIComponent(todayKey())}`;
+    const r = await fetch(`/api/scores?mode=legacy&${q}`);
+    if (r.ok) {
+      const data = await r.json();
+      if (data.ok) return { list: view === 'all' ? (data.all || []) : (data.list || []), remote: true };
+    }
+  } catch { /* 忽略 */ }
+  return { list: [], remote: false };
 }
 
 /** 服务端诊断：榜条数与最后写入时间 */

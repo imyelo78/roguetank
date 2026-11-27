@@ -22,7 +22,7 @@ import { attachSession } from './server/session.js';
 import { FileStore, readBody } from './server/score-store.js';
 import { syncLegacyScores } from './server/legacy-scores.js';
 import { pruneInvalidScores } from './server/score-cleanup.js';
-import { handleGet, handlePost } from './functions/api/_lib/leaderboard.js';
+import { handleGet, handlePost, todayKey } from './functions/api/_lib/leaderboard.js';
 import {
   normalizeRoomCode, ROOM_CODE_RE, MAX_PLAYERS,
 } from './src/core/protocol.js';
@@ -56,7 +56,29 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
-const registry = new RoomRegistry();
+const registry = new RoomRegistry({
+  // 组队局结算 → 服务端直接写组队榜（mode=coop）。
+  // 数值来自房间世界统计，客户端不参与上报，杜绝伪造；拿不到客户端 pid，
+  // 榜单身份退回按 name 去重。失败只打日志，不影响房间回收。
+  onRunOver: (results, { players, timeMs }) => {
+    const date = todayKey();
+    for (const r of results) {
+      if (!r || !(r.score > 0)) continue;   // 0 分的队友不上榜（与客户端同一规则）
+      handlePost(scores, {
+        mode: 'coop',
+        date,
+        name: r.name,
+        wave: r.wave,
+        kills: r.kills,
+        score: r.score,
+        timeMs,
+        players,
+      }).then((out) => {
+        if (out.status !== 200) console.warn('[scores] coop report rejected', r.name, out.body?.reason);
+      }).catch((e) => console.error('[scores] coop report failed', r.name, e));
+    }
+  },
+});
 
 // ---------------- 静态文件 ----------------
 

@@ -2050,19 +2050,23 @@ button:active { transform: translateY(0); }
 }
 /* 胶囊底是设计稿里一个独立矩形 78×22 @9,10（相对面板），
    盖住"今日排行"四个字并向右多伸一截。用伪元素按绝对值画，不靠 padding 撑。 */
-.mb-tab[data-board="day"] {
-  left: calc(20px * var(--s, 1));
+/* r59 起三个模式 tab（单人/组队/战役），二字号标签按卡宽三等分排 */
+.mb-tab[data-board="solo"] {
+  left: calc(14px * var(--s, 1));
 }
-.mb-tab[data-board="all"] {
-  left: calc(102px * var(--s, 1));
+.mb-tab[data-board="coop"] {
+  left: calc(66px * var(--s, 1));
 }
-/* [18] 胶囊底：设计稿只有一个，画在"今日排行"下面（矩形 18 78×22 @9,10）。 */
+.mb-tab[data-board="campaign"] {
+  left: calc(118px * var(--s, 1));
+}
+/* [18] 胶囊底：跟着选中 tab 走，二字号标签配 44px 宽 */
 .mb-tab.sel::before {
   content: '';
   position: absolute;
-  left: calc(-11px * var(--s, 1));
+  left: calc(-8px * var(--s, 1));
   top: calc(-1px * var(--s, 1));      /* 11 → 10 */
-  width: calc(78px * var(--s, 1));
+  width: calc(44px * var(--s, 1));
   height: calc(22px * var(--s, 1));
   border-radius: calc(5px * var(--s, 1));
   background: rgba(242, 202, 145, .80);
@@ -2915,3 +2919,115 @@ body.is-touch .pause-panel .tip-kb { display: none; }
   color: #ffcf8a;
   font-weight: 700;
 }
+
+/* ---- r59 榜单三榜分立：模式 tab、战役行式、旧榜存档 ---- */
+
+/* 首页卡底部的「查看全部」小链接 */
+.mb-open {
+  display: block;
+  width: 100%;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, .08);
+  background: none;
+  color: #8f8b7e;
+  font-size: calc(10px * var(--s, 1));
+  font-family: inherit;
+  text-align: center;
+  padding: calc(6px * var(--s, 1)) 0;
+  cursor: pointer;
+  letter-spacing: .04em;
+}
+.mb-open:hover { color: #f2ca91; }
+
+/* 首页卡行内的组队人数角标 / 战役难度徽章 / 通关勾 */
+.mb-row .mb-team {
+  margin-left: 4px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(159, 208, 200, .18);
+  color: #9fd0c8;
+  font-size: calc(8px * var(--s, 1));
+  font-weight: 600;
+}
+.mb-row .cd-badge {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(255, 166, 61, .16);
+  color: #ffcf8a;
+  font-size: calc(8px * var(--s, 1));
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mb-row .win-mark { color: #97c459; font-weight: 700; }
+
+/* 面板一级 tab：模式（单人/组队/战役/旧榜存档），与二级胶囊区分层级 */
+.lb-mode-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.lb-mode {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-family: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.lb-mode:hover { color: var(--ink); border-color: rgba(255, 166, 61, .4); }
+.lb-mode.sel {
+  background: rgba(242, 202, 145, .85);
+  border-color: rgba(242, 202, 145, .85);
+  color: #1a1a1a;
+}
+/* 战役/存档模式下没有今日/总榜可切：整组胶囊藏掉 */
+#lb-range-tabs.hidden { display: none; }
+
+/* 战役行内的难度徽章 */
+.lb-list li b .lb-diff {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 166, 61, .16);
+  color: #ffcf8a;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* 战役结算页的本难度 Top5（复用 lb-list 的行节奏，紧凑一档） */
+.cmp-top5 {
+  list-style: none;
+  margin: 10px 0 2px;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.cmp-top5 li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.cmp-top5 li i {
+  font-style: normal;
+  width: 18px;
+  color: var(--muted);
+  font-weight: 700;
+}
+.cmp-top5 li:first-child i { color: var(--amber-soft); }
+.cmp-top5 li b { flex: 1; display: flex; align-items: center; }
+.cmp-top5 li span { color: var(--muted); }
+.cmp-top5 li em {
+  font-style: normal;
+  color: var(--ink);
+  font-weight: 700;
+  min-width: 52px;
+  text-align: right;
+}
+.cmp-top5 li.me { background: rgba(255, 166, 61, .08); }
