@@ -15,7 +15,7 @@ import { followStep, validateFollow } from './core/camera.js';
 import { HIT_TOP, AIM_BODY_Y, FLAT_SLOPE } from './core/aim.js';
 import { rollModifier, MODIFIER_DEFAULTS } from './modifiers.js';
 import { Sound } from './sound.js';
-import { todayKey, loadCallsign, saveLastMode, submitScore, flushPending, fetchCampaign } from './daily.js';
+import { todayKey, loadCallsign, submitScore, flushPending } from './daily.js';
 import { R, Rng, randomSeed } from './rng.js';
 import { crateCount, cratePositions, rollCategory, rollCard, CATEGORIES } from './core/crates.js';
 import { zoneForWave, terrainOptsFor, layoutOptsFor, zoneSeedFor } from './core/zones.js';
@@ -778,7 +778,6 @@ export class Game {
     if (document.activeElement && document.activeElement !== document.body) {
       document.activeElement.blur?.();
     }
-    saveLastMode('solo');   // 榜单卡默认停在"上次玩的模式"
     this.paused = false;
     this.keys.clear();
     this.firing = false;
@@ -855,7 +854,6 @@ export class Game {
     if (document.activeElement && document.activeElement !== document.body) {
       document.activeElement.blur?.();
     }
-    saveLastMode('campaign');
     this.paused = false;
     this.keys.clear();
     this.firing = false;
@@ -1050,22 +1048,6 @@ export class Game {
     if (this.mode === 'coop') {
       this.leaveCoop();
       return;
-    }
-    // 单人主动退出也上报（r59 起）：0 分本来就被服务端拦，区别对待没有理由。
-    // 只在局内退（state==='playing'）才报；结算页/菜单里点退出是重复上报。
-    if (this.mode === 'solo' && this.state === 'playing' && this.runTime > 0) {
-      submitScore({
-        date: todayKey(),
-        name: this.callsign || loadCallsign() || '指挥官',
-        wave: this.wave,
-        kills: this.kills,
-        score: this.score,
-        timeMs: Math.round(this.runTime * 1000),
-        chassis: this.chassisId,
-        weapon: this.stats?.weaponId || '',
-        players: 1,
-        mode: 'solo',
-      }).catch(() => {});
     }
     this.mode = 'solo';
     this.campaign = null;
@@ -2408,25 +2390,6 @@ export class Game {
     });
     this.hud.showMessage(reason === 'extract' ? '全身而退 · 车组归队'
       : reason === 'dead' ? '车组覆灭' : '时间耗尽 · 英军已重整', 3.2);
-
-    // ---- 战役成绩上报 + 本难度 Top5 ----
-    // 固定图固定布阵，服务端第一次可以"懂这一关"：kills ≤ 36、
-    // 用时 ≤ 15 分钟、难度四档白名单，超出直接拒（防伪门槛比无尽榜严）。
-    const name = this.callsign || loadCallsign() || '指挥官';
-    const timeMs = Math.round(this.campaign.time * 1000);
-    const difficulty = this.campaign.diff?.id || 'normal';
-    submitScore({
-      mode: 'campaign',
-      name,
-      difficulty,
-      win: win && reason === 'extract',
-      kills: this.kills,
-      timeMs,
-    }).catch(() => {});
-    // 拉榜失败只影响小榜单显示，不阻塞结算页
-    fetchCampaign(difficulty).then(({ list }) => {
-      this.hud.setCampaignTop5(list.slice(0, 5), name);
-    }).catch(() => {});
   }
 
   /**
@@ -2512,7 +2475,7 @@ export class Game {
         weapon: isCoop ? 'assault' : (this.stats.weaponId || ''),
         // 人数：让榜单能看出这一局是单人还是 4 人合作
         players: Math.max(1, Math.min(4, isCoop ? teamSize : 1)),
-        mode: isCoop ? 'coop' : 'solo',
+        mode: 'solo',
       });
     } catch {
       res = { list: [], all: [], remote: false, reason: 'error' };
@@ -2737,7 +2700,6 @@ export class Game {
    */
   openCoop({ name, chassis }) {
     const hud = this.hud;
-    saveLastMode('coop');
 
     // 大厅里点"创建 / 加入"时走这里。
     // 参数顺序容易踩坑：HUD 在 openLobby 时才知道呼号与车体，网络动作只接房间码，

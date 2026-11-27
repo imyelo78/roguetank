@@ -229,9 +229,8 @@
     <aside id="menu-board" class="menu-board">
       <div class="mb-bar">
         <div class="mb-tabs">
-          <button class="mb-tab sel" data-board="solo" type="button">单人</button>
-          <button class="mb-tab" data-board="coop" type="button">组队</button>
-          <button class="mb-tab" data-board="campaign" type="button">战役</button>
+          <button class="mb-tab sel" data-board="day" type="button">今日排行</button>
+          <button class="mb-tab" data-board="all" type="button">总排行榜</button>
         </div>
         <div class="mb-mine">
           <span>你的名次</span>
@@ -242,7 +241,6 @@
       <ol id="mb-body" class="mb-list">
         <li class="mb-empty">读取中…</li>
       </ol>
-      <button id="mb-open" class="mb-open" type="button">查看全部 · 今日/历史 ›</button>
     </aside>
   </div>
 
@@ -301,13 +299,8 @@
       <p class="lb-sub">
         <span id="lb-sub">—</span> · <span id="lb-source" class="lb-source">—</span>
       </p>
-      <div class="lb-mode-tabs">
-        <button class="lb-mode sel" data-mode="solo" type="button">单人</button>
-        <button class="lb-mode" data-mode="coop" type="button">组队</button>
-        <button class="lb-mode" data-mode="campaign" type="button">战役</button>
-      </div>
-      <p class="lb-note" id="lb-note">单人无尽榜。地图随机，分数仅供横向参考；组队局在组队页，不在这里混排。</p>
-      <div class="lb-tabs" id="lb-range-tabs">
+      <p class="lb-note">榜单只收单人局。组队局的分数按人数缩放、还含团队分，混排会让排名失去意义。地图随机，分数仅供横向参考。</p>
+      <div class="lb-tabs">
         <button class="lb-tab sel" data-view="day">今日</button>
         <button class="lb-tab" data-view="all">总榜</button>
       </div>
@@ -388,7 +381,6 @@
       </div>
 
       <p id="cmp-end-note" class="go-note"></p>
-      <ol id="cmp-top5" class="cmp-top5"></ol>
       <button id="cmp-end-again">再打一次</button>
       <button id="cmp-end-menu" class="ghost-btn">返回主菜单</button>
     </div>

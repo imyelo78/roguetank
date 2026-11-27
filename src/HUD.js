@@ -1,7 +1,6 @@
 import { RARITY } from './upgrades.js';
 import { CHASSIS_LIST, CHASSIS, normalizeChassisId } from './chassis.js';
-import { loadCallsign, saveCallsign, todayKey, fetchAll, fetchDay, fetchCampaign,
-  getPid, loadLastMode } from './daily.js';
+import { loadCallsign, saveCallsign, todayKey, fetchAll, fetchDay, getPid } from './daily.js';
 import { BUILD } from './core/protocol.js';
 import { loadAssist, saveAssist } from './input/prefs.js';
 import { autoFullscreenOnTouch } from './input/fullscreen.js';
@@ -121,10 +120,6 @@ export class HUD {
     this.lbSub = $('lb-sub');
     this.lbSource = $('lb-source');
     this.lbMe = $('lb-me');
-    this.lbNote = $('lb-note');
-    this.lbRangeTabs = $('lb-range-tabs');
-    this.cmpTop5 = $('cmp-top5');
-    this.mbOpen = $('mb-open');
     this.shareBox = $('share-box');
     this.shareCodeEl = $('share-code');
     this.shareBtn = $('share-btn');
@@ -143,7 +138,7 @@ export class HUD {
     this.lbTabButtons = Array.from(document.querySelectorAll('.lb-tab[data-view]'));
     this.lbModeButtons = Array.from(document.querySelectorAll('.lb-mode[data-mode]'));
     this._lbView = 'day';
-    this._lbMode = 'solo';    // solo | coop | campaign
+    this._lbMode = 'daily';   // daily | normal
     this._lbDate = '';
     this._lbAll = [];
     this._lbDays = [];
@@ -417,58 +412,48 @@ export class HUD {
   // 想看全量、切换今日/总榜的完整功能仍然在点「排行榜」弹出的 #lb-panel 里。
   // 数据源完全复用 daily.js，不额外发请求：两个 tab 首次点击才拉，拉过就缓存。
 
-  /**
-   * 绑定首页排行榜卡的 tab 与初次渲染。
-   * r59 起卡上只有三个模式 tab（单人/组队/战役），时间范围跟模式走：
-   * 单人/组队默认今日、战役恒为总榜。默认停在"上次玩的模式"（localStorage）。
-   */
+  /** 绑定首页排行榜卡的 tab 与初次渲染 */
   initMenuBoard() {
     this.mbBody = $('mb-body');
     this.mbMineRank = $('mb-mine-rank');
     this.mbMineTotal = $('mb-mine-total');
     this.mbTabs = Array.from(document.querySelectorAll('.mb-tab[data-board]'));
     if (!this.mbBody) return;
-    this._mbMode = loadLastMode();
-    for (const b of this.mbTabs) b.classList.toggle('sel', b.dataset.board === this._mbMode);
-    this._mbCache = {};       // { solo: [...], coop: [...], campaign: [...] }
+    this._mbView = 'day';
+    this._mbCache = {};       // { day: [...], all: [...] }
     for (const btn of this.mbTabs) {
       btn.addEventListener('click', () => {
         const v = btn.dataset.board;
-        if (v === this._mbMode) return;
-        this._mbMode = v;
+        if (v === this._mbView) return;
+        this._mbView = v;
         for (const b of this.mbTabs) b.classList.toggle('sel', b.dataset.board === v);
         this.renderMenuBoard();
       });
     }
-    // 「查看全部」= 打开全屏面板，并停在当前模式
-    this.mbOpen?.addEventListener('click', () => this.openLeaderboard(this._mbMode));
     this.renderMenuBoard();
   }
 
   /** 刷新首页排行榜卡（未缓存时拉数据） */
   async renderMenuBoard() {
     if (!this.mbBody) return;
-    const mode = this._mbMode || 'solo';
-    let list = this._mbCache[mode];
+    const view = this._mbView || 'day';
+    let list = this._mbCache[view];
     if (!list) {
       try {
-        if (mode === 'campaign') {
-          const { list: l } = await fetchCampaign();
-          list = l || [];
-        } else if (mode === 'coop') {
-          const { list: l } = await fetchDay(todayKey(), 'coop');
-          list = l || [];
-        } else {
+        if (view === 'day') {
           const { list: l } = await fetchDay(todayKey());
           list = l || [];
+        } else {
+          const { all } = await fetchAll();
+          list = all || [];
         }
       } catch {
         list = [];
       }
-      this._mbCache[mode] = list;
+      this._mbCache[view] = list;
     }
     // tab 可能在 await 期间被切走了，以最新选择为准
-    if ((this._mbMode || 'solo') !== mode) return;
+    if ((this._mbView || 'day') !== view) return;
 
     this.mbBody.innerHTML = '';
     if (!list.length) {
@@ -482,38 +467,25 @@ export class HUD {
     const myName = (loadCallsign() || '').trim();
     const myIdx = list.findIndex((e) => HUD.isMe(e, myPid, myName));
     const TOP = 10;
-    const diffName = (d) => ({ novice: '新手', normal: '普通', ruthless: '冷血', wittmann: '魏神' }[d] || '');
 
+    // 行内元素按设计稿排：名次 / 昵称 / 分数 / 第N波 / N杀 / 时长
+    // 设计稿的元信息顺序是「第7波 · 67杀 · 6:11」，时长在最右，
+    // 用三个时间加粗的 8px 小字排一行。
     for (const [i, e] of list.slice(0, TOP).entries()) {
       const li = document.createElement('li');
       li.className = 'mb-row';
+      // 存档里字段名是 timeMs（见 daily.js 的记录结构），单位毫秒
       const ms = Number(e.timeMs || e.time || 0);
       const secs = Math.max(0, Math.round(ms / 1000));
       const mmss = secs > 0 ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` : '';
-
-      if (mode === 'campaign') {
-        // 战役行式：名次 呼号 [难度] 击毁 用时/✓。通关打勾，未通关没有用时可比
-        const win = !!e.win;
-        const diff = diffName(e.difficulty);
-        li.innerHTML = `<span class="r">${i + 1}</span>`
-          + `<span class="n">${esc(e.name)}</span>`
-          + (diff ? `<span class="cd-badge">${diff}</span>` : '')
-          + `<span class="s">${e.kills || 0}毁</span>`
-          + `<span class="m">${win ? `<span class="win-mark">✓</span>` : ''}`
-          + (win && mmss ? `<span>${mmss}</span>` : '')
-          + `</span>`;
-      } else {
-        // 单人/组队行式：名次 呼号 分数 第N波 N杀 时长（组队行内标 N 人）
-        const team = (e.players || 1) > 1 ? `<span class="mb-team">${e.players}人</span>` : '';
-        li.innerHTML = `<span class="r">${i + 1}</span>`
-          + `<span class="n">${esc(e.name)}${team}</span>`
-          + `<span class="s">${(e.score || 0).toLocaleString()}</span>`
-          + `<span class="m">`
-          + `<span>第${e.wave || 1}波</span>`
-          + `<span>${e.kills || 0}杀</span>`
-          + (mmss ? `<span>${mmss}</span>` : '')
-          + `</span>`;
-      }
+      li.innerHTML = `<span class="r">${i + 1}</span>`
+        + `<span class="n">${esc(e.name)}</span>`
+        + `<span class="s">${(e.score || 0).toLocaleString()}</span>`
+        + `<span class="m">`
+        + `<span>第${e.wave || 1}波</span>`
+        + `<span>${e.kills || 0}杀</span>`
+        + (mmss ? `<span>${mmss}</span>` : '')
+        + `</span>`;
       this.mbBody.appendChild(li);
     }
 
@@ -536,68 +508,30 @@ export class HUD {
 
   // ---------------- 排行榜面板 ----------------
 
-  /**
-   * 打开排行榜。一级 tab 是模式（单人/组队/战役），二级胶囊是今日/总榜
-   * （战役榜不按天，不显示胶囊）。旧榜数据已并入单人总榜，不再单独列 tab。
-   * @param {'solo'|'coop'|'campaign'} [mode] 首页卡「查看全部」会带上当前模式
-   */
-  async openLeaderboard(mode = '') {
+  /** 打开排行榜：今日 / 总榜 */
+  async openLeaderboard() {
     if (!this.lbPanel) return;
     this.lbPanel.classList.remove('hidden');
-    this._lbMode = ['solo', 'coop', 'campaign'].includes(mode) ? mode
-      : loadLastMode();
     this._lbView = 'day';
-    this.lbModeButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.mode === this._lbMode));
     this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === 'day'));
-    await this.renderLbPanel();
+    this.lbBody.innerHTML = '<li class="lb-empty">读取中…</li>';
+    await this.renderDayBoard();
   }
 
   closeLeaderboard() {
     this.lbPanel?.classList.add('hidden');
   }
 
-  /** 按当前模式 + 视图渲染面板（模式说明文案也在这里换） */
-  async renderLbPanel() {
-    const mode = this._lbMode;
-    // 胶囊（今日/总榜）只在单人/组队显示
-    this.lbRangeTabs?.classList.toggle('hidden', mode !== 'solo' && mode !== 'coop');
-    // 模式说明：三榜口径不同，不写清楚读者一定会问"为什么组队分这么低"
-    const notes = {
-      solo: '单人无尽榜，含 r59 前的全部历史战绩。地图随机，分数仅供横向参考；组队局在组队页，不在这里混排。',
-      coop: '组队榜，2~4 人车队同榜混排不加权，行内标注人数。成绩由服务器在战局结束时自动写入。',
-      campaign: '战役荣誉榜（不按天）：通关 > 难度 > 击毁 > 用时。固定地图人人同局，比的是打得又狠又快。',
-    };
-    if (this.lbNote) this.lbNote.textContent = notes[mode] || notes.solo;
-
-    this.lbBody.innerHTML = '<li class="lb-empty">读取中…</li>';
-    if (mode === 'campaign') {
-      this.lbSub.textContent = '维莱博卡日 · 1944-06-13';
-      const { list, remote } = await fetchCampaign();
-      if ((this._lbMode) !== 'campaign') return;
-      this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
-      // 必须传 'campaign' variant：战役条目没有 score/wave，走通用单人行式
-      // 会渲染出"第 undefined 波"（r59 真实 bug）。
-      this.renderBoardList(list || [], '战役榜', 'campaign');
-      return;
-    }
-    if (this._lbView === 'all') await this.renderAllBoard();
-    else await this.renderDayBoard();
-  }
-
   async renderDayBoard() {
-    const mode = this._lbMode === 'coop' ? 'coop' : 'solo';
     this.lbSub.textContent = `${todayKey()} · 今日`;
-    const { list, remote } = await fetchDay(todayKey(), mode);
-    if ((this._lbMode) !== mode) return;
+    const { list, remote } = await fetchDay(todayKey());
     this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
     this.renderBoardList(list || [], '今日榜');
   }
 
   async renderAllBoard() {
-    const mode = this._lbMode === 'coop' ? 'coop' : 'solo';
     this.lbSub.textContent = '全部历史';
-    const { all, remote } = await fetchAll(mode);
-    if ((this._lbMode) !== mode) return;
+    const { all, remote } = await fetchAll();
     this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
     this.renderBoardList(all || [], '总榜');
   }
@@ -609,11 +543,10 @@ export class HUD {
     return !!(myName && e.name === myName);
   }
 
-  renderBoardList(list, title = '', variant = '') {
+  renderBoardList(list, title = '') {
     this.lbBody.innerHTML = '';
     const myPid = getPid();
     const myName = (loadCallsign() || '').trim();
-    const diffName = (d) => ({ novice: '新手', normal: '普通', ruthless: '冷血', wittmann: '魏神' }[d] || '');
 
     if (!list || list.length === 0) {
       this.lbBody.innerHTML = `<li class="lb-empty">${title}暂无记录</li>`;
@@ -626,22 +559,6 @@ export class HUD {
     list.slice(0, 20).forEach((e, i) => {
       const li = document.createElement('li');
       if (HUD.isMe(e, myPid, myName)) li.className = 'me';
-
-      if (variant === 'campaign') {
-        // 战役行：名次 呼号 [难度] 击毁 用时/—。没有分数可比，通关打勾
-        const diff = diffName(e.difficulty);
-        const ms = Math.max(0, Math.round(Number(e.timeMs || 0) / 1000));
-        const mmss = e.win && ms > 0
-          ? `${Math.floor(ms / 60)}:${String(ms % 60).padStart(2, '0')}`
-          : '—';
-        li.innerHTML = `<i>${i + 1}</i><b>${esc(e.name)}`
-          + (diff ? `<span class="lb-diff">${diff}</span>` : '')
-          + `</b><span>${e.kills || 0} 辆</span>`
-          + `<em>${e.win ? '✓ ' : ''}${mmss}</em>`;
-        this.lbBody.appendChild(li);
-        return;
-      }
-
       // 老排行榜记录里可能是 balanced/light/heavy/hunter，直接查 CHASSIS 会得到
       // undefined，徽章变成"?"、名字消失。统一走归一化，历史 id 也显示豹式。
       const cid = e.chassis ? normalizeChassisId(e.chassis) : '';
@@ -974,22 +891,11 @@ export class HUD {
 
     $('lb-open')?.addEventListener('click', () => this.openLeaderboard());
     $('lb-close')?.addEventListener('click', () => this.closeLeaderboard());
-    // 一级 tab：模式（单人/组队/战役）
-    this.lbModeButtons?.forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (btn.dataset.mode === this._lbMode) return;
-        this._lbMode = btn.dataset.mode;
-        this.lbModeButtons.forEach((b) => b.classList.toggle('sel', b === btn));
-        this.lbTabButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.view === this._lbView));
-        await this.renderLbPanel();
-      });
-    });
-    // 二级胶囊：今日 / 总榜（只在单人/组队显示）
-    this.lbTabButtons?.forEach((btn) => {
+    this.lbTabButtons.forEach((btn) => {
       btn.addEventListener('click', async () => {
         this.lbTabButtons.forEach((b) => b.classList.toggle('sel', b === btn));
-        this._lbView = btn.dataset.view;
-        await this.renderLbPanel();
+        if (btn.dataset.view === 'all') await this.renderAllBoard();
+        else await this.renderDayBoard();
       });
     });
 
@@ -1378,38 +1284,6 @@ export class HUD {
       : reason === 'dead'
         ? `${diff ? diff.name + '难度 · ' : ''}车组失去战斗力。历史上魏特曼在镇中心被反坦克炮击伤后弃车撤退——虎式没了，人也退出了这场战斗。`
         : `${diff ? diff.name + '难度 · ' : ''}时间耗尽。这场突袭的历史窗口只有二十几分钟，之后英军重新组织了防线，单车突入的机会再也没有出现。`;
-
-    // 本难度 Top5：先占位"读取中"，Game 在上报后调 setCampaignTop5 填充。
-    // 拉榜失败就留着占位文案——不能因为它挡住"再打一次"。
-    if (this.cmpTop5) {
-      this.cmpTop5.innerHTML = '<li class="mb-empty">本难度荣誉榜读取中…</li>';
-    }
-  }
-
-  /** 战役结算页的「本难度最快 Top5」。Game 在成绩上报后回调 */
-  setCampaignTop5(list, myName = '') {
-    if (!this.cmpTop5) return;
-    if (!list || !list.length) {
-      this.cmpTop5.innerHTML = '<li class="mb-empty">本难度还没有纪录 · 你就是第一个</li>';
-      return;
-    }
-    const diffName = (d) => ({ novice: '新手', normal: '普通', ruthless: '冷血', wittmann: '魏神' }[d] || '');
-    const myPid = getPid();
-    this.cmpTop5.innerHTML = '';
-    for (const [i, e] of list.entries()) {
-      const li = document.createElement('li');
-      if (HUD.isMe(e, myPid, myName)) li.className = 'me';
-      const ms = Math.max(0, Math.round(Number(e.timeMs || 0) / 1000));
-      const mmss = e.win && ms > 0
-        ? `${Math.floor(ms / 60)}:${String(ms % 60).padStart(2, '0')}`
-        : '—';
-      const diff = diffName(e.difficulty);
-      li.innerHTML = `<i>${i + 1}</i><b>${esc(e.name)}`
-        + (diff ? `<span class="lb-diff">${diff}</span>` : '')
-        + `</b><span>${e.kills || 0} 辆</span>`
-        + `<em>${e.win ? '✓ ' : ''}${mmss}</em>`;
-      this.cmpTop5.appendChild(li);
-    }
   }
 
   setModifier(mod) {
