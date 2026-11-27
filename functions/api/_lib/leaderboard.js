@@ -13,8 +13,10 @@
 //   战役榜  campaign:top                           不按天。固定图固定布阵，人人打
 //                                                  的局一模一样，比的是"打得又狠
 //                                                  又快"：通关 > 难度 > 击毁 > 用时
-//   旧总榜  lb:<date> / all:top                    只读存档（r59 前的唯一榜，数据
-//                                                  保留不再写入）
+//   旧总榜  lb:<date> / all:top                    历史数据（r59 前的唯一榜）。键冻结
+//                                                  不再写入，但 all:top 的历史成绩**并入
+//                                                  单人总榜一起展示**（读时合并，见
+//                                                  soloAllMerged），不是封存。
 //
 // 去重键：name#pid（pid 是客户端生成的本机 ID）—— 早期按 name 去重，同名玩家会互相覆盖。
 // 例外：组队榜由服务端房间结算上报（见 server/room.js），拿不到客户端 pid，退回按 name。
@@ -29,7 +31,7 @@ export const COOP_TOP_KEY = 'coop:top';
 export const CAMPAIGN_TOP_KEY = 'campaign:top';
 export const COOP_DAYS_KEY = 'meta:days:coop';
 
-// ---- 旧榜键：只读存档，不再写入 ----
+// ---- 旧榜键：历史数据。不再写入；all:top 读时并入单人总榜（用户要求新旧同榜）----
 export const DAY_PREFIX = 'lb:';
 export const ALL_KEY = 'all:top';
 export const DAYS_KEY = 'meta:days';
@@ -170,6 +172,20 @@ export const isValidCampaign = (e) => !!e && e.name && (e.win || Number(e.kills)
 export const liveEntries = (list) => (Array.isArray(list) ? list.filter(isValidEntry) : []);
 export const liveCampaign = (list) => (Array.isArray(list) ? list.filter(isValidCampaign) : []);
 
+/**
+ * 单人总榜 = 新榜 solo:top + 旧榜 all:top 合并。
+ * 旧数据是 r59 前攒下的真实战绩，用户要求新旧同榜展示，不是封存。
+ * 旧键保持只读：合并发生在读取时，写入永远只进新键。
+ * 旧条目没有 players 字段 → 客户端按 (players||1) 渲染，单人行不受影响。
+ */
+export async function soloAllMerged(kv) {
+  const [top, legacy] = await Promise.all([
+    getJSON(kv, SOLO_TOP_KEY, []),
+    getJSON(kv, ALL_KEY, []),
+  ]);
+  return mergeLists([liveEntries(top), liveEntries(legacy)]);
+}
+
 /** 规范化一条单人/组队成绩，过滤非法/越界字段 */
 export function normalizeEntry(body) {
   const name = String(body.name || '').trim().slice(0, 12);
@@ -297,10 +313,13 @@ export async function handleGet(kv, url) {
   // ---- 单人 / 组队 ----
   const prefix = mode === 'coop' ? COOP_DAY_PREFIX : SOLO_DAY_PREFIX;
   const topKey = mode === 'coop' ? COOP_TOP_KEY : SOLO_TOP_KEY;
-  const live = mode === 'coop' ? liveEntries : liveEntries;
 
   if (view === 'all') {
-    return { status: 200, body: { ok: true, all: live(await getJSON(kv, topKey, [])) } };
+    // 单人总榜并入旧 all:top 的历史成绩；组队榜没有旧数据（r59 前组队成绩从未上报）
+    const all = mode === 'coop'
+      ? liveEntries(await getJSON(kv, topKey, []))
+      : await soloAllMerged(kv);
+    return { status: 200, body: { ok: true, all } };
   }
 
   // 今日榜（date 参数仅供客户端兜底，正常不传）
@@ -308,7 +327,7 @@ export async function handleGet(kv, url) {
   if (!DATE_RE.test(date)) return { status: 400, body: { ok: false, reason: 'bad-date' } };
   return {
     status: 200,
-    body: { ok: true, date, list: live(await getJSON(kv, `${prefix}${date}`, [])) },
+    body: { ok: true, date, list: liveEntries(await getJSON(kv, `${prefix}${date}`, [])) },
   };
 }
 
@@ -321,7 +340,7 @@ async function touchDays(kv, key, date) {
 /**
  * POST /api/scores 的公共实现。
  * body.mode: 'solo'（缺省）| 'coop' | 'campaign'。
- * 旧榜键（lb: 前缀与 all:top）不再写入——它们是只读存档。
+ * 旧榜键（lb: 前缀与 all:top）不再写入；all:top 的历史数据读时并入单人总榜。
  */
 export async function handlePost(kv, body) {
   if (!body || typeof body !== 'object') return { status: 400, body: { ok: false, reason: 'bad-json' } };
@@ -369,7 +388,10 @@ export async function handlePost(kv, body) {
     await touchDays(kv, daysKey, date);
 
     if (!nextDay) return { status: 500, body: { ok: false, reason: 'kv-write' } };
-    return { status: 200, body: { ok: true, date, list: nextDay, all: nextTop || [] } };
+    // 单人的 all 响应同样并入旧榜历史：客户端提交后拿这个字段刷新本地缓存，
+    // 少了旧数据总榜会"闪没"一截。组队无旧数据，直接用新榜。
+    const all = mode === 'coop' ? nextTop || [] : await soloAllMerged(kv);
+    return { status: 200, body: { ok: true, date, list: nextDay, all } };
   } catch {
     return { status: 500, body: { ok: false, reason: 'kv-write' } };
   }
@@ -378,5 +400,5 @@ export async function handlePost(kv, body) {
 export const __test = {
   mergeEntry, mergeLists, mergeCampaignEntry, normalizeEntry, normalizeCampaignEntry,
   sortDesc, campaignSort, campaignRank, identOf, dateAllowed, todayKey,
-  isValidEntry, isValidCampaign, liveEntries, liveCampaign,
+  isValidEntry, isValidCampaign, liveEntries, liveCampaign, soloAllMerged,
 };

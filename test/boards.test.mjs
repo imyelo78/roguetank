@@ -137,4 +137,43 @@ const ok = (msg) => { pass++; console.log(`  ✓ ${msg}`); };
   ok('GET 路由：四类榜互不串、difficulty 过滤、缺省兼容旧客户端');
 }
 
+// ---------------- 旧榜历史并入单人总榜（用户要求：新旧同榜，不是封存）----------------
+
+{
+  const e = env();
+  // 旧数据：r59 前攒下的 all:top（老格式：无 players、可能无 pid）
+  const legacyRows = [
+    { name: '老将甲', score: 12000, wave: 10, kills: 80, t: 1000 },
+    { name: '老将乙', id: '老将乙#oldpid', score: 7000, wave: 7, kills: 50, t: 2000 },
+    { name: '零分残局', score: 0, wave: 1, kills: 0, t: 3000 }, // 旧数据里的垃圾条目要过滤
+  ];
+  await putJSON(kv(e), ALL_KEY, legacyRows);
+  // 新数据：r59 后写入 solo:top
+  await handlePost(kv(e), { name: '新兵', pid: 'n1', wave: 8, kills: 60, score: 9000, players: 1 });
+  await handlePost(kv(e), { name: '老将甲', pid: 'oldpid2', wave: 12, kills: 95, score: 15000, players: 1 }); // 同名玩家新旧共存
+
+  const all = (await handleGet(kv(e), get('view=all&mode=solo'))).body.all;
+  assert.deepEqual(all.map((x) => x.name), ['老将甲', '老将甲', '新兵', '老将乙'],
+    '新旧同榜按分排序：老将甲15000(新) > 老将甲12000(旧) > 新兵9000 > 老将乙7000(旧)，零分旧条目被滤掉');
+  assert.equal(all.length, 4, '同名但 pid 不同是两个人（旧数据无 pid 按 name 认人），不去重');
+  ok('旧 all:top 历史并入单人总榜：新旧混排、零分过滤、旧键不写入');
+
+  // 同一玩家（同 pid 身份）新旧都有：留高分那条
+  const e2 = env();
+  await putJSON(kv(e2), ALL_KEY, [{ name: '回归', pid: 'ret1', score: 8000, wave: 6, kills: 45, t: 1 }]);
+  await handlePost(kv(e2), { name: '回归', pid: 'ret1', wave: 5, kills: 30, score: 6000, players: 1 });
+  const all2 = (await handleGet(kv(e2), get('view=all&mode=solo'))).body.all;
+  assert.equal(all2.length, 1, '同 pid 新旧只留一条');
+  assert.equal(all2[0].score, 8000, '留高分（旧）那条');
+  ok('同 pid 跨新旧榜去重：保留最高分');
+
+  // POST 响应的 all 也要带旧数据（客户端提交后用它刷新缓存，缺了会"闪没"）
+  const posted = await handlePost(kv(e2), { name: '路人', pid: 'p9', wave: 2, kills: 8, score: 300, players: 1 });
+  assert.equal(posted.body.all.some((x) => x.name === '回归'), true, 'POST 响应 all 含旧榜条目');
+  // 组队榜不并旧数据（r59 前组队成绩从未上报过）
+  const coopPosted = await handlePost(kv(e2), { mode: 'coop', name: '车队', pid: 'p10', wave: 4, kills: 25, score: 2000, players: 3 });
+  assert.equal(coopPosted.body.all.length, 1, '组队 all 无旧数据可并');
+  ok('POST 响应：单人 all 并旧榜，组队 all 保持新榜');
+}
+
 console.log(`\n全部通过：${pass} 项`);
