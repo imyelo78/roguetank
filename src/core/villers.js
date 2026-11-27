@@ -22,13 +22,20 @@
 // 步兵归队：所以本关的英军**不冲锋**（Enemy 的 hold 行为），醒来只是
 // 转炮塔还击。这是"遭遇战"与"围殴"的分界线。
 //
-// ============ 坐标系与比例 ============
+// ============ 坐标系与战场形状 ============
 //
 // 世界坐标：+x 东、+z 南、-z 北（yaw=0 朝 +z，yaw=π/2 朝 +x/东）。
-// 真实镇中心到 213 约 1.5 km，压缩到约 170 m（≈1:10）；路面、房屋、
-// 车距按真实尺寸不压缩。压缩的取舍见 git 历史，这里只留结论：
-// 15 m/s 的坦克跑 1.5 km 中间没有决策点，压缩后"213 林口 → 队头 →
-// 步枪旅车队 → 镇口"四个决策点落在 20~40 秒间隔上。
+// 真实镇中心到 213 约 1.5 km，压缩到约 200 m（≈1:10）；路面、房屋、
+// 车距按真实尺寸不压缩。
+//
+// **战场是一条狭长走廊**（用户定的形状）：N175 沿 z=0 横贯东西，
+// 可通行地带 z ∈ [-36, +36]（路面 ±9 + 两侧田野带），走廊南北边缘是
+// 连续的 bocage 树篱墙——诺曼底树篱本来就密不透风，坦克只能走路和
+// 田口，这正是这场仗"纵队跑不掉、魏特曼进得去"的地形前提。墙外再铺
+// 几道树篱线当远景纹理，等距视角下看不到空荡荡的方图边角。
+
+/** 走廊南北边界（不可通行的 bocage 墙）。地形、布阵、撤离点都以它为界 */
+export const CORRIDOR = { zMin: -36, zMax: 36 };
 //
 // ============ 没有还原、以及为什么 ============
 //
@@ -70,17 +77,18 @@ export function difficultyById(id) {
 
 /**
  * 玩家起点：卡昂古道（213 南侧的下沉土路）路面上，2 连当晚的隐蔽位置。
- * 面朝北偏西：穿出林口北门就是 N175 东头，A 中队 4 分队就停在正前方。
+ * 面朝东北：前方就是古道北门（78~88），穿出去就是 N175 东头、A 中队
+ * 4 分队的侧后。出发林带的树篱挡住视线——40m 外的队头看不见你。
  */
-export const PLAYER_START = { x: 76, z: 32, yaw: -3.03 };
+export const PLAYER_START = { x: 76, z: 28, yaw: 2.27 };
 
 /**
- * 撤离点：古道东端（2 连来路 / 驻地一侧）。
+ * 撤离点：古道东段（2 连来路 / 驻地一侧）。
  * 战果达标前是灰的；达标后变琥珀色，开进去 = 全身而退 = 胜利。
- * 放在出生点东边 10 m：够近（本来就是要撤回出发地），又不会
+ * 在出生点东侧 10 m：够近（本来就是要撤回出发地），又不会
  * "杀满 22 个的瞬间人正好站在圈里"直接白给。
  */
-export const EXTRACTION = { x: 86, z: 32, r: 8 };
+export const EXTRACTION = { x: 85, z: 29, r: 5.5 };
 
 /** 圣女贞德广场。用于"深入广场"的提示，不是胜利条件 */
 export const TOWN_CENTER = { x: -62, z: 0, r: 14 };
@@ -93,9 +101,9 @@ export const TOWN_CENTER = { x: -62, z: 0, r: 14 };
  */
 export const ROADS = [
   { width: 12, pts: [[102, 0], [-102, 0]] },            // N175 + 镇内主街
-  { width: 7, pts: [[0, 6], [0, 64]] },                 // 蒂利路口（向南）
-  { width: 6, pts: [[58, 32], [98, 32]] },              // 卡昂古道
-  { width: 6, pts: [[71, -26], [71, -2]] },             // 213 土路（下坡）
+  { width: 7, pts: [[0, 6], [0, 34]] },                 // 蒂利路口（向南，到走廊墙为止）
+  { width: 6, pts: [[58, 28], [96, 28]] },              // 卡昂古道（走廊南带）
+  { width: 6, pts: [[71, -34], [71, -2]] },             // 213 土路（下坡，走廊北带）
 ];
 
 // ---------------- 掩体 ----------------
@@ -134,72 +142,81 @@ function house(x, z, w, d, h = 7, color = C_HOUSE) {
 export function buildVillersBoxes() {
   const b = [];
 
-  // ---- 1. N175 两侧的连续树篱（纵队的"墙"） ----
+  // ---- 0. 走廊南北边界墙（战场就是这条狭长的 bocage 走廊） ----
   //
-  // 北侧 z=-9：从镇口铺到 213 林区西侧。缺口是田口（4~8 m），玩家撤离时
-  // 从公路拐进北侧田野就得走这些口。与南侧缺口错开，公路不是一条漏斗。
-  b.push(hedgeZ(-9, -6, 8));
-  b.push(hedgeZ(-9, 12, 20));
-  b.push(hedgeZ(-9, 24, 40));
-  b.push(hedgeZ(-9, 44, 60));
-  // 南侧 z=+9：到 60 为止（以东是卡昂古道林区，自己有围合）
-  b.push(hedgeZ(9, -6, 2));
-  b.push(hedgeZ(9, 6, 14));
-  b.push(hedgeZ(9, 18, 26));
-  b.push(hedgeZ(9, 30, 38));
-  b.push(hedgeZ(9, 42, 56));
-  // 田口门柱（土堤色，纯视觉）
-  b.push(hedgeZ(-9, 8.5, 11.5, C_BANK));
-  b.push(hedgeZ(-9, 20.5, 23.5, C_BANK));
-  b.push(hedgeZ(9, 2.5, 5.5, C_BANK));
-  b.push(hedgeZ(9, 14.5, 17.5, C_BANK));
+  // 连续无缺口：坦克不可能穿树篱（史实），地图边缘也不漏缝。
+  // 墙外铺几道远景树篱线（段 6），等距视角下是"层层树篱延伸到雾里"。
+  b.push(hedgeX(CORRIDOR.zMin, -104, 104, C_BANK));
+  b.push(hedgeX(CORRIDOR.zMax, -104, 104, C_BANK));
 
-  // ---- 2. 213 高地林区（东北角） ----
+  // ---- 1. N175 两侧的路侧树篱（纵队的"墙"） ----
   //
-  // 三面围合，南侧留 68~74 的口接土路。A 中队 4 分队就停在林口外的公路上：
+  // 东西向、贴着路缘（z=±9）：从镇口铺到 213 林区西侧。缺口是田口
+  // （4 m），玩家撤离时从公路拐进田野带就得走这些口。两侧田口错开，
+  // 公路不是一条漏斗。
+  //   ⚠ r57 的教训：这里当时错用了 hedgeZ（南北向篱），生成的是四段
+  //   横穿公路的竖墙——公路被拦腰切断，"沿公路逐个点名"根本走不通。
+  //   路侧篱必须 hedgeX（东西向）。
+  b.push(hedgeX(-9, -6, 8));
+  b.push(hedgeX(-9, 12, 20));
+  b.push(hedgeX(-9, 24, 40));
+  b.push(hedgeX(-9, 44, 60));
+  // 南侧 z=+9：蒂利路（x -3.5~3.5）在这里穿过，篱从路口以东 x=6 起铺，
+  // 到 56 为止（以东是卡昂古道林区，自己有围合）
+  b.push(hedgeX(9, 6, 14));
+  b.push(hedgeX(9, 18, 26));
+  b.push(hedgeX(9, 30, 38));
+  b.push(hedgeX(9, 42, 56));
+  // 田口：北 8~12 / 20~24 / 40~44；南 2~6 / 14~18 / 26~30 / 38~42。
+  // 篱段的断口本身就是最好的"这里有口"提示，不再放门柱（r57 的门柱
+  // 是竖篱，横在路上还顶到 6 磅炮的炮位）。
+
+  // ---- 2. 213 高地林区（东北角，z -36 ~ -24，走廊墙当北缘） ----
+  //
+  // 南缘留 68~74 的口接土路。A 中队 4 分队就停在林口外的公路上：
   // 玩家从卡昂古道穿过来，第一眼就是它们。
-  b.push(hedgeX(-24, 64, 68));       // 南缘西段（口以西）
+  b.push(hedgeX(-24, 62, 68));       // 南缘西段（口以西）
   b.push(hedgeX(-24, 74, 96));       // 南缘东段（口以东）
-  b.push(hedgeZ(64, -56, -24));      // 西缘
-  b.push(hedgeX(-56, 64, 96));       // 北缘
-  b.push(hedgeZ(96, -56, -24));      // 东缘
-  b.push(house(84, -44, 12, 9, 6.5, C_BARN));   // 213 农舍
-  b.push([78, -32, 4, 6, 4, C_HEDGE]);
-  b.push([88, -36, 3.5, 5, 3.5, C_HEDGE]);
-  b.push([74, -48, 3, 5, 3, C_HEDGE]);
+  b.push(hedgeZ(62, -36, -24));      // 西缘
+  b.push(hedgeZ(96, -36, -24));      // 东缘（北缘是走廊墙本体）
+  b.push(house(84, -30, 12, 8, 6.5, C_BARN));   // 213 农舍
+  // 树丛都在土路（x 68~74）以东，不挡路
+  b.push([77, -29, 3.5, 5, 3.5, C_HEDGE]);
+  b.push([88, -31, 3.5, 5, 3.5, C_HEDGE]);
+  b.push([79, -33, 3, 5, 3, C_HEDGE]);
 
-  // ---- 3. 卡昂古道林区（东南角，玩家出发地 + 撤离点） ----
+  // ---- 3. 卡昂古道林区（东南角，z 22 ~ 36，走廊墙当南缘） ----
   //
-  // 古道（z=32）从林区中穿过：北排树篱 z=24（留 78~88 的北门，玩家出发
-  // 朝北穿门上公路）、南排 z=40、西端封死、东端出图。撤离点在 (80,42)。
-  b.push(hedgeX(24, 60, 78));
-  b.push(hedgeX(24, 88, 96));        // 北门 78~88
-  b.push(hedgeX(40, 60, 96));        // 南排
-  b.push(hedgeZ(60, 24, 40));        // 西端
-  b.push(hedgeZ(96, 24, 40));        // 东端（出图侧）
-  b.push(hedgeZ(78, 40, 48));        // 撤离点西侧的遮蔽
-  b.push([68, 30, 3.5, 5, 3.5, C_HEDGE]);
-  // 这两丛在路面以南：不许压古道（z 29~35 是撤离路线，堵了就是"撤离点
-  // 永远到不了"的关卡 bug）
-  b.push([90, 38, 4, 6, 4, C_HEDGE]);
-  b.push(house(62, 50, 10, 8, 6, C_BARN));      // 路口农舍
+  // 古道（z=28）从林区中穿过：北排树篱 z=22（留 78~88 的北门，玩家出发
+  // 朝东北穿门上公路）、西端封死、东端封死。撤离点在 (85,29)。
+  b.push(hedgeX(22, 58, 78));
+  b.push(hedgeX(22, 88, 96));        // 北门 78~88
+  b.push(hedgeZ(58, 22, 36));        // 西端
+  b.push(hedgeZ(96, 22, 36));        // 东端（走廊墙侧）
+  b.push(hedgeZ(78, 30, 36));        // 撤离点西侧的遮蔽（不压路面 z 25~31）
+  b.push([68, 33, 3.5, 5, 3.5, C_HEDGE]);
+  b.push(house(52, 26, 10, 8, 6, C_BARN));      // 古道西口的农舍（林区外）
 
-  // ---- 4. 公路两侧的田野分割（撤离时的绕行路线） ----
+  // ---- 4. 走廊内的田野分割（z ±9 ~ ±36 的两条带） ----
   //
-  // 北侧田野（z -20 ~ -90）：东西向树篱切块。撤离不能沿公路原路直线冲回
-  // （醒过来的纵队侧射），玩家要么钻田口绕行、要么硬穿火线——这是本关
-  // 结尾的核心张力。
-  b.push(hedgeX(-24, 8, 64));        // 213 林区南缘与公路之间
-  b.push(hedgeX(-44, -6, 60));
-  b.push(hedgeX(-64, -6, 60));
-  b.push(hedgeX(-24, 60, 96));       // 林区以北
-  b.push(hedgeX(-56, 64, 92));
-  // 南侧田野（z +20 ~ +90）
-  b.push(hedgeX(20, -8, 56));
-  b.push(hedgeX(40, -8, 56));
-  b.push(hedgeX(60, -8, 56));
-  b.push(hedgeX(56, 64, 92));        // 古道以南
-  b.push(hedgeX(76, 62, 92));
+  // 撤离不能沿公路原路直线冲回（醒过来的纵队侧射）：钻田口拐进田野带
+  // 绕行，或者硬穿火线。树篱把带子切成格子，格与格之间只有田口。
+  // 北带（z -36 ~ -9，213 林区占东端 62~96；-22 这道横篱贴着镇北
+  // 房屋的墙根，再往北是撤离用的格子田）
+  b.push(hedgeX(-22, -104, -50));
+  b.push(hedgeX(-22, -44, 8));
+  b.push(hedgeX(-22, 14, 60));       // 田口：-50~-44、8~14
+  b.push(hedgeZ(-64, -36, -22));
+  b.push(hedgeZ(-24, -36, -22));
+  b.push(hedgeZ(30, -36, -22));
+  b.push(hedgeZ(-80, -22, -9));
+  b.push(hedgeZ(16, -22, -9));
+  // 南带（z 9 ~ 36，古道林区占东端 58~96，蒂利路走 x=0）
+  // 蒂利路（宽 7，x -3.5~3.5）从篱线 z=20 的 -6~4 缺口穿过。
+  b.push(hedgeX(20, -18, -6));
+  b.push(hedgeX(20, 4, 56));
+  b.push(hedgeZ(-52, 20, 36));
+  b.push(hedgeZ(30, 20, 36));
 
   // ---- 5. 镇区：两排石屋夹主街 ----
   //
@@ -222,8 +239,23 @@ export function buildVillersBoxes() {
   b.push(house(-14, +11, 9, 8, 6));                  // 南侧小屋
   // 广场收口：北侧一栋深宅，把广场从主街尽头围出来
   b.push(house(-62, -22, 16, 9, 8, C_HOUSE));
-  // 蒂利路口的小屋（x=0 岔口西南）
-  b.push(house(6, +13, 10, 8, 6, C_HOUSE2));
+  // 蒂利路口的小屋（x=0 岔口西南，让开路口本身——r57 它横在南田口上）
+  b.push(house(-10, 14.5, 10, 8, 6, C_HOUSE2));
+
+  // ---- 6. 走廊墙外的远景纹理 ----
+  //
+  // 墙外永远是进不去的 bocage 保护区。铺几道断续树篱线（带田口缺口），
+  // 等距视角下是"树篱一层层延伸进雾里"，而不是一条孤零零的边界墙。
+  for (const [z, segs] of [
+    [-50, [[-100, -30], [-10, 50], [70, 100]]],
+    [-66, [[-100, -60], [-40, 20], [40, 100]]],
+    [-84, [[-100, 0], [20, 100]]],
+    [48, [[-100, -60], [-40, 30], [60, 100]]],
+    [64, [[-100, -20], [0, 70]]],
+    [84, [[-100, -50], [-30, 100]]],
+  ]) {
+    for (const [x0, x1] of segs) b.push(hedgeX(z, x0, x1));
+  }
 
   return b.map(([x, z, w, h, d, color]) => ({ x, z, w, h, d, color }));
 }
@@ -231,79 +263,86 @@ export function buildVillersBoxes() {
 // ---------------- 英军布阵 ----------------
 //
 // 单位类型映射（沿用现成的敌人 AI，不新开一套）：
-//   cromwell → gunner   克伦威尔巡洋坦克，本关血量 150
-//   firefly  → elite    萤火虫（17 磅炮），血量 420，纵队里最危险的目标
-//   stuart   → gunner   斯图亚特轻坦，血量 90，快但脆
-//   halftrack→ gunner   半履带/运载车，血量 55~70，一炮就散
-//   op       → gunner   炮兵观察坦克，血量 130
+//   cromwell → gunner   克伦威尔巡洋坦克，血量 80
+//   firefly  → elite    萤火虫（17 磅炮），血量 170，纵队里最危险的目标
+//   stuart   → gunner   斯图亚特轻坦，血量 55
+//   halftrack→ gunner   半履带/运载车，血量 30~40，一炮就散
+//   op       → gunner   炮兵观察坦克，血量 75
 //   atgun    → turret   6 磅反坦克炮，固定、射程 38 m，伏击位
 //
 // 全员 hold（驻军）：车体钉在原地，醒来只转炮塔还击——纵队是停驻状态，
-// 步兵在车外，不是会冲锋的猎杀 AI。血量档位是为了节奏不是装甲还原：
-// 玩家 88 炮单发约 44 伤，克伦威尔 4 发、萤火虫 10 发、半履带 2 发。
-// 难度的 hpMul 只乘这些数（见 DIFFICULTIES）。
+// 步兵在车外，不是会冲锋的猎杀 AI。
+//
+// 血量围绕玩家的 88 炮定（用户：虎式打这些小坦克应该比较轻易）。
+// 战役里虎式主炮单发 88（26 基伤 × 3.4，88 mm 炮的数字就是这么来的）：
+//   克伦威尔 80 / 斯图亚特 55 / 半履带 40 / 观察车 75 / 6 磅炮 80
+//   —— 全部**一炮一个**；萤火虫 170 —— 两炮，它是本关唯一的硬点，
+// 也是历史上魏特曼掉头撤退的原因。
+// 难度的 hpMul 只乘这些数（见 DIFFICULTIES）：新手档全场一炮一个，
+// 魏神档克伦威尔也要两炮、萤火虫四炮。
 
 export const UNITS = [
   // ---- A 中队 4 分队（213 林口正下方，纵队头部；历史上最先挨打） ----
   // yaw=π/2 朝 +x（东，行军方向/213 一侧）——魏特曼从东来，打的是它们的正面
-  { x: 72, z: -3, yaw: 1.5708, type: 'elite', hp: 420, role: 'firefly', tag: 'A 中队 4 分队 · 萤火虫' },
-  { x: 72, z: 3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 4 分队 · 克伦威尔' },
-  { x: 68, z: -3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 4 分队 · 克伦威尔' },
+  { x: 72, z: -3, yaw: 1.5708, type: 'elite', hp: 170, role: 'firefly', tag: 'A 中队 4 分队 · 萤火虫' },
+  { x: 72, z: 3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 4 分队 · 克伦威尔' },
+  { x: 68, z: -3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 4 分队 · 克伦威尔' },
   // 邓洛普的炮兵观察克伦威尔（5th RHA），跟在纵队前半段
-  { x: 68, z: 3, yaw: 1.5708, type: 'gunner', hp: 130, role: 'op', tag: '邓洛普 · 观察克伦威尔' },
+  { x: 68, z: 3, yaw: 1.5708, type: 'gunner', hp: 75, role: 'op', tag: '邓洛普 · 观察克伦威尔' },
 
   // ---- A 中队 2 分队（213 西坡） ----
-  { x: 62, z: -3, yaw: 1.5708, type: 'elite', hp: 420, role: 'firefly', tag: 'A 中队 2 分队 · 萤火虫' },
-  { x: 62, z: 3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 2 分队 · 克伦威尔' },
-  { x: 58, z: -3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 2 分队 · 克伦威尔' },
+  { x: 62, z: -3, yaw: 1.5708, type: 'elite', hp: 170, role: 'firefly', tag: 'A 中队 2 分队 · 萤火虫' },
+  { x: 62, z: 3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 2 分队 · 克伦威尔' },
+  { x: 58, z: -3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 2 分队 · 克伦威尔' },
 
   // ---- A 中队 3 分队（斜坡末端） ----
-  { x: 58, z: 3, yaw: 1.5708, type: 'elite', hp: 420, role: 'firefly', tag: 'A 中队 3 分队 · 萤火虫' },
-  { x: 54, z: -3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 3 分队 · 克伦威尔' },
-  { x: 54, z: 3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 3 分队 · 克伦威尔' },
+  { x: 58, z: 3, yaw: 1.5708, type: 'elite', hp: 170, role: 'firefly', tag: 'A 中队 3 分队 · 萤火虫' },
+  { x: 54, z: -3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 3 分队 · 克伦威尔' },
+  { x: 54, z: 3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 3 分队 · 克伦威尔' },
 
   // ---- A 中队 1 分队（镇子与斜坡之间的开阔地） ----
-  { x: 48, z: -3, yaw: 1.5708, type: 'elite', hp: 420, role: 'firefly', tag: 'A 中队 1 分队 · 萤火虫' },
-  { x: 48, z: 3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 1 分队 · 克伦威尔' },
-  { x: 44, z: -3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'A 中队 1 分队 · 克伦威尔' },
+  { x: 48, z: -3, yaw: 1.5708, type: 'elite', hp: 170, role: 'firefly', tag: 'A 中队 1 分队 · 萤火虫' },
+  { x: 48, z: 3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 1 分队 · 克伦威尔' },
+  { x: 44, z: -3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'A 中队 1 分队 · 克伦威尔' },
 
   // ---- 步枪旅 1 营 A 连（路南侧让行的车队） ----
   // 停在道路右侧（南），给后续部队留出通车的一半路面——所以玩家沿公路
   // 西行时，它们全部暴露在右手侧。历史上这一段是"战车墓地"的主体。
-  { x: 30, z: 5, yaw: 1.5708, type: 'gunner', hp: 70, role: 'halftrack', tag: '步枪旅 A 连 · 半履带' },
-  { x: 26, z: 5, yaw: 1.5708, type: 'gunner', hp: 70, role: 'halftrack', tag: '步枪旅 A 连 · 半履带' },
-  { x: 22, z: 5, yaw: 1.5708, type: 'gunner', hp: 55, role: 'carrier', tag: '步枪旅 A 连 · 运载车' },
-  { x: 18, z: 5, yaw: 1.5708, type: 'gunner', hp: 70, role: 'halftrack', tag: '步枪旅 A 连 · 半履带' },
-  { x: 14, z: 5, yaw: 1.5708, type: 'gunner', hp: 55, role: 'carrier', tag: '步枪旅 A 连 · 运载车' },
+  { x: 30, z: 5, yaw: 1.5708, type: 'gunner', hp: 40, role: 'halftrack', tag: '步枪旅 A 连 · 半履带' },
+  { x: 26, z: 5, yaw: 1.5708, type: 'gunner', hp: 40, role: 'halftrack', tag: '步枪旅 A 连 · 半履带' },
+  { x: 22, z: 5, yaw: 1.5708, type: 'gunner', hp: 30, role: 'carrier', tag: '步枪旅 A 连 · 运载车' },
+  { x: 18, z: 5, yaw: 1.5708, type: 'gunner', hp: 40, role: 'halftrack', tag: '步枪旅 A 连 · 半履带' },
+  { x: 14, z: 5, yaw: 1.5708, type: 'gunner', hp: 30, role: 'carrier', tag: '步枪旅 A 连 · 运载车' },
 
   // ---- 巴特勒反坦克排（2 门 6 磅炮，路南侧） ----
-  { x: 10, z: 5, yaw: 1.5708, type: 'turret', hp: 200, role: 'atgun', tag: '巴特勒排 · 6 磅炮' },
-  { x: 6, z: 5, yaw: 1.5708, type: 'turret', hp: 200, role: 'atgun', tag: '巴特勒排 · 6 磅炮' },
+  { x: 10, z: 5, yaw: 1.5708, type: 'turret', hp: 80, role: 'atgun', tag: '巴特勒排 · 6 磅炮' },
+  { x: 6, z: 5, yaw: 1.5708, type: 'turret', hp: 80, role: 'atgun', tag: '巴特勒排 · 6 磅炮' },
 
   // ---- 英格拉姆的侦察斯图亚特 + 团部（镇东口） ----
-  { x: 2, z: -3, yaw: 1.5708, type: 'gunner', hp: 90, role: 'stuart', tag: '英格拉姆 · 斯图亚特' },
-  { x: 2, z: 3, yaw: 1.5708, type: 'gunner', hp: 90, role: 'stuart', tag: '英格拉姆 · 斯图亚特' },
-  { x: -2, z: -3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: '团部 · 卡尔的克伦威尔' },
-  { x: -2, z: 3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: '团部 · 汤普森的克伦威尔' },
-  // 戴斯的克伦威尔：停在侧面巷子里，魏特曼第一遍冲过去时没看见它
-  { x: -10, z: -13, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: '团部 · 戴斯（巷内）' },
+  { x: 2, z: -3, yaw: 1.5708, type: 'gunner', hp: 55, role: 'stuart', tag: '英格拉姆 · 斯图亚特' },
+  { x: 2, z: 3, yaw: 1.5708, type: 'gunner', hp: 55, role: 'stuart', tag: '英格拉姆 · 斯图亚特' },
+  { x: -2, z: -3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: '团部 · 卡尔的克伦威尔' },
+  { x: -2, z: 3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: '团部 · 汤普森的克伦威尔' },
+  // 戴斯的克伦威尔：停在北排两栋石屋之间的巷子里（巷宽 5 m），魏特曼
+  // 第一遍冲过去时没看见它——史实梗。
+  { x: -25, z: -16, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: '团部 · 戴斯（巷内）' },
 
   // ---- 镇内主街（西向） ----
-  { x: -12, z: 4, yaw: 1.5708, type: 'gunner', hp: 70, role: 'halftrack', tag: '医官麦克莱恩 · 半履带' },
-  { x: -16, z: -3, yaw: 1.5708, type: 'gunner', hp: 130, role: 'op', tag: '威尔斯 · 观察谢尔曼' },
-  { x: -20, z: 3, yaw: 1.5708, type: 'gunner', hp: 130, role: 'op', tag: '维克托里 · 观察克伦威尔' },
-  { x: -24, z: -3, yaw: 1.5708, type: 'gunner', hp: 90, role: 'stuart', tag: '史密斯分队 · 斯图亚特' },
-  { x: -28, z: 3, yaw: 1.5708, type: 'gunner', hp: 90, role: 'stuart', tag: '史密斯分队 · 斯图亚特' },
-  { x: -32, z: -3, yaw: 1.5708, type: 'gunner', hp: 90, role: 'stuart', tag: '史密斯分队 · 斯图亚特' },
+  { x: -12, z: 4, yaw: 1.5708, type: 'gunner', hp: 40, role: 'halftrack', tag: '医官麦克莱恩 · 半履带' },
+  { x: -16, z: -3, yaw: 1.5708, type: 'gunner', hp: 75, role: 'op', tag: '威尔斯 · 观察谢尔曼' },
+  { x: -20, z: 3, yaw: 1.5708, type: 'gunner', hp: 75, role: 'op', tag: '维克托里 · 观察克伦威尔' },
+  { x: -24, z: -3, yaw: 1.5708, type: 'gunner', hp: 55, role: 'stuart', tag: '史密斯分队 · 斯图亚特' },
+  { x: -28, z: 3, yaw: 1.5708, type: 'gunner', hp: 55, role: 'stuart', tag: '史密斯分队 · 斯图亚特' },
+  { x: -32, z: -3, yaw: 1.5708, type: 'gunner', hp: 55, role: 'stuart', tag: '史密斯分队 · 斯图亚特' },
 
   // ---- 镇西 B 中队 + 圣女贞德广场的 6 磅炮 ----
-  { x: -38, z: -3, yaw: 1.5708, type: 'gunner', hp: 150, role: 'cromwell', tag: 'B 中队 · 克伦威尔' },
-  { x: -44, z: 3, yaw: 1.5708, type: 'elite', hp: 420, role: 'firefly', tag: 'B 中队 · 萤火虫' },
+  { x: -38, z: -3, yaw: 1.5708, type: 'gunner', hp: 80, role: 'cromwell', tag: 'B 中队 · 克伦威尔' },
+  { x: -44, z: 3, yaw: 1.5708, type: 'elite', hp: 170, role: 'firefly', tag: 'B 中队 · 萤火虫' },
   // 洛克伍德的萤火虫：主街尽头朝东列阵。历史上它跟虎式在街上对射，魏特曼
   // 就是打到这里掉头撤退的——本关最深处的"硬点"，撤离路线上的最大威胁。
-  { x: -50, z: -3, yaw: 1.5708, type: 'elite', hp: 420, role: 'firefly', tag: 'B 中队 · 洛克伍德的萤火虫' },
-  { x: -56, z: 4, yaw: 1.5708, type: 'turret', hp: 200, role: 'atgun', tag: '广场 · 6 磅炮（东）' },
-  { x: -62, z: -4, yaw: 1.5708, type: 'turret', hp: 200, role: 'atgun', tag: '广场 · 6 磅炮' },
+  { x: -50, z: -3, yaw: 1.5708, type: 'elite', hp: 170, role: 'firefly', tag: 'B 中队 · 洛克伍德的萤火虫' },
+  { x: -56, z: 4, yaw: 1.5708, type: 'turret', hp: 80, role: 'atgun', tag: '广场 · 6 磅炮（东）' },
+  { x: -62, z: -4, yaw: 1.5708, type: 'turret', hp: 80, role: 'atgun', tag: '广场 · 6 磅炮' },
 ];
 
 /**

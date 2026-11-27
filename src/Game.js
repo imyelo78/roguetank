@@ -869,10 +869,12 @@ export class Game {
     // ---- 虎式 ----
     // 不新开一个车体：那会让选车界面多出一辆"只能在战役里用"的车，
     // 也会让联机的 chassis 表跟着长一条。这里只把豹式的底子按虎式的性格改：
-    // 更耐打、更慢、单发更重。倍率的由来写在 core/villers.js 顶部。
+    // 更耐打、更慢、单发极重——26 基伤 × 3.4 ≈ 88，88 mm 炮的本尊：
+    // 克伦威尔/斯图亚特/半履带/观察车/6 磅炮全部一炮一个（血量在
+    // villers.js 按这个口径定），萤火虫两炮。别的模式完全不受影响。
     this.stats.maxHp = Math.round(this.stats.maxHp * 3.4);
     this.stats.speed *= 0.72;
-    this.stats.damageMul *= 1.7;
+    this.stats.damageMul *= 3.4;
     this.stats.damageTakenMul *= 0.55;
 
     // ---- 地表：全草地 + 显式公路 ----
