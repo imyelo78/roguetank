@@ -841,8 +841,6 @@ kbd {
   line-height: 1.45;
   color: var(--muted);
   margin-top: 3px;
-  /* 三张卡里文案长短不一，给足两行高度，卡片才齐平 */
-  min-height: 2.9em;
 }
 .mode-card.sel i { color: var(--amber-soft); }
 /* 未开放的玩法：看得见、点不动。不做成 display:none —— 玩家应该知道后面有什么 */
@@ -1220,10 +1218,9 @@ button {
   color: #1a1206;
   background: linear-gradient(180deg, #ffc266, #ff8a3d);
   cursor: pointer;
-  box-shadow: 0 12px 32px rgba(255, 138, 61, .28);
-  transition: transform .12s ease, box-shadow .12s ease, filter .12s;
+  transition: transform .12s ease, filter .12s;
 }
-button:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(255, 138, 61, .4); filter: brightness(1.04); }
+button:hover { transform: translateY(-2px); filter: brightness(1.04); }
 button:active { transform: translateY(0); }
 
 .tip {
@@ -2897,6 +2894,7 @@ body.is-touch .pause-panel .tip-kb { display: none; }
 .cd-chip {
   flex: 1;
   height: 30px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, .04);
