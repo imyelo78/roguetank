@@ -504,22 +504,6 @@ export async function fetchCampaign(difficulty = '') {
   return { list: localList, remote: false };
 }
 
-/**
- * 拉取旧总榜存档（r59 前的唯一榜，只读保留）
- * @param {'day'|'all'} [view]
- */
-export async function fetchLegacy(view = 'all') {
-  try {
-    const q = view === 'all' ? 'view=all' : `view=day&date=${encodeURIComponent(todayKey())}`;
-    const r = await fetch(`/api/scores?mode=legacy&${q}`);
-    if (r.ok) {
-      const data = await r.json();
-      if (data.ok) return { list: view === 'all' ? (data.all || []) : (data.list || []), remote: true };
-    }
-  } catch { /* 忽略 */ }
-  return { list: [], remote: false };
-}
-
 /** 服务端诊断：榜条数与最后写入时间 */
 export async function fetchStats() {
   try {

@@ -1,6 +1,6 @@
 import { RARITY } from './upgrades.js';
 import { CHASSIS_LIST, CHASSIS, normalizeChassisId } from './chassis.js';
-import { loadCallsign, saveCallsign, todayKey, fetchAll, fetchDay, fetchCampaign, fetchLegacy,
+import { loadCallsign, saveCallsign, todayKey, fetchAll, fetchDay, fetchCampaign,
   getPid, loadLastMode } from './daily.js';
 import { BUILD } from './core/protocol.js';
 import { loadAssist, saveAssist } from './input/prefs.js';
@@ -143,7 +143,7 @@ export class HUD {
     this.lbTabButtons = Array.from(document.querySelectorAll('.lb-tab[data-view]'));
     this.lbModeButtons = Array.from(document.querySelectorAll('.lb-mode[data-mode]'));
     this._lbView = 'day';
-    this._lbMode = 'solo';    // solo | coop | campaign | legacy
+    this._lbMode = 'solo';    // solo | coop | campaign
     this._lbDate = '';
     this._lbAll = [];
     this._lbDays = [];
@@ -537,14 +537,14 @@ export class HUD {
   // ---------------- 排行榜面板 ----------------
 
   /**
-   * 打开排行榜。r59 起一级 tab 是模式（单人/组队/战役/旧榜存档），
-   * 二级胶囊是今日/总榜（战役榜不按天、旧榜存档整榜只读，都不显示胶囊）。
-   * @param {'solo'|'coop'|'campaign'|'legacy'} [mode] 首页卡「查看全部」会带上当前模式
+   * 打开排行榜。一级 tab 是模式（单人/组队/战役），二级胶囊是今日/总榜
+   * （战役榜不按天，不显示胶囊）。旧榜数据已并入单人总榜，不再单独列 tab。
+   * @param {'solo'|'coop'|'campaign'} [mode] 首页卡「查看全部」会带上当前模式
    */
   async openLeaderboard(mode = '') {
     if (!this.lbPanel) return;
     this.lbPanel.classList.remove('hidden');
-    this._lbMode = ['solo', 'coop', 'campaign', 'legacy'].includes(mode) ? mode
+    this._lbMode = ['solo', 'coop', 'campaign'].includes(mode) ? mode
       : loadLastMode();
     this._lbView = 'day';
     this.lbModeButtons?.forEach((b) => b.classList.toggle('sel', b.dataset.mode === this._lbMode));
@@ -563,10 +563,9 @@ export class HUD {
     this.lbRangeTabs?.classList.toggle('hidden', mode !== 'solo' && mode !== 'coop');
     // 模式说明：三榜口径不同，不写清楚读者一定会问"为什么组队分这么低"
     const notes = {
-      solo: '单人无尽榜。地图随机，分数仅供横向参考；组队局在组队页，不在这里混排。',
+      solo: '单人无尽榜，含 r59 前的全部历史战绩。地图随机，分数仅供横向参考；组队局在组队页，不在这里混排。',
       coop: '组队榜，2~4 人车队同榜混排不加权，行内标注人数。成绩由服务器在战局结束时自动写入。',
       campaign: '战役荣誉榜（不按天）：通关 > 难度 > 击毁 > 用时。固定地图人人同局，比的是打得又狠又快。',
-      legacy: '旧版总榜存档（r59 前的唯一榜，单人+组队混排），只读保留、不再更新。',
     };
     if (this.lbNote) this.lbNote.textContent = notes[mode] || notes.solo;
 
@@ -576,15 +575,9 @@ export class HUD {
       const { list, remote } = await fetchCampaign();
       if ((this._lbMode) !== 'campaign') return;
       this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
-      this.renderBoardList(list || [], '战役榜');
-      return;
-    }
-    if (mode === 'legacy') {
-      this.lbSub.textContent = '历史存档';
-      const { list, remote } = await fetchLegacy('all');
-      if ((this._lbMode) !== 'legacy') return;
-      this.lbSource.textContent = remote ? '全服' : '本机（云端不可用）';
-      this.renderBoardList(list || [], '存档', 'legacy');
+      // 必须传 'campaign' variant：战役条目没有 score/wave，走通用单人行式
+      // 会渲染出"第 undefined 波"（r59 真实 bug）。
+      this.renderBoardList(list || [], '战役榜', 'campaign');
       return;
     }
     if (this._lbView === 'all') await this.renderAllBoard();
@@ -981,7 +974,7 @@ export class HUD {
 
     $('lb-open')?.addEventListener('click', () => this.openLeaderboard());
     $('lb-close')?.addEventListener('click', () => this.closeLeaderboard());
-    // 一级 tab：模式（单人/组队/战役/旧榜存档）
+    // 一级 tab：模式（单人/组队/战役）
     this.lbModeButtons?.forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (btn.dataset.mode === this._lbMode) return;
